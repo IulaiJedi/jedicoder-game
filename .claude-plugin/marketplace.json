@@ -1,0 +1,13 @@
+{
+  "name": "jedicoder",
+  "owner": {
+    "name": "Iulai Atangulov"
+  },
+  "plugins": [
+    {
+      "name": "jedicoder",
+      "source": "./plugin",
+      "description": "Игра по вайбкодингу: от первого коммита до задеплоенного продукта"
+    }
+  ]
+}

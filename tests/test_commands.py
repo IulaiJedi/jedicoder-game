@@ -1,0 +1,288 @@
+import re
+from pathlib import Path
+
+from jedicoder import cli, ranks
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN = ROOT / "plugin"
+
+CALL = re.compile(r'cli\.py"?\s+([a-z]+)')
+CLI_PATH = re.compile(r'(?:\$JC|\$\(cat ~/\.jedicoder/plugin_root\))(/[^"\s]*cli\.py)')
+BACKTICKED = re.compile(r"`([^`]+)`")
+CUTSCENE_HEADING = re.compile(r"^##\s*Катсцен", re.MULTILINE)
+# Маркеры воспроизведения механики начала квеста. IGNORECASE обязателен:
+# историческая строка начиналась с заглавной — «Перескажи задачу квеста
+# своими словами», — и строчный маркер её не поймал бы. Имени «Возражение
+# Магистра» в списке нет намеренно: указателю положено механику называть.
+ECHO_MARKERS = re.compile(
+    r"Эхо|перескажи задачу|дождись «да»|дождись подтверждения", re.IGNORECASE
+)
+# Кто набирает текст файлов. Контракт (правило 8) исходит из того, что пишет
+# модель, а суперсила падавана — точно формулировать.
+TYPES_FILES = re.compile(r"пишет сам|пишешь сам|набирает сам")
+
+
+def markdown_files():
+    return sorted(PLUGIN.glob("commands/*.md")) + sorted(PLUGIN.glob("skills/*/SKILL.md"))
+
+
+def test_markdown_files_exist():
+    names = {path.name for path in markdown_files()}
+    # Точка входа падавана. Имя файла = имя команды: /jedicoder:start.
+    # Совпадать с именем скилла оно не имеет права (см. CLAUDE.md), поэтому
+    # тест держит именно start.md, а не что-нибудь производное от «jedicoder».
+    assert "start.md" in names
+    assert "SKILL.md" in names
+
+
+def test_every_cli_call_in_markdown_is_real():
+    unknown = []
+    for path in markdown_files():
+        text = path.read_text(encoding="utf-8")
+        for name in CALL.findall(text):
+            if name not in cli.SUBCOMMANDS:
+                unknown.append("{}: {}".format(path.name, name))
+    assert unknown == [], "в markdown вызываются несуществующие подкоманды"
+
+
+def subcommands_in(path):
+    """Подкоманды, названные в одном файле: вызовом cli.py или в бэктиках."""
+    names = set()
+    text = path.read_text(encoding="utf-8")
+    names.update(CALL.findall(text))
+    for span in BACKTICKED.findall(text):
+        words = span.strip().split()
+        if words:
+            names.add(words[0])
+    return names
+
+
+def documented_subcommands():
+    """Подкоманды, упомянутые в markdown: вызовом cli.py или в бэктиках."""
+    names = set()
+    for path in markdown_files():
+        names.update(subcommands_in(path))
+    return names
+
+
+def test_every_subcommand_is_documented():
+    """Обратная проверка: подкоманда, которой нет в markdown, недостижима.
+
+    Проверка «markdown -> CLI» ловит только опечатки в вызовах. Так `project`
+    и `root` уехали незадокументированными при зелёном суите: ассистент не
+    знал, чем записать ответ падавана, и лез в state.json руками.
+    """
+    documented = documented_subcommands()
+    missing = [name for name in cli.SUBCOMMANDS if name not in documented]
+    assert missing == [], "подкоманды не описаны ни в одном md плагина: {}".format(
+        missing
+    )
+
+
+def test_db_answer_command_named_in_act2_skill():
+    """Скилл обязан называть команду, а не только ключ состояния.
+
+    Квест 03-db-schema без записанного project.has_db — тупик, а состояние
+    разрешено менять только через CLI.
+    """
+    text = (PLUGIN / "skills" / "act2-chertezh" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "project db" in text
+
+
+def test_skills_have_frontmatter_with_name_and_description():
+    for path in sorted(PLUGIN.glob("skills/*/SKILL.md")):
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("---\n"), path
+        head = text.split("---", 2)[1]
+        assert "name:" in head, path
+        assert "description:" in head, path
+
+
+def test_core_skill_reads_plugin_root_from_marker():
+    text = (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8")
+    assert ".jedicoder/plugin_root" in text
+    assert "cli.py" in text
+
+
+def test_core_skill_requires_contract():
+    text = (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8")
+    assert "contract" in text
+
+
+def test_every_cli_path_in_markdown_resolves():
+    missing = []
+    found_any = False
+    for path in markdown_files():
+        text = path.read_text(encoding="utf-8")
+        for suffix in CLI_PATH.findall(text):
+            found_any = True
+            target = PLUGIN / suffix.lstrip("/")
+            if not target.is_file():
+                missing.append("{}: {} -> нет файла {}".format(path.name, suffix, target))
+    assert found_any, "в markdown не найдено ни одного вызова cli.py — регексп сломан"
+    assert missing == [], missing
+
+
+def test_act1_skill_exists_and_names_track_command():
+    """Скилл обязан называть команду выбора трека.
+
+    Без записанного трека вход в акт откажет, а состояние разрешено менять
+    только через CLI — если скилл не назовёт команду, ассистент полезет в
+    state.json руками, как это было с project db.
+    """
+    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "track craftsman" in text
+    assert "track founder" in text
+
+
+def test_act1_skill_lists_quests_of_both_tracks():
+    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    for quest_id in ("01-idea", "02-one-evening", "03c-who", "03f-market",
+                     "04f-competitors", "05f-icp", "06f-unit", "07f-channel"):
+        assert quest_id in text, "квест {} не описан в скилле".format(quest_id)
+
+
+def test_act1_skill_names_research_paths():
+    """Падаван должен знать, куда класть файлы: проверки читают research/."""
+    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "research/IDEA.md" in text
+    assert "research/SLICE.md" in text
+
+
+def test_hub_skill_names_every_act_skill():
+    """Хаб-скилл обязан знать про каждый акт, у которого есть скилл — иначе
+    он отправит падавана дальше по несуществующей карте (см. Акт 3, который
+    хаб долго не упоминал вовсе, хотя игра уже была им проходима)."""
+    hub = (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8")
+    act_dirs = sorted(p.parent.name for p in PLUGIN.glob("skills/act*/SKILL.md"))
+    missing = [d for d in act_dirs if d not in hub]
+    assert missing == [], "хаб-скилл не знает акты: {}".format(missing)
+
+
+def test_act_skill_points_at_its_own_cutscene_source():
+    """Скилл обязан назвать путь до катсцены СВОЕГО акта.
+
+    Катсцену печатает CLI из контент-ядра, а скилл читает её падавану
+    дословно. Без явного пути ассистент пересказывает по памяти — и книга,
+    терминал и скилл начинают расходиться (так и вырос долг №11).
+    """
+    missing = []
+    for number, info in sorted(ranks.ACTS.items()):
+        slug = info["slug"]
+        path = PLUGIN / "skills" / slug / "SKILL.md"
+        if not path.is_file():
+            missing.append("нет скилла акта {}: {}".format(number, path))
+            continue
+        source = "content/ru/acts/{}.md".format(slug)
+        if source not in path.read_text(encoding="utf-8"):
+            missing.append("{}: не назван источник {}".format(path.name, source))
+    assert missing == [], missing
+
+
+def test_no_skill_carries_an_act_cutscene():
+    """Страж долга №11: катсцена акта живёт ровно в одном месте.
+
+    Раньше act4-shchit/SKILL.md нёс собственный раздел «## Катсцена» с
+    текстом, не совпадающим с content/ru/acts/act4-shchit.md, — терминал
+    рассказывал одно, скилл другое. Без этого теста правка вернётся молча.
+    Врезки уровня квеста (Акт 1 квест 02, Акт 2 квест 05) не запрещены:
+    они не катсцены акта и так и называются.
+    """
+    offenders = [
+        path.parent.name
+        for path in sorted(PLUGIN.glob("skills/*/SKILL.md"))
+        if CUTSCENE_HEADING.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], "текст катсцены акта в скиллах: {}".format(offenders)
+
+
+def test_no_skill_repeats_the_objection_mechanic():
+    """Механика начала квеста живёт ровно в одном месте — правило 7 контракта.
+
+    До этого она жила в шести копиях: behavior.md плюс пять скиллов актов и
+    хаб. Прибивал её текст ровно один тест (`test_contract.py`), и о скиллах
+    он ничего не знал — шесть копий разошлись бы молча. Это тот же класс
+    дефекта, что долг №11: у одного текста должен быть один владелец.
+    Указателю разрешено механику называть; запрещено её излагать заново.
+    """
+    offenders = [
+        path.parent.name
+        for path in sorted(PLUGIN.glob("skills/*/SKILL.md"))
+        if ECHO_MARKERS.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], "вторая формулировка механики в скиллах: {}".format(
+        offenders
+    )
+
+
+def test_no_skill_claims_the_padawan_types_files():
+    """Скилл не имеет права утверждать, что файлы падаван набирает руками.
+
+    `act1-poisk-boli/SKILL.md:96` говорил «Файлы падаван пишет сам» — прямо
+    против правила 8 контракта, по которому модель пишет после подтверждения
+    плана, а суперсила падавана в том, чтобы точно назвать, что должно быть
+    в файле. Противоречие прожило до живого прогона, и ни один из 690 тестов
+    его не заметил.
+    """
+    offenders = [
+        path.parent.name
+        for path in sorted(PLUGIN.glob("skills/*/SKILL.md"))
+        if TYPES_FILES.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], "скилл велит падавану набирать файлы руками: {}".format(
+        offenders
+    )
+
+
+def test_book_answer_command_named_in_every_act_skill():
+    """input() из cli.py невозможен: TTY нет. Ответ про Голокрон пишет
+    только ручка, и назвать её обязан скилл — иначе вопрос без ответа."""
+    missing = []
+    for info in sorted(ranks.ACTS.values(), key=lambda item: item["slug"]):
+        text = (PLUGIN / "skills" / info["slug"] / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        if "book yes" not in text or "book no" not in text:
+            missing.append(info["slug"])
+    assert missing == [], "скиллы не называют ручку book: {}".format(missing)
+
+
+def test_both_subcommand_lists_name_every_subcommand():
+    """Парадные списки падавана обязаны знать все тринадцать подкоманд.
+
+    `test_every_subcommand_is_documented` собирает имена со всех markdown
+    плагина разом, поэтому `book` числился задокументированным по упоминанию
+    `book yes` в скиллах актов — а оба списка, которые модель читает, когда
+    ищет, чем записать ответ, его не знали: в `commands/start.md` не было
+    `book`, в блоке «Команды» хаба — ещё и `artifact`, `link`, `sync`.
+    """
+    missing = []
+    for path in (
+        PLUGIN / "commands" / "start.md",
+        PLUGIN / "skills" / "core" / "SKILL.md",
+    ):
+        named = subcommands_in(path)
+        missing += [
+            "{}: {}".format(path.name, name)
+            for name in cli.SUBCOMMANDS
+            if name not in named
+        ]
+    assert missing == [], "парадный список не называет подкоманды: {}".format(missing)
+
+
+def test_hub_skill_documents_project_two_word_verbs():
+    """`project` — двусловные подкоманды: одинарный regex CALL их не ловит,
+    и test_every_subcommand_is_documented считает `project` документированным
+    по одному упоминанию слова, даже если конкретная ручка (например, `port`)
+    в хабе не названа вовсе."""
+    hub = (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8")
+    for verb in ("project path", "project db", "project port"):
+        assert verb in hub, "хаб не называет `{}`".format(verb)

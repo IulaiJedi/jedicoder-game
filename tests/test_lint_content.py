@@ -1,0 +1,841 @@
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import lint_content  # noqa: E402
+
+from jedicoder import acts as acts_registry  # noqa: E402
+from jedicoder import ranks  # noqa: E402
+
+TERM = (
+    "---\n"
+    "term: {term}\n"
+    "title: {term}\n"
+    "aliases: [{aliases}]\n"
+    "act: 2\n"
+    "category: git\n"
+    "xp: 5\n"
+    "{extra}"
+    "---\n"
+    "Тело термина.\n"
+    "\n"
+    "**Зачем нужно:** чтобы было.\n"
+)
+
+RULE = (
+    "---\n"
+    "rule: {rule}\n"
+    "title: {rule}\n"
+    "act: 1\n"
+    "severity: high\n"
+    "xp: 5\n"
+    "---\n"
+    "Тело правила.\n"
+    "\n"
+    "**Что делать вместо:** иначе.\n"
+)
+
+RECIPE = (
+    "---\n"
+    "recipe: {recipe}\n"
+    "title: {recipe}\n"
+    "stack: [python]\n"
+    "deploy_path: managed\n"
+    "---\n"
+    "Тело рецепта.\n"
+)
+
+
+BEHAVIOR = (
+    "---\n"
+    "contract: behavior\n"
+    "version: 1\n"
+    "---\n"
+    "# Как ты работаешь с падаваном\n"
+    "\n"
+    "Объясняй простым языком.\n"
+)
+
+
+ACT = (
+    "---\n"
+    "act: {act}\n"
+    "slug: {slug}\n"
+    "title: {title}\n"
+    "rank: {rank}\n"
+    "artifact: {artifact}\n"
+    "quests: [{quests}]\n"
+    "quest_titles: [{quest_titles}]\n"
+    "---\n"
+    "{body}\n"
+)
+
+# Тело длиннее порога ACT_BODY_MIN: короткое тело — это отдельный кейс, и
+# все остальные проверки не должны на нём спотыкаться заодно.
+ACT_BODY = "Тело катсцены, достаточно длинное, чтобы пройти порог. " * 6
+
+
+def act_text(number, **overrides):
+    """Валидная катсцена акта, собранная из тех же реестров, с которыми её
+    и сверяет линтер. Дефект вносится точечно через overrides — так тест
+    называет ровно одну разошедшуюся вещь, а не переписывает файл целиком.
+    """
+    info = ranks.ACTS[number]
+    quests = [entry[0] for entry in acts_registry.QUESTS_BY_ACT[number]]
+    fields = {
+        "act": number,
+        "slug": info["slug"],
+        "title": info["title"],
+        "rank": info["rank"],
+        "artifact": info["artifact"],
+        "quests": ", ".join(quests),
+        "quest_titles": ", ".join('"К{}"'.format(i) for i in range(len(quests))),
+        "body": ACT_BODY,
+    }
+    fields.update(overrides)
+    return ACT.format(**fields)
+
+
+def default_acts():
+    return [
+        ("{}.md".format(ranks.ACTS[number]["slug"]), act_text(number))
+        for number in sorted(ranks.ACTS)
+    ]
+
+
+def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=None):
+    for directory in ("lexicon", "codex", "recipes", "acts"):
+        (root / directory).mkdir(parents=True, exist_ok=True)
+    if behavior is not None:
+        (root / "behavior.md").write_text(behavior, encoding="utf-8")
+    for name, text in terms:
+        (root / "lexicon" / name).write_text(text, encoding="utf-8")
+    for name, text in rules:
+        (root / "codex" / name).write_text(text, encoding="utf-8")
+    for name, text in recipes:
+        (root / "recipes" / name).write_text(text, encoding="utf-8")
+    for name, text in (default_acts() if act_files is None else act_files):
+        (root / "acts" / name).write_text(text, encoding="utf-8")
+    return root
+
+
+def lint_synth(root, **kwargs):
+    """Линт синтетического дерева — без правила 3.
+
+    Корпус правила 3 — свойство поставки: он ходит по `plugin/commands` и
+    `plugin/skills`, которых у временной папки нет и быть не может. Гонять
+    его на синтетическом словаре бессмысленно вдвойне: боевые файлы несут
+    маркеры `lint:novelty-ok` со слагами, которых в этом словаре нет, и
+    каждый такой маркер выглядел бы проблемой.
+
+    Само правило 3 проверяется отдельно — там корпус собирается руками и
+    `lint_content.lint` зовётся напрямую.
+    """
+    kwargs.setdefault("corpus", ())
+    return lint_content.lint(root, **kwargs)
+
+
+def test_real_content_is_clean(content_root):
+    assert lint_content.lint(content_root) == []
+
+
+def test_alias_collision_detected(tmp_path):
+    build(
+        tmp_path,
+        terms=[
+            ("a.md", TERM.format(term="aaa", aliases="коммит, aaa", extra="")),
+            ("b.md", TERM.format(term="bbb", aliases="коммит, bbb", extra="")),
+        ],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    problems = lint_synth(tmp_path)
+    assert any("коммит" in p and "aaa" in p and "bbb" in p for p in problems)
+
+
+def test_alias_collision_is_case_insensitive(tmp_path):
+    build(
+        tmp_path,
+        terms=[
+            ("a.md", TERM.format(term="aaa", aliases="Commit, aaa", extra="")),
+            ("b.md", TERM.format(term="bbb", aliases="commit, bbb", extra="")),
+        ],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("commit" in p.lower() for p in lint_synth(tmp_path))
+
+
+def test_duplicate_term_id_detected(tmp_path):
+    build(
+        tmp_path,
+        terms=[
+            ("a.md", TERM.format(term="same", aliases="один", extra="")),
+            ("b.md", TERM.format(term="same", aliases="два", extra="")),
+        ],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("same" in p and "повтор" in p for p in lint_synth(tmp_path))
+
+
+def test_unresolved_related_detected(tmp_path):
+    build(
+        tmp_path,
+        terms=[("a.md", TERM.format(term="aaa", aliases="один", extra="related: [nope]\n"))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("nope" in p for p in lint_synth(tmp_path))
+
+
+def test_unresolved_wiki_link_detected(tmp_path):
+    body_link = TERM.format(term="aaa", aliases="один", extra="")
+    body_link = body_link.replace("Тело термина.", "Смотри [[nothing-here]].")
+    build(
+        tmp_path,
+        terms=[("a.md", body_link)],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("nothing-here" in p for p in lint_synth(tmp_path))
+
+
+def test_missing_required_section_detected(tmp_path):
+    no_section = TERM.format(term="aaa", aliases="один", extra="")
+    no_section = no_section.replace("**Зачем нужно:** чтобы было.", "просто текст")
+    build(
+        tmp_path,
+        terms=[("a.md", no_section)],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("Зачем" in p for p in lint_synth(tmp_path))
+
+
+def test_schema_error_surfaces_as_problem(tmp_path):
+    broken = TERM.format(term="aaa", aliases="один", extra="").replace("category: git\n", "")
+    build(
+        tmp_path,
+        terms=[("a.md", broken)],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("category" in p for p in lint_synth(tmp_path))
+
+
+def _minimal(root, **kwargs):
+    return build(
+        root,
+        terms=[("a.md", TERM.format(term="aaa", aliases="один", extra=""))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+        **kwargs
+    )
+
+
+# --- Катсцены актов. Восемь проверок, по кейсу на каждую. -------------
+
+def test_default_acts_are_clean(tmp_path):
+    """Опора для остальных восьми: набор из реестров проходит линтер."""
+    _minimal(tmp_path)
+    assert lint_synth(tmp_path) == []
+
+
+def test_missing_act_file_detected(tmp_path):
+    """Проверка 1: множество актов совпадает с ключами ranks.ACTS."""
+    _minimal(tmp_path, act_files=default_acts()[:-1])
+    problems = lint_synth(tmp_path)
+    assert any("нет файлов катсцен" in p and "5" in p for p in problems)
+
+
+def test_act_field_diverging_from_ranks_detected(tmp_path):
+    """Проверка 2: rank во фронтматтере разошёлся с ranks.ACTS."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, rank="padawan"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("rank" in p and "ranks.ACTS" in p for p in problems)
+
+
+def test_act_slug_must_match_filename(tmp_path):
+    """Проверка 3: файл переименовали, а фронтматтер забыли."""
+    broken = list(default_acts())
+    broken[0] = ("act1-drugoe-imya.md", act_text(1))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("не совпадает с именем файла" in p for p in problems)
+
+
+def test_duplicate_act_number_detected(tmp_path):
+    """Проверка 4: два файла на один и тот же акт."""
+    broken = list(default_acts())
+    broken.append(("act1-kopiya.md", act_text(1)))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("повторяется" in p and "акт 1" in p for p in problems)
+
+
+def test_short_act_body_detected(tmp_path):
+    """Проверка 5: у катсцены нет маркера секции, её стережёт длина."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, body="Короткая катсцена."))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("короче" in p for p in problems)
+
+
+def test_act_quests_diverging_from_registry_detected(tmp_path):
+    """Проверка 6: опечатка в идентификаторе квеста."""
+    broken = list(default_acts())
+    broken[0] = (
+        broken[0][0],
+        act_text(1).replace("02-one-evening", "02-one-evenng"),
+    )
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("QUESTS_BY_ACT" in p for p in problems)
+
+
+def test_act_quest_titles_count_mismatch_detected(tmp_path):
+    """Проверка 7: подписей меньше, чем квестов — списки разъехались."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, quest_titles='"Идея", "Правило одного вечера"'))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("разъехались" in p for p in problems)
+
+
+def test_empty_quest_title_detected(tmp_path):
+    """Проверка 8: пустая подпись — дыра в списке квестов книги."""
+    quests = [entry[0] for entry in acts_registry.QUESTS_BY_ACT[1]]
+    titles = ['"К{}"'.format(i) for i in range(len(quests))]
+    titles[2] = '""'
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, quest_titles=", ".join(titles)))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("пустая подпись" in p for p in problems)
+
+
+def test_wiki_link_from_act_body_is_checked(tmp_path):
+    """Ссылка в никуда из катсцены ловится так же, как из термина."""
+    broken = list(default_acts())
+    broken[0] = (
+        broken[0][0],
+        act_text(1, body=ACT_BODY + " Смотри [[nichego-net]]."),
+    )
+    _minimal(tmp_path, act_files=broken)
+    assert any("nichego-net" in p for p in lint_synth(tmp_path))
+
+
+def test_missing_behavior_detected(tmp_path):
+    """Без behavior.md первая же команда скилла падала трейсбеком."""
+    _minimal(tmp_path, behavior=None)
+    assert any("behavior.md" in p for p in lint_synth(tmp_path))
+
+
+def test_broken_behavior_frontmatter_detected(tmp_path):
+    _minimal(tmp_path, behavior="# Без фронтматтера\n\nтекст\n")
+    problems = lint_synth(tmp_path)
+    assert any("behavior.md" in p and "фронтматтер" in p for p in problems)
+
+
+def test_empty_behavior_body_detected(tmp_path):
+    _minimal(tmp_path, behavior="---\ncontract: behavior\n---\n\n")
+    assert any("пустое" in p for p in lint_synth(tmp_path))
+
+
+def test_good_behavior_is_clean(tmp_path):
+    _minimal(tmp_path)
+    assert lint_synth(tmp_path) == []
+
+
+# --- Правило 1: потолок длины дословного текста. ----------------------
+
+def recipe_with_body(name, body):
+    """Рецепт с телом ровно заданной длины: длина — предмет проверки."""
+    return (
+        "---\n"
+        "recipe: {}\n"
+        "title: {}\n"
+        "stack: [python]\n"
+        "deploy_path: managed\n"
+        "---\n"
+        "{}\n"
+    ).format(name, name, body)
+
+
+def term_with_body(name, body):
+    return (
+        "---\n"
+        "term: {}\n"
+        "title: {}\n"
+        "aliases: [{}]\n"
+        "act: 2\n"
+        "category: git\n"
+        "xp: 5\n"
+        "---\n"
+        "{}\n"
+    ).format(name, name, name, body)
+
+
+def skills_with(root, files):
+    """Дерево plugin/skills для проверки врезок: имя папки — имя скилла."""
+    for name, text in files:
+        path = root / name / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return root
+
+
+def test_recipe_body_at_limit_is_clean(tmp_path):
+    """Потолок включительный: ровно VERBATIM_MAX символов — норма."""
+    body = "я" * lint_content.VERBATIM_MAX
+    build(
+        tmp_path,
+        terms=[("a.md", TERM.format(term="aaa", aliases="один", extra=""))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", recipe_with_body("ppp", body))],
+    )
+    assert lint_synth(tmp_path) == []
+
+
+def test_recipe_body_over_limit_detected(tmp_path):
+    """901 символ при потолке 900 — падаван получит стену текста."""
+    body = "я" * (lint_content.VERBATIM_MAX + 1)
+    build(
+        tmp_path,
+        terms=[("a.md", TERM.format(term="aaa", aliases="один", extra=""))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", recipe_with_body("ppp", body))],
+    )
+    problems = lint_synth(tmp_path)
+    assert any("рецепт ppp" in p and "901" in p and "900" in p for p in problems)
+
+
+def test_long_act_body_detected(tmp_path):
+    """Катсцена меряется тем же правилом, что рецепт."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, body="я" * 1200))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("катсцена act1-poisk-boli" in p and "1200" in p for p in problems)
+
+
+def test_long_rule_body_detected(tmp_path):
+    """Правило Кодекса — тоже дословный текст."""
+    long_rule = RULE.format(rule="rrr").replace("Тело правила.", "я" * 1000)
+    build(
+        tmp_path,
+        terms=[("a.md", TERM.format(term="aaa", aliases="один", extra=""))],
+        rules=[("r.md", long_rule)],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("правило rrr" in p for p in lint_synth(tmp_path))
+
+
+def test_long_loot_card_detected(tmp_path):
+    """Карточка меряется render_card — тем кодом, которым печатается."""
+    body = (
+        "**ххх** — " + "я" * 950 + "\n\n**Зачем нужно:** чтобы было.\n"
+    )
+    build(
+        tmp_path,
+        terms=[("a.md", term_with_body("xxx", body))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert any("карточка xxx" in p for p in lint_synth(tmp_path))
+
+
+def test_short_loot_card_without_why_section_is_fine(tmp_path):
+    """Без секции «Зачем нужно» карточка короче — это не длина, а другая
+    проблема, и ловить её обязана проверка секции, а не потолок."""
+    body = "**ххх** — короткое определение.\n"
+    build(
+        tmp_path,
+        terms=[("a.md", term_with_body("xxx", body))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    problems = lint_synth(tmp_path)
+    assert not any("символов, потолок" in p for p in problems)
+
+
+def test_long_skill_quote_block_detected(tmp_path):
+    """Врезка `> …` в SKILL.md — категория A: её проигрывают дословно."""
+    content_dir = tmp_path / "content"
+    skills_dir = skills_with(
+        tmp_path / "skills",
+        [("act1", "# Скилл\n\n" + "\n".join("> " + "я" * 100 for _ in range(10)))],
+    )
+    _minimal(content_dir)
+    problems = lint_synth(content_dir, skills_root=skills_dir)
+    assert any("врезка" in p and "act1" in p for p in problems)
+
+
+def test_two_quote_blocks_counted_separately(tmp_path):
+    """Две цитаты через строку обычного текста — два блока, а не один."""
+    content_dir = tmp_path / "content"
+    half = "\n".join("> " + "я" * 100 for _ in range(6))
+    skills_dir = skills_with(
+        tmp_path / "skills",
+        [("act1", "# Скилл\n\n" + half + "\n\nобычный текст\n\n" + half + "\n")],
+    )
+    _minimal(content_dir)
+    problems = lint_synth(content_dir, skills_root=skills_dir)
+    # Суммарно 1200+ символов, но каждый блок под потолком — молчим.
+    assert not any("врезка" in p for p in problems)
+
+
+def test_shipped_recipes_are_under_limit(content_root):
+    """Живой дефект, ради которого правило заведено: три рецепта поставки.
+
+    Меряем тем же `visible_length`, что и линтер: служебные комментарии
+    (маркеры правила 3) падавану не доезжают, и своя копия расчёта здесь
+    разошлась бы с прибором молча.
+    """
+    from jedicoder import content as content_mod
+
+    longest = max(
+        lint_content.visible_length(r.body)
+        for r in content_mod.load_recipes(content_root)
+    )
+    assert longest <= lint_content.VERBATIM_MAX
+
+
+# --- Правило 2: бюджет новизны на квест. ------------------------------
+
+def terms_on_quest(count, quest="04-git-init"):
+    """count терминов Акта 2, объявивших одну и ту же точку введения."""
+    return [
+        (
+            "t{}.md".format(i),
+            TERM.format(
+                term="term{}".format(i),
+                aliases="слово{}".format(i),
+                extra="quest: {}\n".format(quest),
+            ),
+        )
+        for i in range(count)
+    ]
+
+
+def test_three_terms_on_one_quest_is_clean(tmp_path):
+    """Бюджет включительный: ровно NOVELTY_MAX — норма."""
+    build(
+        tmp_path,
+        terms=terms_on_quest(lint_content.NOVELTY_MAX),
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert lint_synth(tmp_path) == []
+
+
+def test_four_terms_on_one_quest_detected(tmp_path):
+    """Четвёртый термин на квесте — стена новых слов за один шаг."""
+    build(
+        tmp_path,
+        terms=terms_on_quest(lint_content.NOVELTY_MAX + 1),
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    problems = lint_synth(tmp_path)
+    named = [p for p in problems if "04-git-init" in p and "потолке 3" in p]
+    assert len(named) == 1
+    for i in range(4):
+        assert "term{}".format(i) in named[0]
+
+
+def test_unknown_quest_detected(tmp_path):
+    """quest, которого нет в реестре акта, — отдельная проблема."""
+    build(
+        tmp_path,
+        terms=terms_on_quest(1, quest="99-nope"),
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    problems = lint_synth(tmp_path)
+    hit = [p for p in problems if "99-nope" in p]
+    assert len(hit) == 1
+    # Перечислены допустимые id — иначе автору нечем себя починить.
+    assert "04-git-init" in hit[0] and "01-recipe" in hit[0]
+
+
+def test_term_without_quest_is_not_counted(tmp_path):
+    """Термин без quest не участвует в бюджете вовсе: поле необязательное."""
+    many = [
+        ("t{}.md".format(i), TERM.format(
+            term="term{}".format(i), aliases="слово{}".format(i), extra=""
+        ))
+        for i in range(6)
+    ]
+    build(
+        tmp_path,
+        terms=many,
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert lint_synth(tmp_path) == []
+
+
+def test_quest_without_terms_is_not_a_problem(tmp_path):
+    """Пустой квест нарушением не является: правило про превышение."""
+    build(
+        tmp_path,
+        terms=terms_on_quest(1),
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    problems = lint_synth(tmp_path)
+    assert not any("05-env-guard" in p for p in problems)
+    assert problems == []
+
+
+def test_novelty_problem_order_is_deterministic(tmp_path):
+    """Два квеста над бюджетом — порядок сообщений повторяется."""
+    terms = []
+    for quest in ("05-env-guard", "01-recipe"):
+        for i in range(4):
+            terms.append((
+                "{}-{}.md".format(quest, i),
+                TERM.format(
+                    term="{}-{}".format(quest, i),
+                    aliases="слово-{}-{}".format(quest, i),
+                    extra="quest: {}\n".format(quest),
+                ),
+            ))
+    build(
+        tmp_path,
+        terms=terms,
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    first = lint_synth(tmp_path)
+    assert first == lint_synth(tmp_path)
+    quests = [p for p in first if "потолке 3" in p]
+    assert len(quests) == 2
+    # sorted по (акт, квест): 01-recipe раньше 05-env-guard.
+    assert "01-recipe" in quests[0] and "05-env-guard" in quests[1]
+
+
+def test_shipped_content_has_no_novelty_violation(content_root):
+    """Правило приезжает вхолостую: поле quest ещё никто не объявил."""
+    from jedicoder import content as content_mod
+
+    terms = content_mod.load_terms(content_root)
+    assert lint_content._novelty_problems(terms) == []
+
+
+# --- Правило 3: запрет опережающего употребления. ---------------------
+
+def corpus_file(tmp_path, name, position, text):
+    """Один файл корпуса правила 3: (подпись, позиция, путь)."""
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return (name, position, path)
+
+
+def early_terms(tmp_path, act=3, aliases="порт", extra=""):
+    """Один термин заданного акта — минимум для правила 3."""
+    build(
+        tmp_path / "content",
+        terms=[("t.md", TERM.format(
+            term="port", aliases=aliases, extra=extra,
+        ).replace("act: 2", "act: {}".format(act)))],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    from jedicoder import content as content_mod
+
+    return content_mod.load_terms(tmp_path / "content")
+
+
+def test_early_use_detected(tmp_path):
+    """Слово акта 3 в тексте позиции 0 — одна проблема с именем термина."""
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(tmp_path, "start.md", 0, "Запомнить порт проекта.")]
+    problems = lint_content._early_use_problems(terms, corpus)
+    assert len(problems) == 1
+    assert "port" in problems[0] and "start.md" in problems[0]
+    assert "порт" in problems[0]
+
+
+def test_early_use_inside_skip_region_is_silent(tmp_path):
+    """Тот же текст внутри региона-справочника — не проблема."""
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(
+        tmp_path, "start.md", 0,
+        "{}\nЗапомнить порт проекта.\n{}\n".format(
+            lint_content.NOVELTY_SKIP_OPEN, lint_content.NOVELTY_SKIP_CLOSE
+        ),
+    )]
+    assert lint_content._early_use_problems(terms, corpus) == []
+
+
+def test_novelty_ok_marker_allows_term(tmp_path):
+    """Маркер novelty-ok со слагом термина снимает ровно этот термин."""
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(
+        tmp_path, "start.md", 0,
+        "<!-- lint:novelty-ok: port — причина -->\nЗапомнить порт.\n",
+    )]
+    assert lint_content._early_use_problems(terms, corpus) == []
+
+
+def test_novelty_ok_marker_is_file_scoped(tmp_path):
+    """Маркер разрешает слово в своём файле, но не в следующем.
+
+    Иначе одна пометка глушила бы правило по всему корпусу — а маркер
+    объявлен как разрешение на одно слово в одном файле.
+    """
+    terms = early_terms(tmp_path)
+    corpus = [
+        corpus_file(tmp_path, "start.md", 0,
+                    "<!-- lint:novelty-ok: port — причина -->\nпорт\n"),
+        corpus_file(tmp_path, "core.md", 0, "и снова порт\n"),
+    ]
+    problems = lint_content._early_use_problems(terms, corpus)
+    assert len(problems) == 1
+    assert "core.md" in problems[0]
+
+
+def test_unknown_novelty_ok_slug_is_a_problem(tmp_path):
+    """Слаг, которого нет среди терминов, — отдельная проблема."""
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(
+        tmp_path, "start.md", 0, "<!-- lint:novelty-ok: nosuchterm -->\n",
+    )]
+    problems = lint_content._early_use_problems(terms, corpus)
+    assert len(problems) == 1
+    assert "nosuchterm" in problems[0]
+
+
+def test_unclosed_skip_marker_is_a_problem_and_cuts_nothing(tmp_path):
+    """Незакрытый маркер — проблема, а не молчаливое вырезание хвоста.
+
+    Молчаливое вырезание отключило бы правило до конца файла, и заметить
+    это было бы нечем: линтер остался бы зелёным.
+    """
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(
+        tmp_path, "start.md", 0,
+        "{}\nЗапомнить порт проекта.\n".format(lint_content.NOVELTY_SKIP_OPEN),
+    )]
+    problems = lint_content._early_use_problems(terms, corpus)
+    assert any("не закрыт" in p for p in problems)
+    # Хвост не вырезан: слово по-прежнему найдено.
+    assert any("port" in p and "позиция 0" in p for p in problems)
+
+
+def test_use_in_own_or_later_act_is_clean(tmp_path):
+    """Слово в тексте своего акта и позже — норма, ради этого всё и было."""
+    terms = early_terms(tmp_path)
+    corpus = [
+        corpus_file(tmp_path, "act3.md", 3, "Запомнить порт проекта."),
+        corpus_file(tmp_path, "act5.md", 5, "И снова порт."),
+    ]
+    assert lint_content._early_use_problems(terms, corpus) == []
+
+
+def test_term_absent_everywhere_is_clean(tmp_path):
+    """Термин, не встречающийся нигде, правилу не мешает.
+
+    Шесть терминов поставки (interface, script, localhost, subagent,
+    dependencies, hook) намеренно не лежат ни в одном нашем файле — они
+    заведены под лут. Правило запрещает раннее появление, а не отсутствие.
+    """
+    terms = early_terms(tmp_path)
+    corpus = [corpus_file(tmp_path, "start.md", 0, "Ни слова по теме.")]
+    assert lint_content._early_use_problems(terms, corpus) == []
+
+
+def test_missing_corpus_file_is_skipped_silently(tmp_path):
+    """Файла из корпуса нет на диске — молчим; пустой файл не проблема."""
+    terms = early_terms(tmp_path)
+    corpus = [
+        ("нет-такого.md", 0, tmp_path / "нет-такого.md"),
+        corpus_file(tmp_path, "пусто.md", 0, ""),
+    ]
+    assert lint_content._early_use_problems(terms, corpus) == []
+
+
+def test_early_use_reports_only_first_position(tmp_path):
+    """Сообщается первое вхождение, а не все: чинится всё равно первое."""
+    terms = early_terms(tmp_path)
+    corpus = [
+        corpus_file(tmp_path, "start.md", 0, "порт"),
+        corpus_file(tmp_path, "behavior.md", 0, "порт"),
+        corpus_file(tmp_path, "act1.md", 1, "порт"),
+    ]
+    problems = lint_content._early_use_problems(terms, corpus)
+    assert len(problems) == 1
+    assert "start.md" in problems[0]
+
+
+def test_early_use_order_is_deterministic(tmp_path):
+    """Термины перебираются по (акт, термин) — вывод повторяется."""
+    build(
+        tmp_path / "content",
+        terms=[
+            ("a.md", TERM.format(term="zzz", aliases="зет", extra="")),
+            ("b.md", TERM.format(term="aaa", aliases="эй", extra="")),
+        ],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    from jedicoder import content as content_mod
+
+    terms = content_mod.load_terms(tmp_path / "content")
+    corpus = [corpus_file(tmp_path, "start.md", 0, "зет и эй")]
+    first = lint_content._early_use_problems(terms, corpus)
+    assert first == lint_content._early_use_problems(terms, corpus)
+    assert len(first) == 2
+    assert first[0].startswith("aaa") and first[1].startswith("zzz")
+
+
+def test_corpus_positions_are_ordered(content_root):
+    """Корпус поставки идёт по возрастанию позиции — иначе «первое»
+    вхождение считалось бы не в том порядке."""
+    corpus = lint_content.ordered_corpus(content_root)
+    positions = [position for _, position, _ in corpus]
+    assert positions == sorted(positions)
+    assert positions[0] == 0
+    labels = [label for label, _, _ in corpus]
+    assert "start.md" in labels and "core/SKILL.md" in labels
+
+
+def test_shipped_corpus_has_no_early_use(content_root):
+    """Поставка чиста по правилу 3 — то, ради чего план и писался."""
+    from jedicoder import content as content_mod
+
+    terms = content_mod.load_terms(content_root)
+    assert lint_content._early_use_problems(
+        terms, lint_content.ordered_corpus(content_root)
+    ) == []
+
+
+def test_visible_length_ignores_comments():
+    """Служебный комментарий в счёт длины не идёт: падаван его не видит."""
+    text = "Текст.<!-- lint:novelty-ok: port — причина -->"
+    assert lint_content.visible_length(text) == len("Текст.")
+
+
+def test_main_exit_codes(tmp_path, content_root, capsys):
+    assert lint_content.main([str(content_root)]) == 0
+    build(
+        tmp_path,
+        terms=[
+            ("a.md", TERM.format(term="aaa", aliases="дубль", extra="")),
+            ("b.md", TERM.format(term="bbb", aliases="дубль", extra="")),
+        ],
+        rules=[("r.md", RULE.format(rule="rrr"))],
+        recipes=[("p.md", RECIPE.format(recipe="ppp"))],
+    )
+    assert lint_content.main([str(tmp_path)]) == 1
+    assert "дубль" in capsys.readouterr().out
