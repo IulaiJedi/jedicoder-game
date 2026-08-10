@@ -65,6 +65,9 @@ python3 "$(cat ~/.jedicoder/plugin_root)/lib/jedicoder/cli.py" project db yes
 python3 "$(cat ~/.jedicoder/plugin_root)/lib/jedicoder/cli.py" project path /путь/к/проекту
 ```
 
+Папка — одного продукта, а не общая свалка: `git init` этого акта заведёт
+историю на всё, что в ней лежит, и разделить её потом уже нельзя.
+
 ## Квест 05 — здесь играется врезка
 
 Это врезка уровня квеста, а не катсцена акта: она про ключ, уехавший в
