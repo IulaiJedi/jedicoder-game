@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from jedicoder import content
@@ -364,9 +366,12 @@ ACT_OK = (
     "slug: act1-poisk-boli\n"
     "title: Поиск боли\n"
     "rank: seeker\n"
+    "rank_title: Искатель\n"
     "artifact: brainstorm\n"
+    "axis: track\n"
     "quests: [01-idea, 02-one-evening]\n"
     'quest_titles: ["Идея", "Фильтр Хатта"]\n'
+    "quest_branches: [both, both]\n"
     "---\n"
     "Ты пришёл строить. Начнём с того, что строить пока нечего.\n"
 )
@@ -394,6 +399,56 @@ def test_act_quests_match_registry(content_root):
         assert item.quests == expected, item.path.name
 
 
+def test_act_quest_branches_match_registry(content_root):
+    """Ветка каждого квеста во фронтматтере — та же, что метка на квесте в
+    acts.QUESTS_BY_ACT, позиция в позицию. Голокрон собирает доску из
+    контента, движок фильтрует состав акта по реестру: разойдись они, доска
+    обещала бы падавану чужие квесты при полностью зелёном суите."""
+    from jedicoder import acts
+
+    for item in content.load_acts(content_root):
+        expected = tuple(branch for _, _, branch in acts.QUESTS_BY_ACT[item.act])
+        assert item.quest_branches == expected, item.path.name
+
+
+def test_act_axis_matches_registry(content_root):
+    """Ось развилки во фронтматтере совпадает с acts.ACT_AXIS: не названная
+    там ось — трек, названная AXIS_DEPLOY — путь деплоя. Сегодня это один
+    Акт 4, и именно поэтому расхождение не заметить глазами."""
+    from jedicoder import acts
+
+    for item in content.load_acts(content_root):
+        if acts.ACT_AXIS.get(item.act) == acts.AXIS_DEPLOY:
+            assert item.axis == "deploy", item.path.name
+        else:
+            assert item.axis == "track", item.path.name
+
+
+def test_act_rank_title_matches_ranks_module(content_root):
+    """Русское имя ранга во фронтматтере — то же, что печатает игра из
+    ranks.RANK_TITLES: сцена Голокрона и терминал обязаны звать ранг одним
+    словом."""
+    from jedicoder import ranks
+
+    for item in content.load_acts(content_root):
+        assert item.rank_title == ranks.RANK_TITLES[item.rank], item.path.name
+
+
+def test_branch_and_axis_vocabulary_agrees_with_registry():
+    """Словари схемы — копии констант движка, а не импорт (слоистость та же,
+    что у ACT_RANKS), поэтому совпадение обязано быть видимым тестом."""
+    from jedicoder import acts
+
+    assert set(content.AXES) == {"track", acts.AXIS_DEPLOY}
+    assert set(content.BRANCHES_BY_AXIS) == set(content.AXES)
+    assert set(content.BRANCHES_BY_AXIS["track"]) == (
+        {acts.BRANCH_BOTH} | set(acts.TRACKS)
+    )
+    assert set(content.BRANCHES_BY_AXIS["deploy"]) == (
+        {acts.BRANCH_BOTH} | set(acts.DEPLOYS)
+    )
+
+
 def test_act_ranks_agree_with_ranks_module():
     """Союз держится линтером, а не импортом: content.py — нижний слой
     схемы, и обратный импорт из ranks.py перевернул бы слоистость. Раз
@@ -410,6 +465,83 @@ def test_act_fields_parsed(tmp_path):
     assert act.title == "Поиск боли"
     assert act.quests == ("01-idea", "02-one-evening")
     assert act.quest_titles == ("Идея", "Фильтр Хатта")
+
+
+def test_act_self_description_parsed(tmp_path):
+    """Акт описывает себя сам: ветка каждого квеста, ось развилки и русское
+    имя ранга читаются из фронтматтера, а не выводятся из реестра движка.
+    Ради этого поля и заведены — Голокрон и сайт собирают доску квестов из
+    контента, не зная acts.py."""
+    write(tmp_path, "acts/act1-poisk-boli.md", ACT_OK)
+    act = content.load_acts(tmp_path)[0]
+    assert act.quest_branches == ("both", "both")
+    assert act.axis == "track"
+    assert act.rank_title == "Искатель"
+
+
+@pytest.mark.parametrize("line", [
+    "rank_title: Искатель\n",
+    "axis: track\n",
+    "quest_branches: [both, both]\n",
+])
+def test_act_without_self_description_rejected(tmp_path, line):
+    """Каждое из трёх полей обязательно: акт без него — не самоописание,
+    а половина карты, и Голокрон нарисовал бы доску без веток."""
+    assert line in ACT_OK
+    write(tmp_path, "acts/act1-poisk-boli.md", ACT_OK.replace(line, ""))
+    key = line.split(":")[0]
+    with pytest.raises(content.ContentError, match=key):
+        content.load_acts(tmp_path)
+
+
+def test_act_unknown_axis_rejected(tmp_path):
+    write(
+        tmp_path,
+        "acts/act1-poisk-boli.md",
+        ACT_OK.replace("axis: track", "axis: moon"),
+    )
+    with pytest.raises(content.ContentError, match="axis"):
+        content.load_acts(tmp_path)
+
+
+def test_act_unknown_quest_branch_rejected(tmp_path):
+    """Ветка не из словаря — опечатка, из-за которой квест не попал бы ни в
+    одну ветку доски и молча исчез бы у всех падаванов."""
+    write(
+        tmp_path,
+        "acts/act1-poisk-boli.md",
+        ACT_OK.replace("quest_branches: [both, both]", "quest_branches: [both, sith]"),
+    )
+    with pytest.raises(content.ContentError, match="quest_branches.*sith"):
+        content.load_acts(tmp_path)
+
+
+@pytest.mark.parametrize("axis, branch", [
+    ("track", "managed"),
+    ("deploy", "craftsman"),
+])
+def test_act_branch_of_other_axis_rejected(tmp_path, axis, branch):
+    """Ветка чужой оси — ошибка схемы, а не незнакомое слово: у одного акта
+    не бывает квестов, ветвящихся по разным осям, и читатель без движка
+    (Голокрон) обязан узнать это из самой схемы, а не из реестра."""
+    text = ACT_OK.replace("axis: track", "axis: " + axis).replace(
+        "quest_branches: [both, both]", "quest_branches: [both, {}]".format(branch)
+    )
+    write(tmp_path, "acts/act1-poisk-boli.md", text)
+    with pytest.raises(
+        content.ContentError, match="quest_branches.*{}.*{}".format(branch, axis)
+    ):
+        content.load_acts(tmp_path)
+
+
+def test_act_quest_branches_must_be_list(tmp_path):
+    write(
+        tmp_path,
+        "acts/act1-poisk-boli.md",
+        ACT_OK.replace("quest_branches: [both, both]", "quest_branches: both"),
+    )
+    with pytest.raises(content.ContentError, match="quest_branches"):
+        content.load_acts(tmp_path)
 
 
 def test_act_without_quest_titles_rejected(tmp_path):
@@ -455,3 +587,141 @@ def test_dark_side_rules_present(content_root):
         "env-never-in-git", "rm-rf-outside-project",
         "no-root-in-production", "vague-prompt",
     } <= rules
+
+
+# --- Реплики Магистра: по файлу на событие, варианты по одному на абзац. --
+#
+# Голокрон подбирает реплику к событию сцены, и событие у него — то же
+# слово, что в очереди state.EVENT_TYPES. Реплика доезжает до падавана
+# дословно, одной строкой на панели: перенос внутри варианта — не стиль, а
+# сломанная строка.
+
+REMARK_OK = (
+    "---\n"
+    "event: quest_completed\n"
+    "# Служебная заметка: парсер её пропускает, в варианты она не попадает.\n"
+    "---\n"
+    "Зачёт. Такую проверку я, помню, проходил с третьего раза.\n"
+    "\n"
+    "Первую зелёную проверку я никому не показал. Зря: было чем.\n"
+    "\n"
+    "После зачёта я всегда бежал дальше, не глядя.\n"
+)
+
+
+def test_magistr_events_agree_with_state_module():
+    """Реплика есть на каждое событие сцены, кроме привязки: linked — факт
+    про бота, а не про путь падавана, и сцена на него не отзывается.
+    Словарь событий — копия из state.py, а не импорт: content.py — нижний
+    слой схемы, поэтому совпадение держит тест."""
+    from jedicoder import state
+
+    assert set(content.MAGISTR_EVENTS) == set(state.EVENT_TYPES) - {"linked"}
+    assert len(content.MAGISTR_EVENTS) == 9
+
+
+def test_remark_variants_parsed_per_paragraph(tmp_path):
+    """Варианты — абзацы тела, по одному на пустую строку между ними.
+    Запятая внутри варианта остаётся на месте: ради этого варианты и лежат
+    в теле, а не в inline-списке фронтматтера (долг №12 режет список по
+    запятой до снятия кавычек)."""
+    write(tmp_path, "magistr/quest_completed.md", REMARK_OK)
+    items = content.load_remarks(tmp_path)
+    assert len(items) == 1
+    item = items[0]
+    assert item.event == "quest_completed"
+    assert item.variants == (
+        "Зачёт. Такую проверку я, помню, проходил с третьего раза.",
+        "Первую зелёную проверку я никому не показал. Зря: было чем.",
+        "После зачёта я всегда бежал дальше, не глядя.",
+    )
+
+
+def test_remark_wrapped_variant_rejected(tmp_path):
+    """Вариант, перенесённый на вторую строку, — не два варианта и не один
+    длинный: загрузчик не угадывает, а отказывается. Иначе привычный
+    перенос по 80 колонок, которым набран весь остальной контент, молча дал
+    бы падавану половину фразы."""
+    wrapped = REMARK_OK.replace(
+        "Первую зелёную проверку я никому не показал. Зря: было чем.",
+        "Первую зелёную проверку я никому не показал.\nЗря: было чем.",
+    )
+    write(tmp_path, "magistr/quest_completed.md", wrapped)
+    with pytest.raises(content.ContentError, match="вариант №2.*строк"):
+        content.load_remarks(tmp_path)
+
+
+def test_remark_for_linked_event_rejected(tmp_path):
+    """linked — единственное событие очереди без реплики, и файл на него —
+    ошибка схемы, а не лишний файл: сцена такого события не знает."""
+    write(
+        tmp_path,
+        "magistr/linked.md",
+        REMARK_OK.replace("event: quest_completed", "event: linked"),
+    )
+    with pytest.raises(content.ContentError, match="event 'linked'"):
+        content.load_remarks(tmp_path)
+
+
+def test_remark_without_event_rejected(tmp_path):
+    """event — единственное обязательное поле: без него реплику некуда
+    отнести. Больше во фронтматтере ничего не требуется — заметка о том,
+    когда реплика звучит, живёт строкой-комментарием."""
+    write(
+        tmp_path, "magistr/quest_completed.md",
+        REMARK_OK.replace("event: quest_completed\n", ""),
+    )
+    with pytest.raises(content.ContentError, match="event"):
+        content.load_remarks(tmp_path)
+
+
+def test_remarks_by_event_keyed_like_the_event_queue(content_root):
+    """Реплики отдаются по типу события — тем же словом, что кладёт в
+    очередь движок: читатель события не листает список."""
+    by_event = content.remarks_by_event(content_root)
+    assert set(by_event) == set(content.MAGISTR_EVENTS)
+    assert by_event["quest_failed"].event == "quest_failed"
+    assert len(by_event["quest_failed"].variants) >= 3
+
+
+def test_remark_directory_is_required(tmp_path):
+    """Папки реплик нет — ошибка, а не пустой список: Голокрон без реплик
+    молчит, и молчание поставки должно быть видно линтеру, а не падавану."""
+    with pytest.raises(content.ContentError, match="нет папки"):
+        content.load_remarks(tmp_path)
+
+
+def test_loads_real_remarks(content_root):
+    """Поставка: файл на каждое из девяти событий, не меньше трёх вариантов,
+    каждый — одна строка. Дубль правил линтера намеренный, как у терминов:
+    линтер защищает CI, тест — от того, что правило линтера кто-то снимет."""
+    items = content.load_remarks(content_root)
+    assert sorted(item.event for item in items) == sorted(content.MAGISTR_EVENTS)
+    for item in items:
+        assert item.event == item.path.stem, item.path.name
+        assert len(item.variants) >= 3, item.path.name
+        assert len(set(item.variants)) == len(item.variants), item.path.name
+        for text in item.variants:
+            assert "\n" not in text, item.path.name
+
+
+# Признаки первого лица. Правило голоса из спеки героя — «одна строка, от
+# первого лица, про свою ошибку» — линтер прочитать не умеет, и тест не
+# притворяется, что умеет: он декларативный и ловит только самый громкий
+# сбой — реплику-открытку («Поздравляю, так держать»), в которой Магистра
+# нет вовсе. Голос проверяется чтением автора, а не этим списком.
+FIRST_PERSON = re.compile(
+    r"(?<!\w)(я|мне|меня|мной|мною|мо[йяёие]|мо(?:его|ей|их|им|ему|ём|ею|ими))(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def test_real_remarks_speak_in_first_person(content_root):
+    """В каждой реплике есть местоимение первого лица."""
+    silent = [
+        "{}: {}".format(item.path.name, text)
+        for item in content.load_remarks(content_root)
+        for text in item.variants
+        if not FIRST_PERSON.search(text)
+    ]
+    assert silent == [], "реплики без первого лица:\n" + "\n".join(silent)

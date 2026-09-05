@@ -3,9 +3,12 @@ act: 2
 slug: act2-chertezh
 title: Чертёж
 rank: padawan
+rank_title: Падаван
 artifact: plan
+axis: track
 quests: [01-recipe, 02-claude-md, 03-db-schema, 04-git-init, 05-env-guard, 06-pipeline]
 quest_titles: ["Стек по рецепту", "Паспорт проекта", "Схема базы", "Первый коммит", "Защита .env", "Схема пайплайна"]
+quest_branches: [both, both, both, both, both, both]
 ---
 
 Замысел у тебя. Теперь самое дорогое, что ты можешь сделать, — сразу сесть

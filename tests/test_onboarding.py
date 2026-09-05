@@ -2,8 +2,11 @@
 
 Проверяется **прибор**, а не поставка: каждый тест портит синтетическое
 дерево во временной папке и требует, чтобы линтер покраснел. Поставку
-меряет `test_shipped_onboarding_is_clean` — один тест на всё, потому что
-зелёная поставка ничего не доказывает про прибор.
+прибором меряет `test_shipped_onboarding_is_clean` — один тест на всё,
+потому что зелёная поставка ничего не доказывает про прибор. Отдельно от
+него стоят именные стражи состава (раздел «Поставка: узел Голокрона»):
+линтер меряет форму дерева, а форма ничего не говорит о том, какие шаги в
+нём стоят и где.
 
 Почему это вообще есть. Узел без выхода и кнопка в несуществующий узел —
 тупик, из которого человек выбирается закрытием бота. Найти такое на живом
@@ -120,6 +123,96 @@ def test_shipped_onboarding_is_clean(content_root):
     items = content.load_onboarding(content_root)
     assert items, "поставка потеряла Акт 0"
     assert lint_content._onboarding_problems(items) == []
+
+
+# --- Поставка: узел Голокрона -----------------------------------------
+#
+# Именные стражи того же рода, что ACT0_TERMS в test_content.py: линтер
+# меряет форму дерева, а не то, какие шаги в нём стоят и в каком порядке.
+# Узел Голокрона — необязательный шаг, и место у него одно: после первого
+# запуска игры (Голокрон читает сохранение и поставленную игру — до них он
+# показал бы лишь, чего не хватает) и перед ключом. За ключ его не повесить:
+# ключ выдаётся ботом по разделу узла, и узел этот обязан быть терминальным
+# — см. test_link_node_is_unique_and_terminal ниже.
+
+GOLOKRON_NODE = "golokron"
+GOLOKRON_URL = "https://jedicoder.store/golokron"
+# Два шага мимо предупреждения SmartScreen — то, что человек ищет глазами в
+# момент испуга. Подписи кнопок Windows приводятся дословно, в «ёлочках».
+SMARTSCREEN_STEPS = ("«Подробнее»", "«Выполнить в любом случае»")
+# Две ветки первого запуска — терминал и приложение Claude (развилка узла
+# plugin-install). Обе обязаны сходиться на Голокроне: он третий мир, в
+# котором запускают игру, и предлагать его только терминальной ветке
+# значило бы спрятать его от половины людей.
+FIRST_LAUNCH_NODES = ("game-start", "app-project")
+LINK_SECTION = "link"
+
+
+def shipped_nodes(content_root):
+    from jedicoder import content
+
+    return {item.node: item for item in content.load_onboarding(content_root)}
+
+
+def the_link_node(by_node):
+    """Единственный узел раздела link — конец пути, по которому бот выдаёт ключ.
+
+    Уникальность утверждается здесь, а не распаковкой кортежа: второй узел
+    раздела обязан упасть с именами обоих, а не с голым ValueError.
+    """
+    link = [item for item in by_node.values() if item.section == LINK_SECTION]
+    assert len(link) == 1, "узлов раздела link не один: {}".format(
+        ", ".join(item.node for item in link)
+    )
+    return link[0]
+
+
+def test_golokron_step_follows_first_launch_and_precedes_the_key(content_root):
+    """Место узла: в него ведут обе ветки первого запуска, из него — только в ключ.
+
+    Порядок чтения на сайте и в markdown задаёт поле order, а порядок
+    кнопок в боте — переходы; тест держит оба, чтобы человек на сайте не
+    прочитал шаг раньше, чем бот его предложит.
+    """
+    by_node = shipped_nodes(content_root)
+    assert GOLOKRON_NODE in by_node, "в поставке нет узла Голокрона"
+    step = by_node[GOLOKRON_NODE]
+    for launch in FIRST_LAUNCH_NODES:
+        assert GOLOKRON_NODE in by_node[launch].options, (
+            "ветка первого запуска {} обходит Голокрон".format(launch)
+        )
+        assert by_node[launch].order < step.order
+    link = the_link_node(by_node)
+    assert step.options == (link.node,), "из Голокрона путь ведёт не к ключу"
+    assert step.order < link.order
+
+
+def test_golokron_step_names_download_page_and_smartscreen_path(content_root):
+    """Адрес страницы загрузки и два шага мимо предупреждения — дословно.
+
+    Адрес закреплён спекой сайта раньше, чем появилась страница; подписи
+    кнопок Windows — ровно те, что человек увидит на экране. Остальное в
+    узле — текст, и его правдивость меряется не тестом, а глазами.
+    """
+    text = lint_content.visible_text(shipped_nodes(content_root)[GOLOKRON_NODE].body)
+    assert GOLOKRON_URL in text
+    for label in SMARTSCREEN_STEPS:
+        assert label in text, "в узле нет шага {}".format(label)
+    assert "Windows" in text
+
+
+def test_link_node_is_unique_and_terminal(content_root):
+    """Ограничение бота, продиктовавшее место Голокрона.
+
+    Бот выдаёт ключ по разделу узла: второй узел раздела link завёл бы
+    строку падавана дважды за проход, а кнопка у конца пути — узел после
+    ключа. До сих пор это знал только тест бота в другом репозитории —
+    коммит c9c3f9e этого репозитория так и записал: «дефект нашли тесты
+    бота, а не свои». Здесь то же правило стоит у источника, чтобы
+    следующий узел «после ключа» краснел до генератора, а не после выкатки.
+    """
+    link = the_link_node(shipped_nodes(content_root))
+    assert link.options == (), "у конца пути появились кнопки"
 
 
 # --- Связность дерева -------------------------------------------------

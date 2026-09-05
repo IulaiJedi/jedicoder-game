@@ -3,7 +3,7 @@ node: app-project
 title: Первый запуск в приложении
 order: 57
 section: first-session
-options: [link-key, no-command]
+options: [golokron, no-command]
 option_titles: ["Игра ответила", "Такой команды нет"]
 ---
 Тогда папку руками заводить не надо: приложение спросит её само.

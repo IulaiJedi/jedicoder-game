@@ -1,5 +1,5 @@
 """Загрузка контент-ядра: термины, правила Кодекса, рецепты, катсцены актов,
-узлы онбординга (Акт 0).
+узлы онбординга (Акт 0), реплики Магистра.
 
 Валидация здесь строгая и падает на первой ошибке: контент — часть
 поставки, битый файл должен ловиться линтером в CI, а не на машине
@@ -23,17 +23,52 @@ ONBOARDING_SECTIONS = ("install", "check", "trouble", "first-session", "link")
 TERM_REQUIRED = ("term", "title", "aliases", "act", "category", "xp")
 RULE_REQUIRED = ("rule", "title", "act", "severity", "xp")
 RECIPE_REQUIRED = ("recipe", "title", "stack", "deploy_path")
-ACT_REQUIRED = ("act", "slug", "title", "rank", "artifact", "quests", "quest_titles")
+ACT_REQUIRED = (
+    "act", "slug", "title", "rank", "rank_title", "artifact", "axis",
+    "quests", "quest_titles", "quest_branches",
+)
 # options и option_titles в обязательные НЕ входят: терминальный узел — узел
 # без выхода, и требовать у него список переходов значило бы запретить дереву
 # заканчиваться.
 ONBOARDING_REQUIRED = ("node", "title", "order", "section")
+# У реплики одно поле метаданных — событие. Заголовка нет намеренно: его
+# никто не читает, а заметка о том, когда реплика звучит, живёт во
+# фронтматтере строкой-комментарием `# …`, которую парсер пропускает.
+REMARK_REQUIRED = ("event",)
+
+# События сцены, на которые у Магистра есть реплика: те же слова, что в
+# очереди state.EVENT_TYPES, без linked — привязка к боту не событие пути, и
+# сцена на неё не отзывается. Копия, а не импорт, по причине ACT_RANKS:
+# content.py — нижний слой схемы, совпадение держит тест.
+MAGISTR_EVENTS = (
+    "act_started", "quest_completed", "quest_failed", "rank_up",
+    "term_unlocked", "dark_side", "streak_updated", "product_deployed",
+    "finale",
+)
 
 # Допустимые ранги объявлены ЗДЕСЬ, а не импортированы из ranks.py:
 # content.py — нижний слой схемы, из него берёт acts.py (DEPLOY_PATHS), и
 # обратный импорт перевернул бы слоистость. Совпадение с ranks.RANK_TITLES
 # держит линтер, а не импорт.
 ACT_RANKS = ("seeker", "padawan", "knight", "sentinel", "master")
+
+# Самоописание акта: ось развилки и ветка каждого квеста. Те же слова, что
+# в реестре движка (acts.TRACKS, acts.DEPLOYS, acts.BRANCH_BOTH,
+# acts.AXIS_DEPLOY), и по той же причине, что ACT_RANKS, объявлены здесь, а
+# не импортированы: acts.py берёт из content.py, обратный импорт запрещён.
+# Совпадение словарей держат линтер и тест сверки, а не импорт. Ради этого
+# поля и заведены: чтобы Голокрон и сайт собирали доску квестов из
+# контента, не зная реестра движка.
+AXES = ("track", "deploy")
+# Ветки, допустимые на каждой оси: общая both плюс имена выбора падавана по
+# этой оси — трек или путь деплоя. Ветка чужой оси — ошибка схемы, а не
+# просто незнакомое слово: у одного акта не бывает квестов, ветвящихся по
+# разным осям (см. acts.ACT_AXIS), и читатель без движка обязан это знать
+# из самой схемы.
+BRANCHES_BY_AXIS = {
+    "track": ("both", "craftsman", "founder"),
+    "deploy": ("both",) + DEPLOY_PATHS,
+}
 
 MIN_ACT = 0
 MAX_ACT = 5
@@ -91,9 +126,14 @@ class Act:
     slug: str
     title: str
     rank: str
+    rank_title: str
     artifact: str
+    axis: str
     quests: tuple
     quest_titles: tuple
+    # Ветка каждого квеста, по одной на позицию quests: both — в обеих
+    # ветках оси, иначе имя трека (ось track) или пути деплоя (ось deploy).
+    quest_branches: tuple
     body: str
     path: Path
 
@@ -120,6 +160,23 @@ class Onboarding:
     probe: str = ""
     options: tuple = ()
     option_titles: tuple = ()
+
+
+@dataclass(frozen=True)
+class Remark:
+    """Реплики Магистра на одно событие сцены — файл на событие.
+
+    Варианты лежат в теле, а не в inline-списке фронтматтера, и это не
+    вкус: в реплике есть запятые, а `_scalar_or_list` режет список по
+    запятой до снятия кавычек (долг №12). Один вариант — один абзац тела и
+    ровно одна физическая строка: реплика доезжает до падавана дословно,
+    одной строкой на панели, и перенос внутри неё — сломанная строка, а не
+    стиль. Голокрон выбирает вариант по порядковому номеру события за
+    сессию, поэтому порядок вариантов — порядок абзацев.
+    """
+    event: str
+    variants: tuple
+    path: Path
 
 
 def load_terms(content_root):
@@ -150,6 +207,22 @@ def load_onboarding(content_root):
         Path(content_root) / "onboarding", _build_onboarding, optional=True
     )
     return sorted(items, key=lambda item: item.order)
+
+
+def load_remarks(content_root):
+    """Реплики Магистра, по объекту на событие, в порядке имён файлов."""
+    return _load_dir(Path(content_root) / "magistr", _build_remark)
+
+
+def remarks_by_event(content_root):
+    """Реплики по типу события: словарь event → Remark.
+
+    Ключ — то же слово, что у события в очереди state.EVENT_TYPES:
+    читатель, получивший событие, берёт реплику этим словом, а не листает
+    список. Два файла на одно событие сюда не доедут — их отвергает линтер
+    до поставки.
+    """
+    return {item.event: item for item in load_remarks(content_root)}
 
 
 def _load_dir(directory, build, optional=False):
@@ -248,16 +321,34 @@ def _build_act(meta, body, path):
     _require_body(body, path)
     _require_act(meta, path)
     _require_choice(meta, "rank", ACT_RANKS, path)
+    _require_choice(meta, "axis", AXES, path)
     _require_list(meta, "quests", path)
     _require_list(meta, "quest_titles", path)
+    _require_list(meta, "quest_branches", path)
+    # Ветка — из словаря своей оси, а не любая строка: опечатка в метке или
+    # ветка чужой оси не уронила бы ничего, квест просто не попал бы ни в одну
+    # ветку доски и исчез молча.
+    allowed = BRANCHES_BY_AXIS[meta["axis"]]
+    unknown = [
+        branch for branch in meta["quest_branches"] if branch not in allowed
+    ]
+    if unknown:
+        raise ContentError(
+            "{}: quest_branches {} не из веток оси '{}' {}".format(
+                path, unknown, meta["axis"], allowed
+            )
+        )
     return Act(
         act=meta["act"],
         slug=meta["slug"],
         title=meta["title"],
         rank=meta["rank"],
+        rank_title=meta["rank_title"],
         artifact=meta["artifact"],
+        axis=meta["axis"],
         quests=tuple(meta["quests"]),
         quest_titles=tuple(meta["quest_titles"]),
+        quest_branches=tuple(meta["quest_branches"]),
         body=body,
         path=path,
     )
@@ -313,3 +404,41 @@ def _build_recipe(meta, body, path):
         path=path,
         reference_repo=meta.get("reference_repo") or "",
     )
+
+
+def _build_remark(meta, body, path):
+    _require(meta, REMARK_REQUIRED, path)
+    _require_body(body, path)
+    _require_choice(meta, "event", MAGISTR_EVENTS, path)
+    return Remark(
+        event=meta["event"],
+        variants=_split_variants(body, path),
+        path=path,
+    )
+
+
+def _split_variants(body, path):
+    """Абзацы тела — по одному варианту на каждый, пустые строки между.
+
+    Абзац из двух строк — ошибка, а не два варианта и не один склеенный:
+    загрузчик не угадывает, где автор хотел разрыв. Иначе привычный перенос
+    по 80 колонок, которым набран весь остальной контент, молча отдал бы
+    падавану половину фразы.
+    """
+    variants = []
+    paragraph = []
+    for raw in body.split("\n") + [""]:
+        line = raw.strip()
+        if line:
+            paragraph.append(line)
+        elif paragraph:
+            if len(paragraph) > 1:
+                raise ContentError(
+                    "{}: вариант №{} занимает не одну строку, а {} — реплика "
+                    "пишется одной строкой, между репликами пустая строка".format(
+                        path, len(variants) + 1, len(paragraph)
+                    )
+                )
+            variants.append(paragraph[0])
+            paragraph = []
+    return tuple(variants)

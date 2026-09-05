@@ -1,6 +1,6 @@
 ---
 name: core
-description: Ядро игры Jedicoder — карта актов, вход в акт, проверка квестов, статус падавана. Use when the padawan asks about progress in the game, wants to start or continue an act, says something like «покажи карту» or «начнём игру», or when any Jedicoder act skill needs the behavioral contract. Служебный скилл: имя не совпадает с командой намеренно — совпадение имён внутри одного плагина даёт коллизию, из-за которой команда перестаёт находиться.
+description: 'Ядро игры Jedicoder — карта актов, вход в акт, проверка квестов, статус падавана. Use when the padawan asks about progress in the game, wants to start or continue an act, says something like «покажи карту» or «начнём игру», or when any Jedicoder act skill needs the behavioral contract. Служебный скилл: имя не совпадает с командой намеренно — совпадение имён внутри одного плагина даёт коллизию, из-за которой команда перестаёт находиться.'
 ---
 
 <!-- lint:novelty-ok: skill — «скилл» здесь техническое имя механизма Claude Code в инструкции модели; падаван этого текста не видит, а переименовать механизм нельзя -->

@@ -110,6 +110,32 @@ NOVELTY_OK = re.compile(r"<!--\s*lint:novelty-ok:\s*([A-Za-z0-9][A-Za-z0-9._-]*)
 # Акта 2, то есть раньше всего остального Акта 2 и позже всего Акта 1.
 RECIPE_POSITION = 2
 
+# Позиция реплик Магистра — по событию, которое их вызывает: где событие
+# впервые возможно, там реплика впервые и звучит. События хуков (Тёмная
+# сторона, серия коммитов, открытый термин) случаются с первой сессии, до
+# входа в акт, — позиция 0, строже всех. События движка начинаются с входа
+# в Акт 1. Деплой и финал — ручки Акта 5 (`project url`, `finale`).
+# Реплика одна на событие, а не на акт, поэтому quest_completed, звучащий и
+# в Акте 5, меряется по Акту 1: слово, которого падаван первого акта ещё
+# не слышал, ему в реплике не положено.
+REMARK_POSITION = {
+    "act_started": 1,
+    "quest_completed": 1,
+    "quest_failed": 1,
+    "rank_up": 1,
+    "term_unlocked": 0,
+    "dark_side": 0,
+    "streak_updated": 0,
+    "product_deployed": 5,
+    "finale": 5,
+}
+
+# Минимум вариантов реплики Магистра на одно событие. Из спеки Голокрона:
+# «три-четыре варианта» — Голокрон выбирает вариант по порядковому номеру
+# события за сессию, и с двумя вариантами Магистр повторялся бы через раз.
+# Потолка нет: критерий приёмки говорит только «не меньше трёх».
+REMARK_MIN = 3
+
 # Идентификатор узла Акта 0 едет в `callback_data` Telegram с префиксом
 # игровой ветки, а у `callback_data` потолок 64 байта. Шаблон держит
 # идентификатор в ASCII, поэтому символы и байты здесь — одно и то же, а
@@ -166,6 +192,16 @@ def ordered_corpus(content_root, skills_root=None, commands_root=None):
             corpus.append(
                 ("рецепт " + path.stem, RECIPE_POSITION, path)
             )
+    remarks_dir = content_root / "magistr"
+    if remarks_dir.is_dir():
+        for path in sorted(remarks_dir.glob("*.md")):
+            # Файл с чужим именем позиции не имеет — берёт строжайшую;
+            # само имя загрузчик и линтер отвергнут отдельно.
+            corpus.append((
+                "реплика Магистра " + path.stem,
+                REMARK_POSITION.get(path.stem, 0),
+                path,
+            ))
     return sorted(corpus, key=lambda item: item[1])
 
 
@@ -178,6 +214,7 @@ def lint(content_root, skills_root=None, corpus=None):
     # act_items, а не acts: имя модуля с реестром квестов занято импортом.
     act_items = _safe(content.load_acts, content_root, problems)
     onboarding = _safe(content.load_onboarding, content_root, problems)
+    remarks = _safe(content.load_remarks, content_root, problems)
     if problems:
         return problems
 
@@ -185,11 +222,13 @@ def lint(content_root, skills_root=None, corpus=None):
     problems += _duplicate_ids(terms, "term")
     problems += _duplicate_ids(rules, "rule")
     problems += _duplicate_ids(recipes, "recipe")
+    problems += _duplicate_ids(remarks, "event")
     problems += _alias_collisions(terms)
     problems += _act_problems(act_items)
     problems += _onboarding_problems(onboarding)
+    problems += _remark_problems(remarks)
     problems += _length_problems(
-        act_items, rules, recipes, terms, onboarding,
+        act_items, rules, recipes, terms, onboarding, remarks,
         DEFAULT_SKILLS_ROOT if skills_root is None else Path(skills_root),
     )
     problems += _novelty_problems(terms)
@@ -302,6 +341,18 @@ def _alias_collisions(terms):
     return problems
 
 
+def act_axis(number):
+    """Ось развилки акта словом схемы контента: 'deploy' или 'track'.
+
+    В движке ось трека безымянна — акт, не названный в acts.ACT_AXIS,
+    ветвится по треку, — и имя ей даётся здесь, один раз. Генератор сайта и
+    тесты берут его отсюда, а не держат по своей копии условия.
+    """
+    if acts.ACT_AXIS.get(number) == acts.AXIS_DEPLOY:
+        return "deploy"
+    return "track"
+
+
 def _act_problems(items):
     """Сверить катсцены с реестрами движка поле в поле.
 
@@ -312,6 +363,13 @@ def _act_problems(items):
     там же во фронтматтере. Разъехаться они могут молча, при полностью
     зелёном суите: книга покажет чужой ранг или чужой список квестов, и
     никто не заметит. Линтер делает это дублирование сверенным.
+
+    Самоописание акта — ветка каждого квеста, ось развилки и русское имя
+    ранга — дублирование того же рода: метка ветки стоит на квесте в
+    acts.QUESTS_BY_ACT, ось — в acts.ACT_AXIS, имя ранга — в
+    ranks.RANK_TITLES. Поля заведены, чтобы Голокрон и сайт собирали доску
+    квестов из них, не зная движка, поэтому расхождение — доска, обещающая
+    падавану чужие квесты. Сверяется позиция в позицию.
     """
     problems = []
 
@@ -354,6 +412,22 @@ def _act_problems(items):
                             name, field, mine, item.act, theirs
                         )
                     )
+        # Имя ранга сверяется по rank из фронтматтера, а не из ranks.ACTS:
+        # расхождение самого rank уже названо выше, и второе сообщение про
+        # него же только запутало бы. Неизвестный rank отсеял загрузчик.
+        rank_title = ranks.RANK_TITLES.get(item.rank)
+        if rank_title is not None and item.rank_title != rank_title:
+            problems.append(
+                "{}: rank_title '{}' расходится с ranks.RANK_TITLES['{}'] — "
+                "там '{}'".format(name, item.rank_title, item.rank, rank_title)
+            )
+        axis = act_axis(item.act)
+        if item.axis != axis:
+            problems.append(
+                "{}: axis '{}' расходится с acts.ACT_AXIS — там '{}'".format(
+                    name, item.axis, axis
+                )
+            )
         if item.slug != item.path.stem:
             problems.append(
                 "{}: slug '{}' не совпадает с именем файла".format(name, item.slug)
@@ -373,10 +447,22 @@ def _act_problems(items):
                         name, item.act, list(expected)
                     )
                 )
+            expected_branches = tuple(branch for _, _, branch in registry)
+            if item.quest_branches != expected_branches:
+                problems.append(
+                    "{}: quest_branches расходится с acts.QUESTS_BY_ACT[{}] — "
+                    "там {}".format(name, item.act, list(expected_branches))
+                )
         if len(item.quest_titles) != len(item.quests):
             problems.append(
                 "{}: подписей {}, а квестов {} — списки разъехались".format(
                     name, len(item.quest_titles), len(item.quests)
+                )
+            )
+        if len(item.quest_branches) != len(item.quests):
+            problems.append(
+                "{}: веток {}, а квестов {} — списки разъехались".format(
+                    name, len(item.quest_branches), len(item.quests)
                 )
             )
         for title in item.quest_titles:
@@ -509,6 +595,53 @@ def _onboarding_has_exit(by_node, start):
     return False
 
 
+def _remark_problems(items):
+    """Состав реплик Магистра: файл на каждое событие сцены.
+
+    Голокрон подбирает реплику по типу события, и файла на событие у него
+    нет — событие происходит молча: доска перекрасится, Магистр промолчит.
+    На стороне Голокрона это не ошибка (старый плагин без реплик — штатный
+    случай), поэтому дыру в поставке обязан видеть линтер, а не падаван.
+    """
+    problems = []
+    seen = set(item.event for item in items)
+    missing = [event for event in content.MAGISTR_EVENTS if event not in seen]
+    if missing:
+        problems.append(
+            "нет файлов реплик Магистра для событий: {}".format(", ".join(missing))
+        )
+    for item in items:
+        name = item.path.name
+        # Читателей два — по имени файла и по полю event, — и оба обязаны
+        # найти одно и то же: иначе событие остаётся без реплики молча.
+        if item.event != item.path.stem:
+            problems.append(
+                "{}: event '{}' не совпадает с именем файла".format(name, item.event)
+            )
+        if len(item.variants) < REMARK_MIN:
+            problems.append(
+                "{}: вариантов {}, минимум {} — Магистр повторялся бы через "
+                "раз".format(name, len(item.variants), REMARK_MIN)
+            )
+        seen_variants = set()
+        for number, text in enumerate(item.variants, 1):
+            # Копия строки — вариант по счёту, но не по смыслу: минимум
+            # иначе обходился бы копированием.
+            if text in seen_variants:
+                problems.append("{}: вариант №{} повторяется".format(name, number))
+            seen_variants.add(text)
+            # Панель сцены печатает строку как есть, markdown её не прячет:
+            # комментарий доедет до падавана буква в букву. Маркеры линтера
+            # для реплик ставятся во фронтматтере строкой-комментарием.
+            if "<!--" in text:
+                problems.append(
+                    "{}: вариант №{} содержит служебный комментарий — падаван "
+                    "увидит его буква в букву; маркеры линтера ставятся во "
+                    "фронтматтере".format(name, number)
+                )
+    return problems
+
+
 # Кэш модуля хука: его просят два правила (1 — за render_card, 3 — за
 # _alias_pattern), а грузить один и тот же файл дважды незачем. Список, а не
 # global: одно место записи, и None «не загрузился» отличается от «ещё не
@@ -608,7 +741,8 @@ def visible_length(text):
     return len(visible_text(text))
 
 
-def _length_problems(act_items, rules, recipes, terms, onboarding, skills_root):
+def _length_problems(act_items, rules, recipes, terms, onboarding, remarks,
+                     skills_root):
     """Правило 1: дословный текст не длиннее VERBATIM_MAX символов.
 
     Меряем символы, а не байты: потолок про читаемость, а 'Тёмная сторона'
@@ -624,6 +758,10 @@ def _length_problems(act_items, rules, recipes, terms, onboarding, skills_root):
     заимствован по аналогии, а тот же самый — правило «не выдавай стену
     текста» из behavior.md действует на бота ровно так же, как на речь
     модели. Число берётся из VERBATIM_MAX; третьей копии числа нет.
+
+    Реплика Магистра — тоже категория A: панель сцены печатает вариант
+    буква в букву. Единица измерения — вариант, а не файл: падаван видит
+    одну строку за раз.
     """
     problems = []
     units = []
@@ -635,6 +773,9 @@ def _length_problems(act_items, rules, recipes, terms, onboarding, skills_root):
         units.append(("рецепт " + item.recipe, item.body))
     for item in onboarding:
         units.append(("узел " + item.node, item.body))
+    for item in remarks:
+        for number, text in enumerate(item.variants, 1):
+            units.append(("реплика {} №{}".format(item.event, number), text))
 
     render_card = _load_render_card()
     if render_card is None:

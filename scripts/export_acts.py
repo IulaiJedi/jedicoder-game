@@ -93,9 +93,10 @@ def _problems(items):
 def _quests(item):
     """Пары «квест — подпись» в порядке реестра движка.
 
-    Ветка берётся из acts.QUESTS_BY_ACT, а не из фронтматтера: метка ветки —
-    свойство движка, и фронтматтер её не несёт. Совпадение списков к этому
-    моменту уже проверено сверкой.
+    Ветка берётся из acts.QUESTS_BY_ACT. Фронтматтер несёт её тоже
+    (quest_branches — самоописание акта для Голокрона), но генератор читает
+    реестр: совпадение обоих источников к этому моменту уже проверено
+    сверкой в _problems, и вывод не зависит от того, какой из них открыть.
     """
     registry = acts.QUESTS_BY_ACT[item.act]
     titles = list(item.quest_titles)
@@ -104,12 +105,6 @@ def _quests(item):
         quest_id, _kind, branch = entry
         rows.append((quest_id, titles[index], branch))
     return rows
-
-
-def _axis(number):
-    if acts.ACT_AXIS.get(number) == acts.AXIS_DEPLOY:
-        return "deploy"
-    return "track"
 
 
 def _lit(value):
@@ -136,7 +131,9 @@ def render(items):
         out.append("        rank: {},".format(_lit(item.rank)))
         out.append("        rankTitle: {},".format(_lit(ranks.RANK_TITLES[item.rank])))
         out.append("        artifact: {},".format(_lit(item.artifact)))
-        out.append("        axis: {},".format(_lit(_axis(item.act))))
+        # Ось — из линтера, тем же словом, которым он сверяет фронтматтер:
+        # своя копия условия здесь разошлась бы с ним молча.
+        out.append("        axis: {},".format(_lit(lint_content.act_axis(item.act))))
         out.append("        cutscene: {},".format(_lit(item.body)))
         out.append("        quests: [")
         for quest_id, title, branch in _quests(item):

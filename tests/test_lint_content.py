@@ -66,9 +66,12 @@ ACT = (
     "slug: {slug}\n"
     "title: {title}\n"
     "rank: {rank}\n"
+    "rank_title: {rank_title}\n"
     "artifact: {artifact}\n"
+    "axis: {axis}\n"
     "quests: [{quests}]\n"
     "quest_titles: [{quest_titles}]\n"
+    "quest_branches: [{quest_branches}]\n"
     "---\n"
     "{body}\n"
 )
@@ -77,6 +80,33 @@ ACT = (
 # все остальные проверки не должны на нём спотыкаться заодно.
 ACT_BODY = "Тело катсцены, достаточно длинное, чтобы пройти порог. " * 6
 
+REMARK = (
+    "---\n"
+    "event: {event}\n"
+    "---\n"
+    "{body}\n"
+)
+
+# Ровно REMARK_MIN вариантов: минимум — отдельный кейс, остальные проверки
+# не должны спотыкаться о него заодно.
+REMARK_BODY = "\n\n".join(
+    "Вариант {} реплики, одной строкой.".format(i) for i in range(1, 4)
+)
+
+
+def remark_text(event, body=REMARK_BODY):
+    return REMARK.format(event=event, body=body)
+
+
+def default_remarks():
+    """Файл на каждое событие сцены — тем же словом, что в MAGISTR_EVENTS."""
+    from jedicoder import content as content_mod
+
+    return [
+        ("{}.md".format(event), remark_text(event))
+        for event in content_mod.MAGISTR_EVENTS
+    ]
+
 
 def act_text(number, **overrides):
     """Валидная катсцена акта, собранная из тех же реестров, с которыми её
@@ -84,15 +114,20 @@ def act_text(number, **overrides):
     называет ровно одну разошедшуюся вещь, а не переписывает файл целиком.
     """
     info = ranks.ACTS[number]
-    quests = [entry[0] for entry in acts_registry.QUESTS_BY_ACT[number]]
+    entries = acts_registry.QUESTS_BY_ACT[number]
+    quests = [entry[0] for entry in entries]
+    branches = [entry[2] for entry in entries]
     fields = {
         "act": number,
         "slug": info["slug"],
         "title": info["title"],
         "rank": info["rank"],
+        "rank_title": ranks.RANK_TITLES[info["rank"]],
         "artifact": info["artifact"],
+        "axis": lint_content.act_axis(number),
         "quests": ", ".join(quests),
         "quest_titles": ", ".join('"К{}"'.format(i) for i in range(len(quests))),
+        "quest_branches": ", ".join(branches),
         "body": ACT_BODY,
     }
     fields.update(overrides)
@@ -106,8 +141,9 @@ def default_acts():
     ]
 
 
-def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=None):
-    for directory in ("lexicon", "codex", "recipes", "acts"):
+def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=None,
+          remark_files=None):
+    for directory in ("lexicon", "codex", "recipes", "acts", "magistr"):
         (root / directory).mkdir(parents=True, exist_ok=True)
     if behavior is not None:
         (root / "behavior.md").write_text(behavior, encoding="utf-8")
@@ -119,6 +155,8 @@ def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=Non
         (root / "recipes" / name).write_text(text, encoding="utf-8")
     for name, text in (default_acts() if act_files is None else act_files):
         (root / "acts" / name).write_text(text, encoding="utf-8")
+    for name, text in (default_remarks() if remark_files is None else remark_files):
+        (root / "magistr" / name).write_text(text, encoding="utf-8")
     return root
 
 
@@ -330,6 +368,232 @@ def test_wiki_link_from_act_body_is_checked(tmp_path):
     )
     _minimal(tmp_path, act_files=broken)
     assert any("nichego-net" in p for p in lint_synth(tmp_path))
+
+
+# --- Самоописание актов: ветка каждого квеста, ось развилки, имя ранга. --
+#
+# Три поля заведены для Голокрона и сайта: они собирают доску квестов из
+# контента, не зная реестра движка. Значит расхождение фронтматтера с
+# acts.py или ranks.py — доска, обещающая падавану чужие квесты или чужой
+# ранг при зелёном суите; линтер сверяет их так же, как quests и rank.
+
+@pytest.mark.parametrize("key", ["rank_title", "axis", "quest_branches"])
+def test_act_without_self_description_detected(tmp_path, key):
+    """Акт без любого из трёх полей — ошибка схемы, и линтер её показывает."""
+    text = act_text(1)
+    line = next(line for line in text.splitlines() if line.startswith(key + ":"))
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], text.replace(line + "\n", ""))
+    _minimal(tmp_path, act_files=broken)
+    assert any(key in p for p in lint_synth(tmp_path))
+
+
+def test_act_quest_branches_count_mismatch_detected(tmp_path):
+    """Веток меньше, чем квестов — списки разъехались, как и у подписей."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, quest_branches="both, both"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("веток 2, а квестов" in p and "разъехались" in p for p in problems)
+
+
+def test_act_branch_diverging_from_registry_detected(tmp_path):
+    """Метка одного квеста не та, что в реестре: доска показала бы квест
+    Ремесленника Основателю, а движок его бы не засчитал."""
+    branches = [entry[2] for entry in acts_registry.QUESTS_BY_ACT[1]]
+    index = branches.index(acts_registry.TRACK_CRAFTSMAN)
+    branches[index] = acts_registry.TRACK_FOUNDER
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, quest_branches=", ".join(branches)))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("quest_branches" in p and "QUESTS_BY_ACT" in p for p in problems)
+
+
+def test_act_axis_diverging_from_registry_detected(tmp_path):
+    """Акт 2 не ветвится вовсе — все квесты both, и схема сама по себе
+    стерпит любую ось. Ловит только сверка с acts.ACT_AXIS: фронтматтер,
+    назвавший путь деплоя, заставил бы Голокрон фильтровать доску не тем
+    выбором падавана."""
+    broken = list(default_acts())
+    broken[1] = (broken[1][0], act_text(2, axis="deploy"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("axis" in p and "ACT_AXIS" in p for p in problems)
+
+
+def test_act_branches_of_other_axis_detected(tmp_path):
+    """Акт 4 с осью трека — ветки managed и vps чужие для этой оси, и это
+    ловит схема загрузчика раньше любой сверки с реестром."""
+    broken = list(default_acts())
+    broken[3] = (broken[3][0], act_text(4, axis="track"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("оси 'track'" in p and "managed" in p for p in problems)
+
+
+def test_act_rank_title_diverging_from_ranks_detected(tmp_path):
+    """Имя ранга во фронтматтере не то, что печатает игра из RANK_TITLES."""
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, rank_title="Падаван"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("rank_title" in p and "RANK_TITLES" in p for p in problems)
+
+
+def test_unknown_branch_value_detected(tmp_path):
+    """Ветка не из словаря — ошибка схемы; линтер называет чужое слово."""
+    branches = [entry[2] for entry in acts_registry.QUESTS_BY_ACT[1]]
+    branches[-1] = "sith"
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, quest_branches=", ".join(branches)))
+    _minimal(tmp_path, act_files=broken)
+    assert any("sith" in p for p in lint_synth(tmp_path))
+
+
+# --- Реплики Магистра: файл на событие, три варианта, одна строка. -----
+#
+# Реплика — категория A, дословно падавану, одной строкой на панели сцены.
+# Голокрон без файла на событие молчит, а молчание — не ошибка на его
+# стороне, а дыра поставки, поэтому состав папки сторожит линтер.
+
+def test_default_remarks_are_clean(tmp_path):
+    """Опора для остальных: файл на каждое событие проходит линтер."""
+    _minimal(tmp_path)
+    assert lint_synth(tmp_path) == []
+
+
+def test_missing_remark_file_detected(tmp_path):
+    """Нет файла на событие — сцена промолчит на финале у всех падаванов."""
+    _minimal(tmp_path, remark_files=default_remarks()[:-1])
+    problems = lint_synth(tmp_path)
+    assert any("нет файлов реплик" in p and "finale" in p for p in problems)
+
+
+def test_too_few_remark_variants_detected(tmp_path):
+    """Два варианта — Магистр повторяется через раз. Минимум из спеки —
+    три, и он включительный: ровно три (default_remarks) — норма."""
+    two = "Первый вариант.\n\nВторой вариант."
+    broken = list(default_remarks())
+    broken[0] = (broken[0][0], remark_text("act_started", body=two))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "act_started" in p and "вариантов 2" in p and "минимум 3" in p
+        for p in problems
+    )
+
+
+def test_wrapped_remark_variant_detected(tmp_path):
+    """Перенос внутри варианта — ошибка схемы; линтер называет файл и
+    номер варианта, чтобы автору было что чинить."""
+    wrapped = REMARK_BODY.replace(
+        "Вариант 2 реплики, одной строкой.",
+        "Вариант 2 реплики,\nперенесённый на вторую строку.",
+    )
+    assert wrapped != REMARK_BODY
+    broken = list(default_remarks())
+    broken[1] = (broken[1][0], remark_text("quest_completed", body=wrapped))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "quest_completed" in p and "вариант №2" in p and "не одну строку" in p
+        for p in problems
+    )
+
+
+def test_remark_event_must_match_filename(tmp_path):
+    """Файл переименовали, а фронтматтер забыли. Читателей два — по имени
+    файла и по полю event, — и оба обязаны найти одно и то же, иначе одно
+    из событий останется без реплики при зелёном суите."""
+    broken = list(default_remarks())
+    broken[1] = ("zachet.md", remark_text("quest_completed"))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "zachet.md" in p and "не совпадает с именем файла" in p for p in problems
+    )
+
+
+def test_duplicate_remark_event_detected(tmp_path):
+    """Два файла на одно событие — какой из них увидит падаван, решает
+    порядок обхода папки, а не автор."""
+    broken = list(default_remarks()) + [("finale-kopiya.md", remark_text("finale"))]
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("event 'finale' повторяется" in p for p in problems)
+
+
+def test_duplicate_remark_variant_detected(tmp_path):
+    """Две одинаковые строки — два варианта по счёту и один по смыслу:
+    минимум трёх иначе обходился бы копированием."""
+    body = "\n\n".join((
+        "Одна и та же реплика.", "Одна и та же реплика.", "Другая реплика.",
+    ))
+    broken = list(default_remarks())
+    broken[2] = (broken[2][0], remark_text("quest_failed", body=body))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "quest_failed" in p and "вариант №2" in p and "повторяется" in p
+        for p in problems
+    )
+
+
+def test_remark_variant_with_comment_detected(tmp_path):
+    """Служебный комментарий в теле реплики доедет до падавана буква в
+    букву: панель печатает строку как есть, markdown её не прячет. Маркеры
+    линтера ставятся во фронтматтере строкой-комментарием, как в Акте 4."""
+    body = REMARK_BODY + "\n\n<!-- lint:novelty-ok: commit — причина -->"
+    broken = list(default_remarks())
+    broken[0] = (broken[0][0], remark_text("act_started", body=body))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "act_started" in p and "вариант №4" in p and "комментарий" in p
+        for p in problems
+    )
+
+
+def test_long_remark_variant_detected(tmp_path):
+    """Реплика — категория A, и меряется тем же потолком, что катсцена:
+    одна строка на панели сцены не имеет права быть стеной текста."""
+    body = REMARK_BODY.replace("Вариант 1 реплики, одной строкой.", "я" * 1000)
+    broken = list(default_remarks())
+    broken[0] = (broken[0][0], remark_text("act_started", body=body))
+    _minimal(tmp_path, remark_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("реплика act_started №1" in p and "1000" in p for p in problems)
+
+
+def test_remark_take_corpus_position_of_their_event(tmp_path):
+    """Правило 3 меряет реплику там, где её событие впервые возможно:
+    события хуков — с первой сессии (позиция 0), события движка — с Акта 1,
+    деплой и финал — Акт 5. Слово позднего акта в реплике раннего события
+    прозвучало бы раньше объяснения."""
+    _minimal(tmp_path)
+    positions = {
+        label: position
+        for label, position, _ in lint_content.ordered_corpus(tmp_path)
+    }
+    # События хуков случаются с первой сессии, до входа в акт.
+    for event in ("dark_side", "streak_updated", "term_unlocked"):
+        assert positions["реплика Магистра " + event] == 0, event
+    # События движка — не раньше входа в Акт 1.
+    for event in ("act_started", "quest_completed", "quest_failed", "rank_up"):
+        assert positions["реплика Магистра " + event] == 1, event
+    # Ручки Акта 5: `project url`, `project post`, `finale`.
+    for event in ("product_deployed", "finale"):
+        assert positions["реплика Магистра " + event] == 5, event
+
+
+def test_every_magistr_event_has_corpus_position():
+    """Новое событие без позиции получило бы её по умолчанию молча — а
+    умолчание в правиле 3 значит «строже всех», и автор не понял бы, за что
+    линтер ругает реплику."""
+    from jedicoder import content as content_mod
+
+    assert set(lint_content.REMARK_POSITION) == set(content_mod.MAGISTR_EVENTS)
 
 
 def test_missing_behavior_detected(tmp_path):

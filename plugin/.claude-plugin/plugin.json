@@ -1,11 +1,16 @@
 {
   "name": "jedicoder",
   "description": "Игра по вайбкодингу: от первого коммита до задеплоенного продукта",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "author": {
     "name": "Iulai Atangulov"
   },
   "homepage": "https://jedicoder.store/game",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "keywords": ["vibecoding", "game", "onboarding", "ru"]
+  "keywords": [
+    "vibecoding",
+    "game",
+    "onboarding",
+    "ru"
+  ]
 }
