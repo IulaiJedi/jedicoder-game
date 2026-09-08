@@ -30,6 +30,27 @@ def test_acts_table_complete():
     ]
 
 
+def test_all_artifacts_include_the_lock_free_one():
+    """Полный список имён артефактов — один, и он здесь.
+
+    В `ACTS` лежат только те, у кого есть замок: артефакт выдаётся на входе
+    в акт. У `goal` акта-владельца нет — он открыт с первого дня, — поэтому
+    в `ACTS` его нет и быть не может. Читателям же (линтер состава
+    инструкций, будущая сборка Свитка) нужен список целиком, и заводить его
+    у себя им нельзя: два списка имён разойдутся молча.
+    """
+    assert ranks.ALL_ARTIFACTS == (
+        "brainstorm", "plan", "investigate", "cso", "deploy", "goal",
+    )
+    assert ranks.UNLOCKED_ARTIFACTS == ("goal",)
+    # Производный, а не переписанный: акт добавят — список вырастет сам.
+    from_acts = tuple(ranks.ACTS[n]["artifact"] for n in sorted(ranks.ACTS))
+    assert ranks.ALL_ARTIFACTS == from_acts + ranks.UNLOCKED_ARTIFACTS
+    # Замок остаётся только у тех, кто выдаётся актом: `artifact goal` —
+    # неизвестное имя для команды-замка, и это не дефект, а его отсутствие.
+    assert "goal" not in from_acts
+
+
 def test_rank_starts_at_youngling():
     assert ranks.rank_for(st.default_state("abc123")) == "youngling"
 
@@ -152,3 +173,19 @@ def test_enter_act_does_not_backdate_closed_act():
     del data["acts"]["1"]["started_at"]
     ranks.enter_act(data, 1)
     assert "started_at" not in data["acts"]["1"]
+
+
+def test_completed_acts_skips_a_key_that_is_not_an_act_number():
+    """Ключ, правленный руками, не роняет подсчёт закрытых актов.
+
+    completed_acts зовут и close_act (через rank_for), и Разбор. Упасть на
+    чужом ключе значило бы уронить игру посреди хода из-за строки, которая
+    ни на что не влияет.
+    """
+    state = {"acts": {
+        "2": {"status": ranks.STATUS_DONE},
+        "заметка": {"status": ranks.STATUS_DONE},
+        "1": {"status": ranks.STATUS_DONE},
+    }}
+    assert ranks.completed_acts(state) == [1, 2]
+    assert ranks.rank_for(state) == "padawan"

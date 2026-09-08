@@ -89,7 +89,8 @@ python3 "$(cat ~/.jedicoder/plugin_root)/lib/jedicoder/cli.py" enter 1
 и что в них должно быть назовёт сама проверка, когда не сойдётся.
 
 Игра проходится целиком — от Юнлинга до Мастера. После финала не выдумывай
-новых актов: дальше — клуб, об этом расскажет карточка `finale`.
+новых актов: дальше — клуб, о нём расскажет страница финала, адрес которой
+печатает `finale`.
 
 ## Команды
 
@@ -113,13 +114,29 @@ python3 "$JC/lib/jedicoder/cli.py" project url https://…    # адрес пр�
 python3 "$JC/lib/jedicoder/cli.py" project service myapp    # systemd-юнит (Акт 5, vps)
 python3 "$JC/lib/jedicoder/cli.py" project post https://…   # ссылка на публикацию (Основатель)
 python3 "$JC/lib/jedicoder/cli.py" artifact brainstorm     # собран ли артефакт (код 1 — ещё нет)
+python3 "$JC/lib/jedicoder/cli.py" debrief                 # факты прохождения — их считает игра
+# текст Магистра поверх фактов — только со stdin, порядок в скилле magistr:
+#   ... cli.py debrief write <<'RAZBOR' ... RAZBOR
+python3 "$JC/lib/jedicoder/cli.py" debrief clear           # стереть текст, вернуться к молчанию
+python3 "$JC/lib/jedicoder/cli.py" scroll                  # выдать Свиток в docs/jedicoder проекта
 python3 "$JC/lib/jedicoder/cli.py" link abcd1234           # привязать к боту потока (ключ даёт /link в боте)
 python3 "$JC/lib/jedicoder/cli.py" sync                    # отправить события боту прямо сейчас
-python3 "$JC/lib/jedicoder/cli.py" finale                   # карточка Мастера (после Акта 5)
+python3 "$JC/lib/jedicoder/cli.py" finale                  # карточка Мастера, страница финала, Свиток
 python3 "$JC/lib/jedicoder/cli.py" book yes                # открывать ли Голокрон в браузере
 python3 "$JC/lib/jedicoder/cli.py" root                    # корень плагина из маркера
 ```
 <!-- lint:novelty-skip-end -->
+
+## Свиток
+
+`scroll` кладёт Свиток в папку проекта падавана — на любом ранге, отдавая
+то, что открыто. Внутри есть страница про него самого: факты прохождения
+печатает игра, текст поверх них пишет Магистр.
+
+Движок текста не пишет и написать не может. Поэтому перед выдачей позови
+Магистра — скилл `magistr`, там весь порядок; коротко он такой: `debrief`
+печатает факты, `debrief write` принимает текст со stdin, `scroll` выдаёт
+Свиток. Разбора нет — Свиток всё равно выдаётся, с фактами и без него.
 
 ## Правила ведения падавана
 

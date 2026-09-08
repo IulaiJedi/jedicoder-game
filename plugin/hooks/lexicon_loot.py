@@ -136,9 +136,7 @@ def main():
         text = _last_assistant_text(payload)
         if not text:
             return 0
-        state_path = Path(
-            os.environ.get("JEDICODER_STATE_PATH") or st.STATE_PATH
-        )
+        state_path = st.state_path()
         # Разведка не под блокировкой: нужно только понять, есть ли вообще
         # что засчитывать. Настоящий read-modify-write — ниже, под замком,
         # на свежеперечитанном состоянии (паттерн bash_guard.py).

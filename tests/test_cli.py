@@ -65,7 +65,8 @@ def _with_phantom_act(monkeypatch):
 def test_subcommands_declared():
     assert cli.SUBCOMMANDS == (
         "status", "contract", "enter", "check", "ack", "project", "track",
-        "artifact", "link", "sync", "finale", "book", "root",
+        "artifact", "debrief", "scroll", "link", "sync", "finale", "book",
+        "root",
     )
 
 
@@ -1374,3 +1375,123 @@ def test_status_never_says_commit(paths, capsys):
     assert code == 0
     assert "коммит" not in out.lower()
     assert "Серия сохранений" in out
+
+
+def test_first_screen_names_current_dir_when_no_path(paths, capsys):
+    """Пути нет вовсе: первый экран говорит, откуда пойдут проверки.
+
+    Молчание здесь читается как «игра знает, где мой проект» — а она не
+    знает и возьмёт текущую папку, что почти никогда не то, чего ждёт
+    падаван.
+    """
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Папка проекта не установлена" in out
+    assert "текущей папки" in out
+    # Оба следствия, а не одно: commit_pulse выходит и на пустом пути
+    # (`if not project_dir`), поэтому серия стоит на нуле ровно по той же
+    # причине — а нуль напечатан строкой выше и без объяснения врёт.
+    assert "серия сохранений не растёт" in out
+    assert "project path <путь>" in out
+
+
+def test_first_screen_names_the_project_folder(paths, capsys, tmp_path):
+    """Папка на месте: первый экран называет её и ничем не пугает.
+
+    Дверь та же, в которую входит падаван: сначала project path, потом
+    status — а не засев пути прямо в сохранение.
+    """
+    project_dir = tmp_path / "moy-produkt"
+    project_dir.mkdir()
+    code, _ = run(["project", "path", str(project_dir)], paths, capsys)
+    assert code == 0
+
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Папка проекта: {}".format(project_dir) in out
+    assert "не найдена" not in out
+
+
+def test_first_screen_warns_when_project_folder_is_gone(paths, capsys, tmp_path):
+    """Главный случай тикета: путь в сохранении есть, папки по нему нет.
+
+    Так выглядел живой заход 2026-09-06: путь указывал на песочницу прошлой
+    сессии, карта показывала «0 из 6» на сделанном акте, серия стояла на
+    нуле, и выяснять это пришлось через файловую систему. Первый экран
+    обязан назвать причину сам.
+    """
+    project_dir = tmp_path / "pesochnica"
+    project_dir.mkdir()
+    code, _ = run(["project", "path", str(project_dir)], paths, capsys)
+    assert code == 0
+    project_dir.rmdir()
+
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Папка проекта не найдена: {}".format(project_dir) in out
+    assert "project path <путь>" in out
+
+
+def test_render_status_takes_the_folder_fact_as_a_parameter():
+    """Три случая — словарями, без единого обращения к диску.
+
+    Диск читает вызывающий (_cmd_status), render_status остаётся чистой
+    функцией от сохранения. Доказательство здесь и есть: на пути, которого
+    заведомо нет, экран спокоен, когда ему сказали «есть». Иначе тесты
+    первого экрана зависели бы от того, что лежит на машине с pytest.
+    """
+    ghost = "/net/net-takoy-papki/nikogda"
+    data = st.default_state("local-test")
+    data["project"] = {"path": ghost}
+
+    assert "Папка проекта: {}".format(ghost) in cli.render_status(data, True)
+    assert "Папка проекта не найдена: {}".format(ghost) in cli.render_status(
+        data, False
+    )
+    assert "Папка проекта не установлена" in cli.render_status(
+        st.default_state("local-test"), None
+    )
+
+    # Факт обязателен: умолчание вернуло бы в сигнатуру то самое молчание,
+    # ради которого заведён тикет — на мёртвом пути экран сказал бы
+    # успокаивающее «Папка проекта: X».
+    with pytest.raises(TypeError):
+        cli.render_status(data)
+
+
+@pytest.mark.parametrize("project", [{"path": ["/tmp"]}, {"path": ""}, []])
+def test_first_screen_reads_a_broken_project_path_as_none(paths, capsys,
+                                                          project):
+    """Сохранение правили руками: путь не строка, пуст или раздела нет.
+
+    Мусор читается как отсутствие — тем же правилом, что track_of и
+    deploy_of в acts.py. Двумя причинами: Path() на списке роняет TypeError
+    в самой частой команде игры, а напечатанный как есть список выдал бы
+    падавану «Папка проекта: ['/tmp']» — питоновский литерал, поданный как
+    исправный путь, то есть ложное успокоение вместо предупреждения.
+    """
+    data = st.default_state("local-test")
+    data["project"] = project
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Папка проекта не установлена" in out
+    assert "[" not in out.split("Карта:")[0]
+
+
+def test_main_without_a_path_writes_where_the_variable_points(
+    tmp_path, content_root, quests_root, monkeypatch, capsys
+):
+    """Та же дверь, в которую входит падаван: `cli.py status` без пути.
+
+    Именно этот вызов до правки уходил в боевое сохранение автора — долг
+    №0. Путь не передан, значит его считает state.state_path(), а не
+    прибитый ~/.jedicoder/state.json.
+    """
+    target = tmp_path / "своя-папка" / "state.json"
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(target))
+    code = cli.main(["status"], content_root=content_root, quests_root=quests_root)
+    capsys.readouterr()
+    assert code == 0
+    assert target.exists(), "движок не увидел JEDICODER_STATE_PATH"
+    assert json.loads(target.read_text(encoding="utf-8"))["padawan_id"]

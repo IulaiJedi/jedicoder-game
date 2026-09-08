@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _shared  # noqa: E402
+from jedicoder import state as st  # noqa: E402
 
 # Символы-операторы, разделяющие простые команды. Токен, целиком из них
 # состоящий, — разделитель: так покрываются и `&&`, и `;`, и `|`, и
@@ -439,9 +440,9 @@ def decide(payload):
     if env_hit or rm_hit or root_new:
         with _shared.update_state() as fresh:
             if env_hit:
-                _shared.add_dark_side(fresh, DARK_ENV)
+                _shared.add_dark_side(fresh, DARK_ENV, st.DARK_ENV_STAGED)
             if rm_hit:
-                _shared.add_dark_side(fresh, DARK_RM)
+                _shared.add_dark_side(fresh, DARK_RM, st.DARK_RM_OUTSIDE_PROJECT)
             if root_new:
                 if fresh.get("root_login_warned"):
                     # Между разведкой и этим окном другой процесс уже
@@ -450,7 +451,7 @@ def decide(payload):
                     root_new = False
                 else:
                     fresh["root_login_warned"] = True
-                    _shared.add_dark_side(fresh, DARK_ROOT)
+                    _shared.add_dark_side(fresh, DARK_ROOT, st.DARK_ROOT_LOGIN)
             if env_hit or rm_hit or root_new:
                 invite = _shared.magistr_invite(fresh)
 

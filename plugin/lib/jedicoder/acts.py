@@ -126,14 +126,27 @@ class DeployRequiredError(UnknownActError):
 
 def track_of(state):
     """Трек падавана из паспорта или None. Мусор трактуется как отсутствие."""
-    track = ((state or {}).get("passport") or {}).get("track")
-    return track if track in TRACKS else None
+    return _chosen(state, "passport", "track", TRACKS)
 
 
 def deploy_of(state):
     """Путь деплоя из state.project или None. Мусор — как отсутствие."""
-    deploy = ((state or {}).get("project") or {}).get("deploy_path")
-    return deploy if deploy in DEPLOYS else None
+    return _chosen(state, "project", "deploy_path", DEPLOYS)
+
+
+def _chosen(state, section, key, allowed):
+    """Выбор падавана из раздела сохранения; всё незнакомое — None.
+
+    Мусором может оказаться не только значение, но и раздел целиком:
+    паспорт или проект, правленные руками, бывают строкой, и .get у неё
+    отвечает трейсбеком. Обещание «мусор — как отсутствие» обязано
+    покрывать оба случая, иначе оно не обещание.
+    """
+    section_data = (state or {}).get(section)
+    if not isinstance(section_data, dict):
+        return None
+    value = section_data.get(key)
+    return value if value in allowed else None
 
 
 def branch_of(state, act):
@@ -193,6 +206,19 @@ def quest_ids(act, branch=None):
     if ACT_AXIS.get(act) == AXIS_DEPLOY:
         return filter_by_deploy(entries, branch)
     return filter_by_track(entries, branch)
+
+
+def all_quest_ids(act):
+    """Все квесты акта в порядке объявления, по обе стороны развилки сразу.
+
+    Отличие от quest_ids — в вопросе, на который отвечает функция. quest_ids
+    отвечает «что проходить», и без выбора падавана такого ответа нет:
+    половинчатая карта врёт ему о том, сколько осталось. Здесь вопрос другой
+    — «в каком порядке перечислять то, что уже записано в сохранении», и
+    выбор на него не влияет: у сменившего трек в состоянии лежат квесты
+    обоих треков, и они его история, а не его список дел.
+    """
+    return tuple(entry[0] for entry in _entries(act))
 
 
 def quest_kind(act, quest_id):

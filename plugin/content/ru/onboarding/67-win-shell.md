@@ -4,7 +4,7 @@ title: Это окно самого Windows
 order: 67
 section: trouble
 probe: wsl --list --verbose
-options: [check-version, windows, fix-path-win]
+options: [check-version, wsl-setup, fix-path-win]
 option_titles: ["Я в WSL — проверю снова", "Списка нет — поставлю WSL", "Хочу починить сам Windows"]
 ---
 Так отвечают оболочки самого Windows — значит команду ты набираешь не в том

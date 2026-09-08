@@ -559,3 +559,138 @@ def test_hooks_survive_broken_stdin(name, tmp_path):
     )
     assert done.returncode == 0
     assert done.stdout.strip() == ""
+
+
+def test_env_staging_writes_two_entries_of_its_kind(project, hook_state):
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    path = hook_state(project={"path": str(proj)})
+
+    bash_guard.decide(payload("git add .", proj))
+
+    from jedicoder import state as st
+    saved = st.load(path)
+    assert [e["type"] for e in st.dark_side_entries(saved)] == [
+        "env_staged", "env_staged",
+    ]
+    assert len(st.dark_side_entries(saved)) == saved["dark_side"]
+
+
+def test_rm_outside_the_project_writes_its_kind(project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    (tmp_path / "neighbour").mkdir(exist_ok=True)
+    path = hook_state(project={"path": str(proj)})
+
+    bash_guard.decide(payload("rm -rf ../neighbour", proj))
+
+    from jedicoder import state as st
+    assert [e["type"] for e in st.dark_side_entries(st.load(path))] == [
+        "rm_outside_project",
+    ]
+
+
+def test_root_login_writes_its_kind_once(project, hook_state):
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+
+    bash_guard.decide(payload("ssh root@myvps 'uptime'", proj))
+    bash_guard.decide(payload("ssh root@myvps 'uptime'", proj))
+
+    from jedicoder import state as st
+    assert [e["type"] for e in st.dark_side_entries(st.load(path))] == [
+        "root_login",
+    ]
+
+
+def test_the_log_never_holds_the_command(project, hook_state):
+    """ADR-0011: журнал уезжает в Свиток, а в команде бывают пути и ключи."""
+    proj = project(git=True, commits=1)
+    inner = proj / "секрет"
+    inner.mkdir(exist_ok=True)
+    path = hook_state(project={"path": str(proj)})
+
+    bash_guard.decide(payload("rm -rf {}/../../чужое".format(inner), proj))
+
+    from jedicoder import state as st
+    saved = st.load(path)
+    assert saved["dark_side_log"], "запись всё-таки появилась"
+    for entry in saved["dark_side_log"]:
+        assert sorted(entry) == ["date", "type"]
+    assert "чужое" not in json.dumps(saved, ensure_ascii=False)
+
+
+def test_two_kinds_in_one_command_write_both_entries(project, hook_state,
+                                                     tmp_path):
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (tmp_path / "neighbour").mkdir(exist_ok=True)
+    path = hook_state(project={"path": str(proj)})
+
+    bash_guard.decide(payload("git add . && rm -rf ../neighbour", proj))
+
+    from jedicoder import state as st
+    saved = st.load(path)
+    assert [e["type"] for e in st.dark_side_entries(saved)] == [
+        "env_staged", "env_staged", "rm_outside_project",
+    ]
+    assert len(st.dark_side_entries(saved)) == saved["dark_side"] == 3
+
+
+def test_broken_journal_does_not_block_and_does_not_kill_the_session(
+    project, hook_state, monkeypatch, capsys
+):
+    """Закон хуков: сломалась запись журнала — молчим и пропускаем.
+
+    Ошибка внутри окна записи оставляет состояние нетронутым (update_state
+    не сохраняет после исключения) и не превращается ни в отказ, ни в
+    упавшую сессию: падаван продолжает работать.
+    """
+    import io
+
+    from jedicoder import state as st
+
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    path = hook_state(project={"path": str(proj)})
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("журнал сломан")
+
+    monkeypatch.setattr(st, "record_dark_side", boom)
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO(json.dumps(payload("git add .", proj)))
+    )
+
+    assert bash_guard.main() == 0
+    assert capsys.readouterr().out == "", "ни решения, ни сообщения"
+    assert st.load(path)["dark_side"] == 0
+
+
+def test_counter_and_journal_go_in_one_pass_over_the_state(
+    project, hook_state, monkeypatch, tmp_path
+):
+    """Очко и запись пишутся одним проходом под блокировкой, а не двумя.
+
+    Два прохода разъезжаются: между ними чужой процесс успевает записать
+    своё, и последний сохранивший затирает соседа. Считаем сохранения:
+    на одну команду их ровно одно.
+    """
+    from jedicoder import state as st
+
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (tmp_path / "neighbour").mkdir(exist_ok=True)
+    path = hook_state(project={"path": str(proj)})
+
+    saves = []
+    real_save = st.save
+
+    def counting_save(data, target=st.STATE_PATH):
+        saves.append(len(data.get("dark_side_log") or []))
+        return real_save(data, target)
+
+    monkeypatch.setattr(st, "save", counting_save)
+    bash_guard.decide(payload("git add . && rm -rf ../neighbour", proj))
+
+    assert saves == [3], "одно сохранение, и журнал в нём уже полный"
+    assert st.load(path)["dark_side"] == 3

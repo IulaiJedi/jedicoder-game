@@ -3,7 +3,7 @@ node: game-start
 title: Первый запуск игры
 order: 56
 section: first-session
-options: [golokron, no-command]
+options: [link-key, no-command]
 option_titles: ["Игра ответила", "Такой команды нет"]
 ---
 Запусти Claude Code прямо здесь, в этой папке:

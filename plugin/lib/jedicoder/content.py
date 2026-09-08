@@ -1,5 +1,6 @@
 """Загрузка контент-ядра: термины, правила Кодекса, рецепты, катсцены актов,
-узлы онбординга (Акт 0), реплики Магистра.
+узлы онбординга (Акт 0), реплики Магистра, инструкции артефактов,
+дорожные карты.
 
 Валидация здесь строгая и падает на первой ошибке: контент — часть
 поставки, битый файл должен ловиться линтером в CI, а не на машине
@@ -36,10 +37,36 @@ ONBOARDING_REQUIRED = ("node", "title", "order", "section")
 # фронтматтере строкой-комментарием `# …`, которую парсер пропускает.
 REMARK_REQUIRED = ("event",)
 
+# Инструкция артефакта: имя артефакта, заголовок и строка для оглавления.
+# Список имён артефактов здесь НЕ объявляется, и это отличие от ACT_RANKS и
+# MAGISTR_EVENTS сознательное: те копии малы и заморожены, а реестр
+# артефактов живёт в ranks.py и растёт вместе с игрой. Копия расходилась бы
+# с ним молча. Состав раздела сверяет с реестром линтер — он ranks и так
+# импортирует; загрузчику остаётся схема.
+INSTRUCTION_REQUIRED = ("artifact", "title", "summary")
+
+# Дорожная карта: три шага, чтобы довести продукт до людей. Карта на трек,
+# плюс одна на того, кто трек ещё не выбрал, — её слаг TRACK_ANY, и он
+# нарочно не похож на слаг трека: это не третья дорога через игру, а карта
+# для того, у кого дороги пока нет.
+#
+# Слаги треков объявлены ЗДЕСЬ копией, а не импортом из acts.py, — по той же
+# причине, что ACT_RANKS и BRANCHES_BY_AXIS: acts.py берёт из content.py
+# (DEPLOY_PATHS), и обратный импорт перевернул бы слоистость. Совпадение с
+# acts.TRACKS держит тест сверки, а состав самого раздела — линтер.
+#
+# `lead` и `lead_url` — две вводные строки на выбор: адрес продукта известен
+# или нет. Обе во фронтматтере, а не в теле, потому что обе — одна строка;
+# подставляет адрес движок, потому что адрес лежит в сохранении.
+TRACK_ANY = "any"
+ROADMAP_TRACKS = ("craftsman", "founder", TRACK_ANY)
+ROADMAP_REQUIRED = ("track", "title", "lead", "lead_url")
+
 # События сцены, на которые у Магистра есть реплика: те же слова, что в
-# очереди state.EVENT_TYPES, без linked — привязка к боту не событие пути, и
-# сцена на неё не отзывается. Копия, а не импорт, по причине ACT_RANKS:
-# content.py — нижний слой схемы, совпадение держит тест.
+# очереди state.EVENT_TYPES, без служебных (state.SILENT_EVENTS: привязка к
+# боту и выдача Свитка — не события пути, сцена на них не отзывается).
+# Копия, а не импорт, по причине ACT_RANKS: content.py — нижний слой схемы,
+# совпадение держит тест.
 MAGISTR_EVENTS = (
     "act_started", "quest_completed", "quest_failed", "rank_up",
     "term_unlocked", "dark_side", "streak_updated", "product_deployed",
@@ -179,6 +206,49 @@ class Remark:
     path: Path
 
 
+@dataclass(frozen=True)
+class Roadmap:
+    """Дорожная карта одного трека — что делать с продуктом дальше.
+
+    Живёт в `roadmap/`, файл на трек, имя файла — слаг трека. От инструкции
+    отличается адресатом наоборот: инструкцию человек показывает коллеге,
+    карту читает только он сам, и она говорит про его продукт, а не про
+    приём работы.
+
+    `lead` и `lead_url` — вводная строка на два случая: адреса у продукта
+    нет и адрес есть. В `lead_url` стоит `{url}`, и подставляет его тот,
+    кто печатает.
+    """
+    track: str
+    title: str
+    lead: str
+    lead_url: str
+    body: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class Instruction:
+    """Инструкция артефакта — текст, который человек уносит из игры.
+
+    Живёт в `scroll/`, файл на артефакт, имя файла — имя артефакта.
+    Отличается от скилла того же имени не оформлением, а адресатом: скилл
+    написан для модели и говорит словами игры, инструкция читается
+    человеком и его коллегой на машине, где игра не установлена. Поэтому
+    слов игры в ней нет вовсе — это её главное свойство, и держит его тест,
+    а не схема.
+
+    `summary` — строка для оглавления, одна на инструкцию. Поле заведено,
+    чтобы оглавление собиралось из написанного автором, а не сочинялось
+    заново тем, кто его печатает.
+    """
+    artifact: str
+    title: str
+    summary: str
+    body: str
+    path: Path
+
+
 def load_terms(content_root):
     return _load_dir(Path(content_root) / "lexicon", _build_term)
 
@@ -223,6 +293,36 @@ def remarks_by_event(content_root):
     до поставки.
     """
     return {item.event: item for item in load_remarks(content_root)}
+
+
+def load_roadmaps(content_root):
+    """Дорожные карты, в порядке имён файлов."""
+    return _load_dir(Path(content_root) / "roadmap", _build_roadmap)
+
+
+def roadmaps_by_track(content_root):
+    """Карты по слагу трека: словарь track → Roadmap.
+
+    Ключ — то же слово, что в acts.TRACKS и в сохранении падавана; карту
+    для не выбравшего трек держит ключ TRACK_ANY. Два файла на один трек
+    сюда не доедут — их отвергает линтер до поставки.
+    """
+    return {item.track: item for item in load_roadmaps(content_root)}
+
+
+def load_instructions(content_root):
+    """Инструкции артефактов, в порядке имён файлов."""
+    return _load_dir(Path(content_root) / "scroll", _build_instruction)
+
+
+def instructions_by_artifact(content_root):
+    """Инструкции по имени артефакта: словарь artifact → Instruction.
+
+    Ключ — то же слово, что в ranks.ALL_ARTIFACTS: тот, кто собирает
+    Свиток, берёт инструкцию именем артефакта, а не позицией в списке. Два
+    файла на один артефакт сюда не доедут — их отвергает линтер до поставки.
+    """
+    return {item.artifact: item for item in load_instructions(content_root)}
 
 
 def _load_dir(directory, build, optional=False):
@@ -413,6 +513,58 @@ def _build_remark(meta, body, path):
     return Remark(
         event=meta["event"],
         variants=_split_variants(body, path),
+        path=path,
+    )
+
+
+def _build_roadmap(meta, body, path):
+    _require(meta, ROADMAP_REQUIRED, path)
+    _require_body(body, path)
+    # Слаг трека проверяется здесь, а не только линтером: карту ищут по нему
+    # словарём, и опечатка в поле оставила бы падавана без карты молча —
+    # он получил бы общую карту вместо своей и ничего бы не заметил.
+    _require_choice(meta, "track", ROADMAP_TRACKS, path)
+    unknown = sorted(key for key in meta if key not in ROADMAP_REQUIRED)
+    if unknown:
+        raise ContentError(
+            "{}: неизвестные поля: {} — у карты ровно четыре поля, и "
+            "значение каждого занимает одну строку".format(
+                path, ", ".join(unknown)
+            )
+        )
+    return Roadmap(
+        track=meta["track"],
+        title=meta["title"],
+        lead=meta["lead"],
+        lead_url=meta["lead_url"],
+        body=body,
+        path=path,
+    )
+
+
+def _build_instruction(meta, body, path):
+    _require(meta, INSTRUCTION_REQUIRED, path)
+    _require_body(body, path)
+    # Необязательных полей у инструкции нет, поэтому схема закрытая — и это
+    # не педантизм. Значение обязано быть одной физической строкой:
+    # свёрнутых скаляров парсер не умеет. Перенос с отступом он отвергает
+    # сам, а перенос БЕЗ отступа, во второй строке которого есть
+    # двоеточие, разбирается как новый ключ — `summary` доезжает обрезанным,
+    # и оглавление собирается из половины фразы, ни на что не пожаловавшись.
+    # Закрытая схема — единственная форма, в которой этот обрыв виден.
+    unknown = sorted(key for key in meta if key not in INSTRUCTION_REQUIRED)
+    if unknown:
+        raise ContentError(
+            "{}: неизвестные поля: {} — у инструкции ровно три поля, и "
+            "значение каждого занимает одну строку".format(
+                path, ", ".join(unknown)
+            )
+        )
+    return Instruction(
+        artifact=meta["artifact"],
+        title=meta["title"],
+        summary=meta["summary"],
+        body=body,
         path=path,
     )
 

@@ -1,7 +1,7 @@
 ---
 node: python-check
 title: Ещё одна проверка перед игрой
-order: 52
+order: 50
 section: install
 probe: python3 --version
 options: [plugin-install, no-python]

@@ -616,7 +616,8 @@ def test_magistr_events_agree_with_state_module():
     слой схемы, поэтому совпадение держит тест."""
     from jedicoder import state
 
-    assert set(content.MAGISTR_EVENTS) == set(state.EVENT_TYPES) - {"linked"}
+    assert set(content.MAGISTR_EVENTS) == set(state.EVENT_TYPES) - set(state.SILENT_EVENTS)
+    assert set(state.SILENT_EVENTS) == {"linked", "scroll_issued"}
     assert len(content.MAGISTR_EVENTS) == 9
 
 
@@ -725,3 +726,276 @@ def test_real_remarks_speak_in_first_person(content_root):
         if not FIRST_PERSON.search(text)
     ]
     assert silent == [], "реплики без первого лица:\n" + "\n".join(silent)
+
+
+# --- Инструкции артефактов: раздел, который человек уносит из игры. ------
+#
+# Файл на артефакт, имя файла — имя артефакта. Текст пишется для человека и
+# его коллег, а не для модели: слов игры в нём нет вовсе, и работает он на
+# машине, где игра не установлена. Загрузчик проверяет схему; состав
+# сверяет с реестром движка линтер, а текст стережёт автор.
+
+INSTRUCTION_OK = (
+    "---\n"
+    "artifact: plan\n"
+    "title: Как спланировать работу до кода\n"
+    "summary: Четыре вопроса, после которых у работы есть граница.\n"
+    "---\n"
+    "## Что это\n"
+    "\n"
+    "Четыре вопроса до первой строки кода.\n"
+)
+
+
+def test_instruction_fields_parsed(tmp_path):
+    """Схема плоская: имя артефакта, заголовок и строка для оглавления.
+
+    `summary` — не украшение: оглавление Свитка собирается из этих строк, и
+    без поля его пришлось бы сочинять на месте, то есть выдумывать текст,
+    которого автор не писал.
+    """
+    write(tmp_path, "scroll/plan.md", INSTRUCTION_OK)
+    items = content.load_instructions(tmp_path)
+    assert len(items) == 1
+    item = items[0]
+    assert item.artifact == "plan"
+    assert item.title == "Как спланировать работу до кода"
+    assert item.summary == "Четыре вопроса, после которых у работы есть граница."
+    assert item.body.startswith("## Что это")
+    assert item.path.name == "plan.md"
+
+
+@pytest.mark.parametrize("line", (
+    "artifact: plan\n", "title: Как спланировать работу до кода\n",
+    "summary: Четыре вопроса, после которых у работы есть граница.\n",
+))
+def test_instruction_without_required_field_rejected(tmp_path, line):
+    write(tmp_path, "scroll/plan.md", INSTRUCTION_OK.replace(line, ""))
+    with pytest.raises(content.ContentError, match="обязательных полей"):
+        content.load_instructions(tmp_path)
+
+
+def test_instruction_with_unknown_field_rejected(tmp_path):
+    """Лишний ключ во фронтматтере — ошибка, и это не педантизм.
+
+    Значение здесь обязано быть одной физической строкой: свёрнутых
+    скаляров парсер не умеет (и не должен). Перенос с отступом он ловит
+    сам, а вот перенос БЕЗ отступа, где во второй строке есть двоеточие,
+    он молча разбирает как новый ключ — и `summary` доезжает обрезанным.
+    Оглавление Свитка при этом собирается без единой жалобы. У инструкции
+    необязательных полей нет вовсе, поэтому неизвестный ключ ловится
+    строго — единственная форма, в которой этот обрыв виден.
+    """
+    wrapped = INSTRUCTION_OK.replace(
+        "summary: Четыре вопроса, после которых у работы есть граница.\n",
+        "summary: Четыре вопроса, после которых\nу работы есть граница: и проверка.\n",
+    )
+    write(tmp_path, "scroll/plan.md", wrapped)
+    with pytest.raises(content.ContentError, match="неизвестные поля"):
+        content.load_instructions(tmp_path)
+
+
+def test_instruction_frontmatter_comment_allowed(tmp_path):
+    """Строка-комментарий полем не считается: парсер её пропускает, и
+    заметка автору остаётся возможной — как у реплик Магистра."""
+    noted = INSTRUCTION_OK.replace(
+        "artifact: plan\n", "artifact: plan\n# Заметка автору.\n",
+    )
+    write(tmp_path, "scroll/plan.md", noted)
+    assert content.load_instructions(tmp_path)[0].artifact == "plan"
+
+
+def test_instruction_with_empty_body_rejected(tmp_path):
+    """Пустая инструкция хуже отсутствующей: состав сойдётся, а человек
+    получит заголовок без текста."""
+    head, _, _ = INSTRUCTION_OK.partition("## Что это")
+    write(tmp_path, "scroll/plan.md", head)
+    with pytest.raises(content.ContentError, match="пустое тело"):
+        content.load_instructions(tmp_path)
+
+
+def test_instruction_directory_is_required(tmp_path):
+    """Папки нет — ошибка, а не пустой список: раздел входит в поставку, и
+    его пропажу обязан увидеть линтер, а не человек с пустой папкой в
+    проекте."""
+    with pytest.raises(content.ContentError, match="нет папки"):
+        content.load_instructions(tmp_path)
+
+
+def test_loader_does_not_police_artifact_names(tmp_path):
+    """Загрузчик не знает списка имён артефактов — и не должен.
+
+    Копия реестра здесь была бы вторым списком имён: он разошёлся бы с
+    `ranks.ALL_ARTIFACTS` молча. Состав сверяет линтер, который реестр и так
+    импортирует. Загрузчику остаётся схема.
+    """
+    write(
+        tmp_path, "scroll/vydumka.md",
+        INSTRUCTION_OK.replace("artifact: plan", "artifact: vydumka"),
+    )
+    assert content.load_instructions(tmp_path)[0].artifact == "vydumka"
+
+
+def test_instructions_by_artifact_keyed_by_name(content_root):
+    """Инструкции отдаются по имени артефакта: читатель, собирающий Свиток,
+    берёт нужную ключом, а не листает список."""
+    from jedicoder import ranks
+
+    by_artifact = content.instructions_by_artifact(content_root)
+    assert set(by_artifact) == set(ranks.ALL_ARTIFACTS)
+    assert by_artifact["goal"].artifact == "goal"
+
+
+def test_real_instructions_match_the_artifact_registry(content_root):
+    """Поставка: файл на каждый артефакт реестра, лишних нет.
+
+    Дубль правила линтера намеренный, как у реплик Магистра: линтер
+    защищает CI, тест — само правило от того, что его снимут.
+    """
+    from jedicoder import ranks
+
+    items = content.load_instructions(content_root)
+    assert sorted(item.artifact for item in items) == sorted(ranks.ALL_ARTIFACTS)
+    for item in items:
+        assert item.artifact == item.path.stem, item.path.name
+        assert item.title, item.path.name
+        assert item.summary, item.path.name
+
+
+# Разделы, из которых состоит инструкция. Требование «самодостаточна» —
+# это они: что это, когда применять, как делать, чего не делать. Проверка
+# структурная, а не вкусовая: она не читает текст, а следит, что человеку
+# не досталась инструкция без раздела «когда применять» — то есть без
+# ответа на вопрос, ради которого он её и открыл.
+INSTRUCTION_SECTIONS = (
+    "## Что это",
+    "## Когда применять",
+    "## Как делать",
+    "## Чего не делать",
+)
+
+
+def test_real_instructions_carry_all_four_sections(content_root):
+    """Заголовок сверяется строкой целиком, а не подстрокой: иначе «## Что
+    это такое» сошло бы за «## Что это», и раздел считался бы на месте при
+    любом продолжении заголовка."""
+    missing = []
+    for item in content.load_instructions(content_root):
+        headings = set(
+            line.strip() for line in item.body.split("\n")
+            if line.startswith("## ")
+        )
+        missing += [
+            "{}: нет раздела «{}»".format(item.path.name, section)
+            for section in INSTRUCTION_SECTIONS
+            if section not in headings
+        ]
+    assert missing == [], "\n".join(missing)
+
+
+# --- Дорожная карта: карта на трек, не текст модели -------------------------
+#
+# Три шага «довести продукт до людей» модель не пишет вовсе: они зависят от
+# трека и от того, есть ли у продукта адрес, а не от того, как прошло
+# прохождение. Значит это контент, а не разбор, — и тогда карта одинаково
+# хороша у всех и проверяема составом, а не вкусом.
+
+ROADMAP_OK = (
+    "---\n"
+    "track: craftsman\n"
+    "title: Три шага, чтобы продуктом начали пользоваться\n"
+    "lead: Адреса у продукта пока нет — с этого и начинается первый шаг.\n"
+    "lead_url: Продукт уже живёт по адресу {url} — дело за людьми.\n"
+    "---\n"
+    "## Шаг 1. Три живых человека\n"
+    "\n"
+    "Не рассылка, а три имени.\n"
+)
+
+
+def test_roadmap_fields_parsed(tmp_path):
+    write(tmp_path, "roadmap/craftsman.md", ROADMAP_OK)
+    items = content.load_roadmaps(tmp_path)
+    assert len(items) == 1
+    card = items[0]
+    assert card.track == "craftsman"
+    assert card.title == "Три шага, чтобы продуктом начали пользоваться"
+    assert card.lead.startswith("Адреса у продукта пока нет")
+    assert "{url}" in card.lead_url
+    assert card.body.startswith("## Шаг 1.")
+
+
+@pytest.mark.parametrize("line", (
+    "track: craftsman\n",
+    "title: Три шага, чтобы продуктом начали пользоваться\n",
+    "lead: Адреса у продукта пока нет — с этого и начинается первый шаг.\n",
+    "lead_url: Продукт уже живёт по адресу {url} — дело за людьми.\n",
+))
+def test_roadmap_without_required_field_rejected(tmp_path, line):
+    write(tmp_path, "roadmap/craftsman.md", ROADMAP_OK.replace(line, ""))
+    with pytest.raises(content.ContentError, match="обязательных полей"):
+        content.load_roadmaps(tmp_path)
+
+
+def test_roadmap_with_unknown_field_rejected(tmp_path):
+    """Схема закрытая по той же причине, что у инструкции: значение каждого
+    поля — одна физическая строка, и перенос без отступа доезжает обрезанным,
+    а вводная строка карты собирается из половины фразы молча."""
+    extra = ROADMAP_OK.replace("track: craftsman\n", "track: craftsman\nnote: да\n")
+    write(tmp_path, "roadmap/craftsman.md", extra)
+    with pytest.raises(content.ContentError, match="неизвестные поля"):
+        content.load_roadmaps(tmp_path)
+
+
+def test_roadmap_with_unknown_track_rejected(tmp_path):
+    """Карта на трек, которого в игре нет, не досталась бы никому: движок
+    ищет её по слагу трека из сохранения."""
+    write(
+        tmp_path, "roadmap/vydumka.md",
+        ROADMAP_OK.replace("track: craftsman\n", "track: vydumka\n"),
+    )
+    with pytest.raises(content.ContentError, match="track"):
+        content.load_roadmaps(tmp_path)
+
+
+def test_roadmaps_indexed_by_track(tmp_path):
+    write(tmp_path, "roadmap/craftsman.md", ROADMAP_OK)
+    write(
+        tmp_path, "roadmap/any.md",
+        ROADMAP_OK.replace("track: craftsman\n", "track: any\n"),
+    )
+    cards = content.roadmaps_by_track(tmp_path)
+    assert set(cards) == {"craftsman", content.TRACK_ANY}
+    assert cards["craftsman"].path.name == "craftsman.md"
+
+
+def test_roadmap_tracks_agree_with_the_registry():
+    """Копия слагов в схеме сверяется с реестром движка тестом, а не
+    импортом: content.py — нижний слой, acts.py берёт из него."""
+    from jedicoder import acts
+
+    assert set(content.ROADMAP_TRACKS) == set(acts.TRACKS) | {content.TRACK_ANY}
+
+
+def test_real_roadmaps_cover_both_tracks_and_the_unchosen_one(content_root):
+    cards = content.roadmaps_by_track(content_root)
+    assert set(cards) == {"craftsman", "founder", content.TRACK_ANY}
+
+
+# Шагов в карте ровно три — это состав, а не вкус, и потому проверяется, как
+# четыре раздела инструкции выше. Карта на два шага прошла бы и загрузчик, и
+# линтер молча, а заметил бы её человек, у которого третьего шага уже нет.
+ROADMAP_STEPS = 3
+
+
+def test_real_roadmaps_carry_exactly_three_steps(content_root):
+    """Заголовок сверяется началом строки «## Шаг », а не словом «шаг»:
+    иначе «## Шаги» и упоминание шага в тексте считались бы разделом."""
+    wrong = []
+    for card in content.load_roadmaps(content_root):
+        steps = [
+            line for line in card.body.split("\n") if line.startswith("## Шаг ")
+        ]
+        if len(steps) != ROADMAP_STEPS:
+            wrong.append("{}: шагов {}".format(card.path.name, len(steps)))
+    assert wrong == [], "\n".join(wrong)

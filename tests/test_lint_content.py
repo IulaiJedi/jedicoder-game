@@ -108,6 +108,55 @@ def default_remarks():
     ]
 
 
+INSTRUCTION = (
+    "---\n"
+    "artifact: {artifact}\n"
+    "title: Как это делать\n"
+    "summary: Одна строка для оглавления.\n"
+    "---\n"
+    "## Что это\n"
+    "\n"
+    "Тело инструкции.\n"
+)
+
+
+def instruction_text(artifact):
+    return INSTRUCTION.format(artifact=artifact)
+
+
+def default_instructions():
+    """Файл на каждый артефакт — тем же именем, что в реестре движка."""
+    return [
+        ("{}.md".format(artifact), instruction_text(artifact))
+        for artifact in ranks.ALL_ARTIFACTS
+    ]
+
+
+ROADMAP = (
+    "---\n"
+    "track: {track}\n"
+    "title: Три шага\n"
+    "lead: Адреса пока нет.\n"
+    "lead_url: Продукт живёт по адресу {{url}}.\n"
+    "---\n"
+    "## Шаг 1\n"
+    "\n"
+    "Тело карты.\n"
+)
+
+
+def roadmap_text(track):
+    return ROADMAP.format(track=track)
+
+
+def default_roadmaps():
+    """Карта на каждый трек реестра плюс одна для не выбравшего трек."""
+    return [
+        ("{}.md".format(track), roadmap_text(track))
+        for track in tuple(acts_registry.TRACKS) + (lint_content.content.TRACK_ANY,)
+    ]
+
+
 def act_text(number, **overrides):
     """Валидная катсцена акта, собранная из тех же реестров, с которыми её
     и сверяет линтер. Дефект вносится точечно через overrides — так тест
@@ -142,8 +191,10 @@ def default_acts():
 
 
 def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=None,
-          remark_files=None):
-    for directory in ("lexicon", "codex", "recipes", "acts", "magistr"):
+          remark_files=None, instruction_files=None, roadmap_files=None):
+    for directory in (
+        "lexicon", "codex", "recipes", "acts", "magistr", "scroll", "roadmap",
+    ):
         (root / directory).mkdir(parents=True, exist_ok=True)
     if behavior is not None:
         (root / "behavior.md").write_text(behavior, encoding="utf-8")
@@ -157,6 +208,14 @@ def build(root, terms=(), rules=(), recipes=(), behavior=BEHAVIOR, act_files=Non
         (root / "acts" / name).write_text(text, encoding="utf-8")
     for name, text in (default_remarks() if remark_files is None else remark_files):
         (root / "magistr" / name).write_text(text, encoding="utf-8")
+    files = (
+        default_instructions() if instruction_files is None else instruction_files
+    )
+    for name, text in files:
+        (root / "scroll" / name).write_text(text, encoding="utf-8")
+    cards = default_roadmaps() if roadmap_files is None else roadmap_files
+    for name, text in cards:
+        (root / "roadmap" / name).write_text(text, encoding="utf-8")
     return root
 
 
@@ -1103,3 +1162,154 @@ def test_main_exit_codes(tmp_path, content_root, capsys):
     )
     assert lint_content.main([str(tmp_path)]) == 1
     assert "дубль" in capsys.readouterr().out
+
+
+# --- Инструкции артефактов. Линтер сверяет состав, а не текст. ----------
+#
+# Текст инструкции читает человек, и стережёт его тоже человек: линтер не
+# берётся судить, понятна ли она. Его дело — что инструкция есть у каждого
+# артефакта реестра и что лишних файлов в разделе нет.
+
+
+def test_default_instructions_are_clean(tmp_path):
+    """Опора для остальных: набор, собранный из реестра, проходит линтер."""
+    _minimal(tmp_path)
+    assert lint_synth(tmp_path) == []
+
+
+def test_missing_instruction_detected(tmp_path):
+    """Убрали инструкцию — линтер называет осиротевший артефакт.
+
+    Без этой проверки дыра нашлась бы только в проекте у человека: Свиток
+    собрался бы на один файл короче, и никто бы не заметил.
+    """
+    _minimal(tmp_path, instruction_files=default_instructions()[:-1])
+    problems = lint_synth(tmp_path)
+    assert any("нет инструкций" in p and ranks.ALL_ARTIFACTS[-1] in p
+               for p in problems)
+
+
+def test_extra_instruction_detected(tmp_path):
+    """Лишний файл — тоже дефект: артефакта с таким именем в игре нет, и
+    инструкция к нему попала бы в Свиток обещанием несуществующего."""
+    extra = list(default_instructions()) + [
+        ("vydumka.md", instruction_text("vydumka"))
+    ]
+    _minimal(tmp_path, instruction_files=extra)
+    problems = lint_synth(tmp_path)
+    assert any("vydumka" in p and "артефакт" in p for p in problems)
+
+
+def test_instruction_artifact_must_match_filename(tmp_path):
+    """Читателей два — по имени файла и по полю artifact, — и оба обязаны
+    найти одно и то же."""
+    broken = list(default_instructions())
+    broken[1] = ("drugoe-imya.md", instruction_text(ranks.ALL_ARTIFACTS[1]))
+    _minimal(tmp_path, instruction_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("drugoe-imya.md" in p and "не совпадает с именем файла" in p
+               for p in problems)
+
+
+def test_duplicate_instruction_artifact_detected(tmp_path):
+    """Два файла на один артефакт: `instructions_by_artifact` отдал бы один
+    из них, и какой именно — зависело бы от порядка имён файлов."""
+    doubled = list(default_instructions()) + [
+        ("plan-kopiya.md", instruction_text("plan"))
+    ]
+    _minimal(tmp_path, instruction_files=doubled)
+    problems = lint_synth(tmp_path)
+    assert any("plan" in p and "повторяется" in p for p in problems)
+
+
+def test_instruction_text_is_not_measured(tmp_path):
+    """Граница прибора: длинную инструкцию линтер не трогает.
+
+    Потолок дословного текста (VERBATIM_MAX) написан под реплику в
+    терминале, а инструкцию человек читает у себя в проекте и в своём
+    темпе. Мерить её тем же потолком значило бы запретить полноценный текст
+    ровно там, где он и нужен.
+    """
+    long_body = "Строка инструкции, вполне обычной длины. " * 80
+    stretched = list(default_instructions())
+    stretched[0] = (
+        stretched[0][0],
+        instruction_text(ranks.ALL_ARTIFACTS[0]) + long_body,
+    )
+    _minimal(tmp_path, instruction_files=stretched)
+    assert lint_synth(tmp_path) == []
+
+
+# --- Состав дорожных карт ---------------------------------------------------
+#
+# То же правило, что у инструкций: линтер сверяет состав, а не текст. Карта
+# ищется по слагу трека из сохранения, и её отсутствие не видно вовсе —
+# Свиток выдастся на файл короче и промолчит.
+
+
+def test_default_roadmaps_are_clean(tmp_path):
+    _minimal(tmp_path)
+    assert lint_synth(tmp_path) == []
+
+
+def test_missing_roadmap_detected(tmp_path):
+    """Убрали карту трека — линтер называет трек, оставшийся без неё."""
+    _minimal(tmp_path, roadmap_files=default_roadmaps()[:-1])
+    problems = lint_synth(tmp_path)
+    assert any("нет дорожных карт" in p for p in problems)
+
+
+def test_roadmap_for_the_unchosen_track_is_required(tmp_path):
+    """Карта без трека — не украшение: Свиток выдаётся на любом ранге, в том
+    числе до выбора трека."""
+    only_tracks = [
+        (name, text) for name, text in default_roadmaps()
+        if not name.startswith(lint_content.content.TRACK_ANY)
+    ]
+    _minimal(tmp_path, roadmap_files=only_tracks)
+    problems = lint_synth(tmp_path)
+    assert any(lint_content.content.TRACK_ANY in p for p in problems)
+
+
+def test_roadmap_track_must_match_filename(tmp_path):
+    broken = list(default_roadmaps())
+    broken[0] = ("drugoe-imya.md", roadmap_text("craftsman"))
+    _minimal(tmp_path, roadmap_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("drugoe-imya.md" in p and "не совпадает с именем файла" in p
+               for p in problems)
+
+
+def test_duplicate_roadmap_track_detected(tmp_path):
+    doubled = list(default_roadmaps()) + [
+        ("craftsman-kopiya.md", roadmap_text("craftsman"))
+    ]
+    _minimal(tmp_path, roadmap_files=doubled)
+    problems = lint_synth(tmp_path)
+    assert any("craftsman" in p and "повторяется" in p for p in problems)
+
+
+def test_roadmap_lead_url_without_the_address_detected(tmp_path):
+    """Вводная строка на случай «адрес есть» обязана его называть: без
+    подстановки падаван прочитал бы про свой продукт фразу без продукта."""
+    broken = list(default_roadmaps())
+    broken[0] = (
+        "craftsman.md",
+        roadmap_text("craftsman").replace(
+            "lead_url: Продукт живёт по адресу {url}.\n",
+            "lead_url: Продукт уже где-то живёт.\n",
+        ),
+    )
+    _minimal(tmp_path, roadmap_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any("craftsman.md" in p and "{url}" in p for p in problems)
+
+
+def test_roadmap_text_is_not_measured(tmp_path):
+    """Граница прибора та же, что у инструкции: карту человек читает у себя
+    в проекте, а не слышит репликой в терминале."""
+    long_body = "Строка карты, вполне обычной длины. " * 80
+    stretched = list(default_roadmaps())
+    stretched[0] = ("craftsman.md", roadmap_text("craftsman") + long_body)
+    _minimal(tmp_path, roadmap_files=stretched)
+    assert lint_synth(tmp_path) == []

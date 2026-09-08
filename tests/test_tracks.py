@@ -104,3 +104,32 @@ def test_track_command_shows_current(tmp_path, capsys):
 
 def test_track_is_in_subcommands():
     assert "track" in cli.SUBCOMMANDS
+
+
+def test_all_quest_ids_gives_both_sides_in_declaration_order():
+    """Порядок перечисления записанного: выбор падавана на него не влияет.
+
+    Разбору нужен именно он — у сменившего трек в сохранении лежат квесты
+    обоих треков, и попытки на них он всё-таки потратил.
+    """
+    assert acts.all_quest_ids(1) == (
+        "01-idea", "02-one-evening", "03c-who", "03f-market",
+        "04f-competitors", "05f-icp", "06f-unit", "07f-channel",
+    )
+    assert acts.all_quest_ids(2) == acts.quest_ids(2)
+
+
+def test_all_quest_ids_refuses_an_act_it_does_not_know():
+    with pytest.raises(acts.UnknownActError):
+        acts.all_quest_ids(9)
+
+
+def test_choices_read_as_absent_when_the_whole_section_is_garbage():
+    """«Мусор — как отсутствие» — и о значении, и о разделе целиком.
+
+    Раздел правили руками: паспорт или проект оказались строкой. Обещание
+    в docstring одно, а строка отвечала на .get трейсбеком.
+    """
+    assert acts.track_of({"passport": "мусор"}) is None
+    assert acts.deploy_of({"project": "мусор"}) is None
+    assert acts.branch_of({"project": "мусор"}, 4) is None

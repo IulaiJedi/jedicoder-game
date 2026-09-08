@@ -3,6 +3,7 @@
 Матчер намеренно узкий: ложное срабатывание на нормальном запросе
 раздражает сильнее, чем польза от катсцены.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -123,3 +124,44 @@ def test_work_words_mean_a_task_about_a_product():
     assert vague_prompt.is_vague("сделай мне ревью приложения") is False
     assert vague_prompt.is_vague("напиши мне тест для бота") is False
     assert vague_prompt.is_vague("сделай мне приложение") is True
+
+
+def test_react_writes_its_kind_to_the_log(hook_state):
+    path = hook_state()
+    vague_prompt.react({"prompt": "сделай мне приложение для медитации"})
+    saved = st.load(path)
+    (entry,) = st.dark_side_entries(saved)
+    assert entry["type"] == "vague_prompt"
+    assert re.match(r"^\d{4}-\d{2}-\d{2}$", entry["date"]), entry
+    assert len(st.dark_side_entries(saved)) == saved["dark_side"] == 1
+
+
+def test_react_never_stores_the_prompt(hook_state):
+    """ADR-0011: в промпте бывают имена заказчиков — журнал их не хранит."""
+    path = hook_state()
+    vague_prompt.react({"prompt": "сделай мне сайт"})
+    saved = st.load(path)
+    assert "сайт" not in str(saved["dark_side_log"])
+    for entry in saved["dark_side_log"]:
+        assert sorted(entry) == ["date", "type"]
+
+
+def test_broken_journal_leaves_the_prompt_alone(hook_state, monkeypatch,
+                                                capsys):
+    """Закон хуков: сломалась запись журнала — хук молчит, промпт идёт дальше."""
+    import io
+    import json
+    import sys
+
+    hook_state()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("журнал сломан")
+
+    monkeypatch.setattr(st, "record_dark_side", boom)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"prompt": "сделай мне приложение для медитации"}
+    )))
+
+    assert vague_prompt.main() == 0
+    assert capsys.readouterr().out == ""

@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _shared  # noqa: E402
+from jedicoder import state as st  # noqa: E402
 
 DARK_VAGUE = 1
 
@@ -85,7 +86,7 @@ def react(payload):
     if not is_vague(text):
         return None
     with _shared.update_state() as state:
-        _shared.add_dark_side(state, DARK_VAGUE)
+        _shared.add_dark_side(state, DARK_VAGUE, st.DARK_VAGUE_PROMPT)
         invite = _shared.magistr_invite(state)
     message = (
         "Это заказ по настроению, а не задача: Сила достроит недосказанное "

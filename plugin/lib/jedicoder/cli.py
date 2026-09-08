@@ -8,22 +8,27 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jedicoder import acts, content, contract, frontmatter, quests, ranks, sync  # noqa: E402
+from jedicoder import acts, content, contract, debrief, frontmatter, quests, ranks, scroll, sync  # noqa: E402
 from jedicoder import state as st  # noqa: E402
 
 SUBCOMMANDS = (
     "status", "contract", "enter", "check", "ack", "project", "track",
-    "artifact", "link", "sync", "finale", "book", "root",
+    "artifact", "debrief", "scroll", "link", "sync", "finale", "book", "root",
 )
 
 # Адрес Голокрона. Переменная окружения — по образцу sync.endpoint(): нужна
 # тестам и локальной проверке, падавану про неё знать незачем.
 DEFAULT_SITE_URL = "https://jedicoder.store"
+
+# Маршрут страницы финала на сайте. Отдельной константой и ровно одной: тот
+# же адрес печатает карточка ранга и уносит с собой Свиток, а адрес, набранный
+# в двух местах, расходится молча — переехал маршрут, и половина падаванов
+# уходит в 404 из файла, который лежит у них в проекте навсегда.
+FINALE_PATH = "finale"
 
 # content/ лежит внутри plugin/: при установке из маркетплейса Claude Code
 # копирует в кэш только source-папку, и всё снаружи неё не приезжает
@@ -47,7 +52,79 @@ NOTICES = {
 }
 
 
-def render_status(data):
+def _project_path(data):
+    """Путь проекта из сохранения — непустой строкой или None.
+
+    Мусор читается как отсутствие, тем же правилом, что track_of и deploy_of
+    в acts.py, и раздел проверяется раньше значения по той же причине, что
+    и там: сохранение правят руками и откатывают на версию назад, а
+    project мог перестать быть словарём целиком.
+
+    Оба следствия видны падавану. Path() на списке роняет TypeError в самой
+    частой команде игры, а напечатанный как есть список дал бы «Папка
+    проекта: ['/tmp']» — питоновский литерал, поданный как исправный путь,
+    то есть ложное успокоение ровно там, где тикет требует тревоги.
+    """
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return None
+    path = project.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    return path
+
+
+def _project_lines(data, project_exists):
+    """Строки первого экрана про папку проекта — куда игра вообще смотрит.
+
+    Живой заход 2026-09-06: путь в сохранении указывал на песочницу прошлой
+    сессии, которой давно нет. Карта показывала «0 из 6» на фактически
+    сделанном акте, серия сохранений стояла на нуле, и причину пришлось
+    искать по файловой системе — потому что первый экран называл ранг, XP,
+    Тёмную сторону, серию и карту, и ни слова о папке.
+
+    `project_exists` — факт с диска, и добывает его вызывающий
+    (`_project_exists`): здесь чистая функция от сохранения, чтобы тесты
+    первого экрана оставались словарными и не зависели от того, что лежит
+    на машине.
+
+    Тревога — ровно на `False`, то есть «смотрели и не нашли». Не смотрели
+    вовсе (`None` при заданном пути) — путь называется как есть: пугать
+    падавана незнанием хуже, чем промолчать.
+
+    Слова здесь ранние. Первый экран печатается до любого акта, и «папка»,
+    «проверка», «квест» падаван к этому моменту уже встретил, а
+    «репозиторий» — нет; по той же причине ниже стоит «серия сохранений», а
+    не «серия коммитов».
+    """
+    path = _project_path(data)
+    if path is None:
+        # Пути нет: check возьмёт «.», то есть каталог запуска Claude Code.
+        # Это почти никогда не то, чего ждёт человек, и молчание тут читается
+        # как «игра знает, где мой проект». Серия названа тем же следствием,
+        # что и ниже: commit_pulse выходит и на пустом пути, поэтому нуль
+        # строкой выше врёт здесь ровно так же, как на мёртвом пути.
+        return [
+            "Папка проекта не установлена.",
+            "  Проверки квестов пойдут из текущей папки, серия сохранений "
+            "не растёт.",
+            "  Назови папку: project path <путь>",
+        ]
+    if project_exists is False:
+        # Слова те же, что у _cmd_check («Не найдена папка проекта»), —
+        # один случай не должен называться на двух экранах по-разному.
+        # Порядок другой: все три случая блока открываются словами «Папка
+        # проекта», и вместе они читаются как одна строка о разном.
+        return [
+            "Папка проекта не найдена: {}".format(path),
+            "  Игра смотрит туда: квесты не проверяются, серия сохранений "
+            "не растёт.",
+            "  Назови папку заново: project path <путь>",
+        ]
+    return ["Папка проекта: {}".format(path)]
+
+
+def render_status(data, project_exists):
     rank = data.get("rank", st.RANK_YOUNGLING)
     lines = [
         "Ранг: {} ({})".format(ranks.RANK_TITLES.get(rank, rank), rank),
@@ -70,9 +147,11 @@ def render_status(data):
             data.get("streak", {}).get("current", 0),
             data.get("streak", {}).get("best", 0),
         ),
-        "",
-        "Карта:",
     ]
+    lines.append("")
+    lines += _project_lines(data, project_exists)
+    lines.append("")
+    lines.append("Карта:")
     for number in sorted(ranks.ACTS):
         entry = (data.get("acts") or {}).get(str(number)) or {}
         status = entry.get("status")
@@ -135,6 +214,22 @@ def render_status(data):
     return "\n".join(lines)
 
 
+def _project_exists(data):
+    """Лежит ли на диске папка, записанная в сохранении.
+
+    Единственное обращение к диску на первом экране, и оно здесь, а не в
+    render_status: печать остаётся чистой функцией от сохранения.
+
+    True, False или None — когда пути нет вовсе и смотреть попросту не на
+    что; мусор в поле к этому моменту уже прочитан как отсутствие
+    (_project_path).
+    """
+    path = _project_path(data)
+    if path is None:
+        return None
+    return Path(path).is_dir()
+
+
 def _load(state_path):
     data = st.load(state_path)
     if not data.get("padawan_id"):
@@ -145,7 +240,7 @@ def _load(state_path):
 
 def _cmd_status(args, state_path, content_root, quests_root):
     data = _load(state_path)
-    print(render_status(data))
+    print(render_status(data, _project_exists(data)))
     # Объяснение печатается после карты: именно на карте человек и видит то,
     # что его удивило — переоткрытый Акт 1 и упавший ранг.
     notices = data.get("notices")
@@ -209,6 +304,26 @@ def _cmd_contract(args, state_path, content_root, quests_root):
     return 0
 
 
+def _site_base():
+    """Корень сайта без хвостового слэша. Один на все адреса игры.
+
+    Переменная окружения читается здесь, а не у каждого адреса своя: два
+    чтения одной переменной — это два места, где она может остаться
+    непрочитанной.
+    """
+    return (os.environ.get("JEDICODER_SITE_URL") or DEFAULT_SITE_URL).rstrip("/")
+
+
+def _finale_url():
+    """Страница финала: автор, его продукты и клуб. Общая для всех.
+
+    Без ключа привязки намеренно (спека #33): игра обязана работать с пустой
+    привязкой, и персонального на этой странице нет — персональное лежит у
+    падавана в Свитке.
+    """
+    return "{}/{}".format(_site_base(), FINALE_PATH)
+
+
 def _book_url(data, act=None):
     """Ссылка на разворот главы. Ключ уходит СЕГМЕНТОМ ПУТИ, не '?key='.
 
@@ -221,7 +336,7 @@ def _book_url(data, act=None):
     прочиталось бы как ключ, и падаван получил бы «Эта глава не открылась»
     вместо витрины.
     """
-    base = (os.environ.get("JEDICODER_SITE_URL") or DEFAULT_SITE_URL).rstrip("/")
+    base = _site_base()
     key = data.get("link_key")
     if key and _valid_key(key):
         if act:
@@ -998,19 +1113,387 @@ def _cmd_artifact(args, state_path, content_root, quests_root):
     return 1
 
 
-def _days_in_path(data):
-    """Дней от входа в Акт 1 до закрытия Акта 5, включительно; None, если
-    отметок нет (беты прошлых версий) — карточка молча пропускает строку.
+# --- Свиток ----------------------------------------------------------------
+#
+# Единственная команда игры, которая пишет файлы в проект падавана. Ни хук,
+# ни проверка, ни вход в акт этого не делают и делать не будут (ADR-0009 в
+# репозитории сайта): запрет «проверка не мутирует проект падавана» остаётся
+# в силе целиком, а у команды, набранной человеком, его никогда и не было.
+
+
+def _act_pages(content_root):
+    """Катсцены актов — только ради подписей квестов, и молча без них.
+
+    Читающая команда не имеет права умереть от неполной поставки: без
+    катсцен в Разборе останутся идентификаторы квестов, и это хуже
+    подписей, но лучше трейсбека. Выдача Свитка на том же месте
+    отказывается вслух — там речь о файлах в чужом проекте, и молчать
+    нельзя.
     """
-    acts_map = data.get("acts") or {}
-    start = (acts_map.get("1") or {}).get("started_at")
-    end = (acts_map.get("5") or {}).get("completed_at")
     try:
-        d0 = datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ")
-        d1 = datetime.strptime(end, "%Y-%m-%dT%H:%M:%SZ")
-    except (TypeError, ValueError):
-        return None
-    return max(1, (d1 - d0).days + 1)
+        return content.load_acts(content_root)
+    except (OSError, content.ContentError):
+        return ()
+
+
+def _debrief_facts(data, content_root, today=None):
+    """Страница фактов Разбора — та же, что ляжет в файл Свитка."""
+    today = today or st.today_utc()
+    return scroll.debrief_page(
+        debrief.facts(data, today=today), acts=_act_pages(content_root),
+        today=today,
+    )
+
+
+DEBRIEF_USAGE = (
+    "Используй: debrief — факты; debrief write — текст поверх них со stdin; "
+    "debrief clear — вернуться к молчанию."
+)
+
+
+def _stdin_is_terminal():
+    """Ждёт ли stdin, что человек наберёт текст руками. Не знаем — читаем."""
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _stdin_text():
+    """Текст со stdin, прочитанный байтами и раскодированный самим CLI.
+
+    Через `.buffer`, а не `sys.stdin.read()`: у падавана локаль — лотерея, а
+    разбор Магистра целиком кириллический. Стандартный поток, открытый под
+    локалью ASCII, уронил бы команду на первой русской букве. Ошибочный байт
+    заменяем, а не роняем: половина текста в файле лучше, чем трейсбек
+    вместо него.
+    """
+    stream = getattr(sys.stdin, "buffer", None)
+    if stream is None:
+        # Поток подменён (тесты, вызов из питона) — читаем как есть.
+        return sys.stdin.read()
+    return stream.read().decode("utf-8", "replace")
+
+
+def _cmd_debrief(args, state_path, content_root, quests_root):
+    """Два приёма Разбора: прочитать факты и положить текст поверх них.
+
+    Движок модель не зовёт и звать не может — здесь нет ни сети, ни ключей.
+    Поэтому текст Магистра приходит в Свиток не изнутри, а через эту дверь:
+    сначала он читает готовые факты (`debrief`), потом отдаёт написанное
+    поверх них (`debrief write`, текст со stdin). Между приёмами написанное
+    лежит в сохранении, и в файл его кладёт уже выдача Свитка.
+
+    Текст берётся со stdin, а не аргументом: в разборе переводы строк, а
+    аргумент с ними — это цитирование в bash, то есть способ потерять
+    половину абзаца на первой же кавычке.
+    """
+    verb = args[0] if args else ""
+    if verb not in ("", "write", "clear") or len(args) > 1:
+        # Хвост проглатывать нельзя: `debrief write razbor.md` выглядит
+        # рабочей строкой, а текст читался бы всё равно со stdin.
+        print("Не знаю команду 'debrief {}'. {}".format(
+            " ".join(args), DEBRIEF_USAGE
+        ))
+        return 1
+    if not verb:
+        print(_debrief_facts(_load(state_path), content_root))
+        return 0
+    if verb == "clear":
+        with st.update_state(state_path) as fresh:
+            fresh["debrief"] = {"text": "", "facts": ""}
+        print("Разбор стёрт. Свиток выдастся с фактами и без него.")
+        return 0
+    if _stdin_is_terminal():
+        # Перенаправления нет — чтение stdin повисло бы молча, и повисло бы
+        # у падавана в терминале на команде, которую набрала модель.
+        print("Текст Разбора подаётся на stdin, а не аргументом:")
+        print("  ... cli.py debrief write <<'RAZBOR'")
+        return 1
+    text = _stdin_text().strip()
+    if not text:
+        # Пустой ввод — это «текста не приехало», а не «сотри написанное».
+        # Строка `… debrief write` без heredoc выглядит рабочей, и молчаливое
+        # обнуление кодом 0 не заметил бы никто.
+        print("На stdin пусто — записывать нечего, прежний Разбор не тронут.")
+        print("Стереть его нарочно: debrief clear")
+        return 1
+    with st.update_state(state_path) as fresh:
+        # Отпечаток снимается с той же страницы, что прочитал Магистр, и
+        # снимается ЗДЕСЬ, под замком: между чтением фактов и записью текста
+        # падаван мог закрыть квест, и тогда текст отвечает уже не тем числам.
+        fresh["debrief"] = {
+            "text": text,
+            "facts": scroll.fingerprint(_debrief_facts(fresh, content_root)),
+        }
+    print("Разбор записан: {} строк.".format(len(text.split("\n"))))
+    print("В Свиток он ляжет под заголовком «{}» — командой scroll.".format(
+        scroll.DEBRIEF_HEADING.lstrip("# ")
+    ))
+    return 0
+
+
+def _debrief_text(data):
+    """Текст Магистра из сохранения, как есть; чего не разобрали — молчание."""
+    written = data.get("debrief")
+    if not isinstance(written, dict):
+        return ""
+    text = written.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _debrief_for(data, facts_page):
+    """Текст Магистра, если он написан поверх ЭТИХ фактов. Иначе молчание.
+
+    Страница фактов меняется от каждого закрытого квеста и от каждого
+    прожитого дня, а текст лежит в сохранении и ждёт выдачи. Пустить
+    вчерашний текст под сегодняшние числа значило бы назвать число иначе —
+    ровно то, что запрещает ADR-0010, и запрещает не по стилю: падаван
+    проверяет каждое число Свитка по своему же сохранению.
+
+    Молчание тут законно (Свиток выдаётся с фактами и без разбора), а сам
+    текст никуда не девается — он остаётся в сохранении, и Магистру есть
+    что переписать.
+    """
+    text = _debrief_text(data)
+    if not text:
+        return ""
+    written = data.get("debrief") or {}
+    return text if written.get("facts") == scroll.fingerprint(facts_page) else ""
+
+
+def _roadmap_page(facts, content_root):
+    """Дорожная карта под трек падавана — из контента, не от модели.
+
+    Три шага «довести продукт до людей» модель не пишет вовсе: они зависят
+    от трека и от того, есть ли у продукта адрес, а не от того, как прошло
+    прохождение. Значит это контент, и тогда карта одинаково хороша у всех
+    и проверяется составом, а не вкусом.
+
+    Трек не выбран — карта общая (content.TRACK_ANY). Дыра вместо карты не
+    заметна никому: Свиток собрался бы на файл короче и промолчал.
+
+    Раздел не читается (плагин установлен не целиком) — молчание, а не
+    отказ: карта часть Свитка, а не его условие, и факты падаван унесёт в
+    любом случае. Состав раздела стережёт линтер до поставки.
+
+    Трек и адрес берутся из фактов, а не из сохранения второй раз: адрес
+    печатается в Свитке дважды — в Разборе и здесь, — и добывать его двумя
+    способами значило бы завести второй источник правды об одном числе.
+    """
+    try:
+        cards = content.roadmaps_by_track(content_root)
+    except (OSError, content.ContentError):
+        return ""
+    card = cards.get(facts.get("track")) or cards.get(content.TRACK_ANY)
+    if card is None:
+        return ""
+    return scroll.roadmap_page(card, facts.get("product_url"))
+
+
+def _scroll_parts(data, content_root, facts=None, facts_page=None,
+                  commits=None):
+    """Тексты Свитка, которых движок не пишет: см. scroll.PARTS.
+
+    Карточку ранга пишет финал — тем же текстом, что печатает в терминале
+    (render_rank_card); коммиты для неё считает git в папке проекта, поэтому
+    их передаёт вызывающий: эта функция работает под файловой блокировкой
+    состояния, а держать замок на время чужого процесса нельзя.
+
+    Разбор Магистра лежит в сохранении: его положила туда команда
+    `debrief write`, и это единственный путь текста модели в Свиток —
+    вызвать её изнутри движок не может. В файл он идёт, только если написан
+    поверх этих самых фактов (`facts_page`). Дорожная карта приходит с
+    другой стороны, из контента: её три шага модель не пишет вовсе.
+
+    Молчание здесь законно: Свиток выдаётся с фактами и без разбора
+    (ADR-0010). Обратное невозможно, поэтому сами факты собирает не она.
+    """
+    # Ничего не передали — соберём сами. Путь запасной: за одну выдачу часы
+    # читаются ровно один раз, и собранная здесь заново страница фактов может
+    # не совпасть с той, поверх которой писал Магистр. Тогда разбор промолчит,
+    # и это законно (ADR-0010), а карточка выйдет всё равно: одна карточка
+    # честнее упавшей команды.
+    if facts is None:
+        facts = debrief.facts(data)
+    if facts_page is None:
+        facts_page = scroll.debrief_page(
+            facts, acts=_act_pages(content_root), today=st.today_utc()
+        )
+    if commits is None:
+        commits = _project_commit_count(data)
+    parts = {scroll.PART_RANK_CARD: render_rank_card(facts, commits=commits)}
+    text = _debrief_for(data, facts_page)
+    if text:
+        parts[scroll.PART_DEBRIEF] = text
+    card = _roadmap_page(facts, content_root)
+    if card:
+        parts[scroll.PART_ROADMAP] = card
+    return parts
+
+
+def _scroll_instructions(content_root, data):
+    """Инструкции тех артефактов, что у падавана открыты.
+
+    Отбор здесь, а не в сборке: «отдаёт то, что открыто» — вопрос к
+    сохранению, а сборка о сохранении не знает вовсе. Артефакт без замка
+    (goal) открыт с первого дня, поэтому он не в artifacts_for.
+    """
+    unlocked = list(ranks.artifacts_for(data))
+    for name in ranks.UNLOCKED_ARTIFACTS:
+        if name not in unlocked:
+            unlocked.append(name)
+    known = content.instructions_by_artifact(content_root)
+    return dict(
+        (name, known[name]) for name in unlocked if name in known
+    )
+
+
+SCROLL_BUCKETS = (
+    (scroll.ACTION_CREATED, "Добавлено:"),
+    (scroll.ACTION_UPDATED, "Обновлено:"),
+    (scroll.ACTION_UNCHANGED, "Без изменений:"),
+    (scroll.ACTION_KEPT, "Оставлено как есть — в файле твоя правка:"),
+    (scroll.ACTION_FAILED, "Не удалось записать:"),
+)
+
+
+def _scroll_line(row):
+    """Строка отчёта про один файл: имя, а у оставленного — куда лёг свежий."""
+    if row["action"] != scroll.ACTION_KEPT:
+        return "  {}".format(row["name"])
+    if row["written"]:
+        return "  {} → {}".format(row["name"], row["written"])
+    return "  {} — положить свежий рядом не вышло".format(row["name"])
+
+
+def _scroll_undelivered(report):
+    """Файлы, которых у падавана в итоге нет: записать не вышло вовсе."""
+    return [
+        row for row in report
+        if row["action"] == scroll.ACTION_FAILED
+        or (row["action"] == scroll.ACTION_KEPT and not row["written"])
+    ]
+
+
+def render_scroll(title, directory, report):
+    """Что команда печатает после выдачи. Чистая функция от отчёта."""
+    lines = ["{}: {}".format(title, directory), ""]
+    for action, header in SCROLL_BUCKETS:
+        rows = [row for row in report if row["action"] == action]
+        if not rows:
+            continue
+        lines.append(header)
+        lines += [_scroll_line(row) for row in rows]
+        lines.append("")
+    if any(row["action"] == scroll.ACTION_KEPT for row in report):
+        lines.append(
+            "Файл с твоей правкой не тронут: свежий лёг рядом, с датой в имени."
+        )
+    lines.append("Начни с {} — там сказано, что где лежит.".format(
+        scroll.INDEX_NAME
+    ))
+    return "\n".join(lines)
+
+
+def _cmd_scroll(args, state_path, content_root, quests_root):
+    """Выдать Свиток в проект падавана. Пишет только эта команда."""
+    data = _load(state_path)
+    path = _project_path(data)
+    if path is None:
+        # Те же слова, что на первом экране: один случай не должен
+        # называться на двух экранах по-разному.
+        print("Папка проекта не установлена — Свиток класть некуда.")
+        print("Назови папку: project path <путь>")
+        return 1
+    if not Path(path).is_dir():
+        print("Папка проекта не найдена: {}".format(path))
+        print("Свиток класть некуда, ничего не создано.")
+        print("Назови папку заново: project path <путь>")
+        return 1
+    try:
+        instructions = _scroll_instructions(content_root, data)
+        act_pages = content.load_acts(content_root)
+    except (OSError, content.ContentError) as error:
+        print("Не нашёл тексты Свитка: {}".format(error))
+        print("Похоже, плагин установлен не целиком. Переустанови его.")
+        return 1
+    directory = scroll.directory_for(path)
+    today = st.today_utc()
+    # git читается ДО замка: у него свой таймаут в секундах, а блокировка
+    # состояния берётся без таймаута вовсе — хук, подошедший в эту секунду,
+    # ждал бы чужой процесс молча.
+    commits = _project_commit_count(data)
+    title, report, failure, stale = "", [], None, False
+    # Читаем состояние и пишем отпечатки одним окном под файловой
+    # блокировкой (долг №8): между сборкой и записью отпечатков хук может
+    # начислить XP или очко Тёмной стороны, и save устаревшим снимком его
+    # бы стёр. Диск внутри окна — намеренно: отпечатки в сохранении обязаны
+    # описывать то, что в эту же минуту легло в папку.
+    with st.update_state(state_path) as fresh:
+        facts = debrief.facts(fresh, today=today)
+        facts_page = scroll.debrief_page(facts, acts=act_pages, today=today)
+        title = scroll.scroll_title(facts)
+        parts = _scroll_parts(
+            fresh, content_root, facts=facts, facts_page=facts_page,
+            commits=commits,
+        )
+        stale = bool(_debrief_text(fresh)) and not parts.get(scroll.PART_DEBRIEF)
+        files = scroll.build(
+            facts, instructions, acts=act_pages, parts=parts, today=today,
+        )
+        try:
+            report, prints = scroll.write(
+                directory, files,
+                (fresh.get("scroll") or {}).get("files") or {}, today,
+            )
+        except OSError as error:
+            # Папку не создать (нет прав, файл вместо каталога). Сказать
+            # словами и уйти: вслепую тут делать нечего.
+            failure = error
+        else:
+            fresh["scroll"] = {"files": prints}
+            # Событие для бота: через неделю после выдачи он пишет падавану
+            # письмо, и узнать о выдаче ему больше неоткуда — Свиток лёг на
+            # диск падавана, не на сервер. Только ранг и дата: ни путей, ни
+            # содержимого — что лежит в чужой папке, бота не касается. Без
+            # признака «уже объявлено», в отличие от финала: повторная выдача
+            # — повторное событие, неделя отсчитывается от последней.
+            st.enqueue_event(fresh, "scroll_issued", payload={
+                "rank": ranks.rank_for(fresh),
+                "date": today,
+            })
+    if failure is not None:
+        print("Не смог создать папку {}: {}".format(directory, failure))
+        return 1
+    print(render_scroll(title, directory, report))
+    if stale:
+        # Текст не потерян — он лежит в сохранении и ждёт переписывания.
+        # Сказать об этом обязательно: молчаливо выданный Свиток без Разбора
+        # читался бы как «Магистр промолчал», а он не молчал.
+        print()
+        print("Разбор Магистра в Свиток не вошёл: он написан по другим "
+              "числам.")
+        print("Позови Магистра переписать его по сегодняшним — и выдай "
+              "Свиток заново.")
+    # Код 1, когда хоть один файл до падавана не доехал. Отчёт при этом
+    # печатается целиком: остальное легло и никуда не денется, а нуль на
+    # недоставленном файле читался бы как «всё на месте».
+    return 1 if _scroll_undelivered(report) else 0
+
+
+# --- Финал и карточка ранга -------------------------------------------------
+#
+# Карточка — трофей падавана, а не выписка: её же файлом уносит Свиток
+# (scroll.PART_RANK_CARD), и читать её будут через месяцы, когда игры на
+# машине уже нет. Поэтому она собирается ОДНОЙ функцией на оба места: два
+# текста разошлись бы молча, и падаван увидел бы в терминале одно, а в своей
+# папке другое.
+#
+# Числа приходят из debrief.facts и ниоткуда больше (ADR-0010 в репозитории
+# сайта): здесь их произносят, а не пересчитывают. Исключение ровно одно и
+# названо вслух — коммиты, их считает git в папке проекта, в сохранении их
+# нет вовсе.
 
 
 def _project_commit_count(data):
@@ -1029,36 +1512,193 @@ def _project_commit_count(data):
     return done.stdout.strip() or None
 
 
-def _cmd_finale(args, state_path, content_root, quests_root):
-    """Карточка Мастера. Оффер клуба — будущая версия игры."""
-    data = _load(state_path)
-    rank = data.get("rank", st.RANK_YOUNGLING)
-    if rank != "master":
-        print("Финал ждёт Мастера. Твой ранг сейчас — {}.".format(
-            ranks.RANK_TITLES.get(rank, rank)
-        ))
-        print("Карточка рисуется, когда закрыт Акт 5 «Выход в свет».")
-        return 1
-    if not data.get("finale_announced"):
-        data["finale_announced"] = True
-        st.enqueue_event(data, "finale", payload={
-            "rank": data.get("rank"), "xp": int(data.get("xp", 0)),
-        })
-        st.save(data, state_path)
-    lines = ["=== Карточка Мастера ==="]
-    url = (data.get("project") or {}).get("url")
+def _is_master(facts):
+    """Дошёл ли падаван до последнего ранга. Один предикат на три развилки."""
+    return facts.get("rank") == ranks.RANKS[-1]
+
+
+def _rank_name(facts):
+    """Русское имя ранга из фактов. Та же цепочка, что у scroll.scroll_title."""
+    rank = facts.get("rank")
+    return facts.get("rank_title") or ranks.RANK_TITLES.get(rank) or rank
+
+
+def _rank_card_title(facts):
+    """«Карточка Мастера» — имя носит ранг владельца, как и у Свитка.
+
+    Склонение берётся у Свитка (scroll.genitive), а не пишется здесь заново:
+    второго списка имён рангов в игре нет и быть не должно — он разошёлся бы
+    с ranks.RANK_TITLES молча, и падаван прочёл бы в карточке одно имя, а в
+    имени Свитка другое.
+    """
+    title = _rank_name(facts)
+    return "Карточка {}".format(scroll.genitive(title)) if title else "Карточка"
+
+
+def _rank_card_numbers(facts, commits):
+    """Числа карточки. Всё из фактов Разбора, кроме коммитов.
+
+    Продукт и дни в пути печатаются, только если они есть: у беты прошлых
+    версий нет даты входа в Акт 1, а ссылку на продукт падаван мог и не
+    называть. Пустая строка «Дней в пути: —» была бы хуже отсутствующей —
+    она читается как поломка там, где игра просто не знает.
+    """
+    lines = []
+    url = facts.get("product_url")
     if url:
         lines.append("Продукт: {}".format(url))
-    days = _days_in_path(data)
+    days = facts.get("days_in_path")
     if days is not None:
         lines.append("Дней в пути: {}".format(days))
-    commits = _project_commit_count(data)
     if commits is not None:
         lines.append("Коммитов: {}".format(commits))
-    lines.append("Слов открыто: {}".format(len(data.get("lexicon_unlocked") or [])))
-    lines.append("XP: {}".format(data.get("xp", 0)))
-    lines.append("Тёмная сторона: {}".format(data.get("dark_side", 0)))
-    print("\n".join(lines))
+    dark = facts.get("dark_side")
+    dark = dark if isinstance(dark, dict) else {}
+    return lines + [
+        "Слов открыто: {}".format(facts.get("terms_unlocked") or 0),
+        "XP: {}".format(facts.get("xp") or 0),
+        "Тёмная сторона: {}".format(dark.get("points") or 0),
+    ]
+
+
+def render_rank_card(facts, commits=None):
+    """Карточка ранга — трофей падавана. Чистая функция от фактов Разбора.
+
+    Выдаётся на ЛЮБОМ ранге, а не одному Мастеру: Свиток тоже выдаётся всем,
+    и до Мастера дойдут немногие. Разница между полной карточкой и карточкой
+    середины пути — не в жалости, а в двух строках: Мастеру дописана дверь
+    в финал, остальным сказано, что в карточку идёт только закрытое.
+
+    Чего здесь нет намеренно: «почти получилось», «осталось совсем немного» и
+    любого обещания, что падаван дойдёт. Игра судит по exit-коду проверки, и
+    карточка говорит тем же голосом — про сделанное, а не про намерения.
+
+    `commits` — единственное число мимо debrief: их считает git в папке
+    проекта, в сохранении их нет. Не передали (git не ответил, папки нет) —
+    строки просто не будет.
+    """
+    facts = facts if isinstance(facts, dict) else {}
+    lines = ["=== {} ===".format(_rank_card_title(facts)), ""]
+    if _is_master(facts):
+        # Отсылка к катсцене Акта 5: «Клинок собран. Пора узнать, режет ли
+        # он». Здесь уже известно, что режет, — это и есть весь трофей.
+        lines += ["Клинок собран, и он режет.", ""]
+    done = facts.get("acts_completed") or []
+    lines.append("Закрыто актов: {} из {}.".format(len(done), len(ranks.ACTS)))
+    for number in done:
+        title = (ranks.ACTS.get(number) or {}).get("title")
+        lines.append(
+            "  Акт {}. {}".format(number, title) if title
+            else "  Акт {}".format(number)
+        )
+    lines.append("")
+    lines += _rank_card_numbers(facts, commits)
+    lines.append("")
+    if _is_master(facts):
+        lines += [
+            "Кто вёл тебя всю игру и куда идти дальше — на странице финала:",
+            _finale_url(),
+        ]
+    else:
+        lines += [
+            "В карточке только закрытое: незакрытый акт в неё не идёт ни",
+            "авансом, ни округлением. Возьмёшь Свиток снова — она соберётся",
+            "заново, по закрытому на тот день.",
+        ]
+    return "\n".join(lines)
+
+
+def _scroll_folder():
+    """Папка Свитка в словах падавана: «docs/jedicoder».
+
+    Собирается из scroll.RELATIVE_DIR, а не набирается заново: имя папки
+    падаван прочтёт в приглашении и пойдёт искать её глазами, и разойтись с
+    тем, куда Свиток на самом деле ложится, оно не имеет права.
+    """
+    return "/".join(scroll.RELATIVE_DIR)
+
+
+def _render_finale_locked(facts):
+    """Финал тому, кто до Мастера ещё не дошёл.
+
+    Говорит ровно две вещи: чего не хватает и что Свиток можно забрать уже
+    сейчас. Карточки здесь нет намеренно — она лежит в Свитке, а печатать её
+    в ответ на «финал» тому, у кого финала ещё не было, значит выдать за
+    финал середину пути.
+    """
+    title = _rank_name(facts)
+    lines = [
+        "Финал ждёт Мастера. Твой ранг сейчас — {}, закрыто актов: {} из {}."
+        .format(title, len(facts.get("acts_completed") or []), len(ranks.ACTS)),
+    ]
+    nearest = _nearest_open_act(facts)
+    if nearest is not None:
+        lines.append("Ближайший незакрытый — Акт {} «{}».".format(*nearest))
+    lines += [
+        "",
+        "Свиток можно забрать уже сейчас: он выдаётся на любом ранге и отдаёт",
+        "то, что открыто, — инструкции артефактов, Разбор и твою карточку",
+        "{}. Ляжет папкой {} в твой проект.".format(
+            scroll.genitive(title), _scroll_folder()
+        ),
+        "  scroll",
+    ]
+    return "\n".join(lines)
+
+
+def _nearest_open_act(facts):
+    """Первый акт реестра, которого нет среди закрытых: (номер, название)."""
+    done = set(facts.get("acts_completed") or [])
+    for number in sorted(ranks.ACTS):
+        if number not in done:
+            return number, ranks.ACTS[number]["title"]
+    return None
+
+
+def _render_finale_invite():
+    """Приглашение забрать Свиток — тому, у кого финал уже случился."""
+    return "\n".join([
+        "Забери Свиток: он ляжет папкой {} в твой проект — инструкции".format(
+            _scroll_folder()
+        ),
+        "артефактов рабочим языком, Разбор твоего прохождения и эта карточка",
+        "отдельным файлом. Игру можно будет удалить, а Свиток останется.",
+        "  scroll",
+    ])
+
+
+def _cmd_finale(args, state_path, content_root, quests_root):
+    """Финал: карточка ранга, страница финала и приглашение забрать Свиток.
+
+    Ранг берётся из фактов Разбора (ranks.rank_for), а не из поля сохранения:
+    правило игры — ранг считается по закрытым актам, и у ворот финала оно
+    должно быть тем же, каким его напечатает карточка.
+    """
+    data = _load(state_path)
+    facts = debrief.facts(data)
+    if not _is_master(facts):
+        print(_render_finale_locked(facts))
+        return 1
+    # Карточка собирается до блокировки: коммиты считает git в чужой папке,
+    # и держать замок состояния на время чужого процесса незачем.
+    card = render_rank_card(facts, commits=_project_commit_count(data))
+    if not data.get("finale_announced"):
+        # update_state, а не save (долг №8): между чтением и записью хук мог
+        # начислить XP или очко Тёмной стороны, и устаревший снимок стёр бы
+        # их. Признак перечитывается под замком — второй терминал мог успеть
+        # объявить финал, и второе событие боту не нужно.
+        with st.update_state(state_path) as fresh:
+            if not fresh.get("finale_announced"):
+                fresh["finale_announced"] = True
+                st.enqueue_event(fresh, "finale", payload={
+                    # Ранг тем же реестром, что и ворота выше: поле
+                    # сохранения здесь было бы вторым источником одного факта.
+                    "rank": ranks.rank_for(fresh),
+                    "xp": int(fresh.get("xp", 0)),
+                })
+    print(card)
+    print("")
+    print(_render_finale_invite())
     return 0
 
 
@@ -1218,6 +1858,8 @@ HANDLERS = {
     "project": _cmd_project,
     "track": _cmd_track,
     "artifact": _cmd_artifact,
+    "debrief": _cmd_debrief,
+    "scroll": _cmd_scroll,
     "link": _cmd_link,
     "sync": _cmd_sync,
     "finale": _cmd_finale,
@@ -1228,7 +1870,10 @@ HANDLERS = {
 def main(argv=None, state_path=None, content_root=None, quests_root=None,
          plugin_root_path=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    state_path = Path(state_path or st.STATE_PATH)
+    # Путь не передан — его считает state.state_path(): та же функция,
+    # что у хуков, и та же переменная JEDICODER_STATE_PATH. Прибитое
+    # умолчание отправляло бы любой прогон CLI в боевое сохранение.
+    state_path = Path(state_path) if state_path else st.state_path()
     content_root = Path(content_root or DEFAULT_CONTENT_ROOT)
     quests_root = Path(quests_root or DEFAULT_QUESTS_ROOT)
 

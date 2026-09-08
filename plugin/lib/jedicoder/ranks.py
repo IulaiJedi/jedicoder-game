@@ -56,6 +56,21 @@ ACTS = {
     },
 }
 
+# Артефакт без замка. `goal` не принадлежит ни одному акту: он открыт с
+# первого дня, поэтому в ACTS его нет и добавить его туда нельзя — ACTS
+# читают и вход в акт, и ранги, и катсцены.
+#
+# Список имён артефактов при этом обязан быть один. Читателям, которым
+# нужен полный состав (линтер инструкций Свитка, сборка самого Свитка),
+# полагается брать ALL_ARTIFACTS, а не перечислять имена у себя: два
+# перечня разъедутся молча — новый артефакт появится в одном и не появится
+# в другом, и никто не заметит.
+UNLOCKED_ARTIFACTS = ("goal",)
+
+ALL_ARTIFACTS = tuple(
+    ACTS[number]["artifact"] for number in sorted(ACTS)
+) + UNLOCKED_ARTIFACTS
+
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_DONE = "done"
 
@@ -76,8 +91,15 @@ def _require_known(act):
 def completed_acts(state):
     done = []
     for number, entry in (state.get("acts") or {}).items():
+        # Ключ, который не число, пропускается молча: правка руками не
+        # должна ронять ни close_act (он зовёт rank_for), ни Разбор — а
+        # актом такая запись всё равно не является.
+        try:
+            act = int(number)
+        except (TypeError, ValueError):
+            continue
         if (entry or {}).get("status") == STATUS_DONE:
-            done.append(int(number))
+            done.append(act)
     return sorted(done)
 
 

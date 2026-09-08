@@ -39,7 +39,13 @@ def plugin_root():
 
 
 def state_path():
-    return Path(os.environ.get("JEDICODER_STATE_PATH") or st.STATE_PATH)
+    """Куда пишет хук — считает движок, тем же кодом, что и для себя.
+
+    Своя копия этой строки тут уже была, и ровно она давала расщеплённое
+    состояние: хук раскрывал значение переменной по одним правилам,
+    движок по другим (долг №0). Источник правды один — state.state_path().
+    """
+    return st.state_path()
 
 
 def load_state():
@@ -57,11 +63,16 @@ def update_state(path=None):
         yield state
 
 
-def add_dark_side(state, amount):
+def add_dark_side(state, amount, kind):
     """Прибавить к счёту Тёмной стороны и вернуть новое значение.
 
     XP не трогается никогда (§9.2): счётчик учит, а не штрафует.
     Мусор в поле (правка руками) считается нулём — падать тут нельзя.
+
+    Тип нарушения (`kind` из state.DARK_SIDE_KINDS) — обязательный
+    параметр, а не удобство: журнал пишется здесь же, тем же проходом по
+    состоянию, что и счётчик. Начислить очко и не оставить записи должно
+    быть нельзя — иначе Разбор посчитает не то, что видит падаван.
     """
     try:
         current = int(state.get("dark_side", 0))
@@ -69,6 +80,7 @@ def add_dark_side(state, amount):
         current = 0
     current += int(amount)
     state["dark_side"] = current
+    st.record_dark_side(state, kind, count=int(amount))
     st.enqueue_event(state, "dark_side", payload={
         "amount": int(amount), "total": current,
     })

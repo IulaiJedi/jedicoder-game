@@ -1,7 +1,7 @@
 ---
 node: no-python
 title: python3 не нашёлся
-order: 53
+order: 51
 section: trouble
 probe: sudo apt install -y python3
 options: [plugin-install]

@@ -14,6 +14,33 @@ CONTENT_ROOT = ROOT / "plugin" / "content" / "ru"
 QUESTS_ROOT = ROOT / "plugin" / "quests"
 
 
+@pytest.fixture(autouse=True)
+def isolated_state(tmp_path_factory, monkeypatch):
+    """Каждый тест пишет сохранение в свою песочницу, а не в боевое.
+
+    Умолчание `state.py` — `~/.jedicoder/state.json` того, кто запускает
+    тесты. Тест, забывший передать путь, затирает живой прогресс: ровно это
+    и случилось 2026-09-07 на красной фазе этой же задачи, и восстановить
+    файл удалось только из ручной копии. Одна переменная закрывает дыру для
+    всего суита сразу — теперь, когда движок её читает.
+
+    Своя папка, а не `tmp_path` теста: тесты, проверяющие «ничего не легло
+    на диск» (`test_scroll.py`), считают файлы в `tmp_path`, и подброшенное
+    сохранение сделало бы их ложью.
+
+    Тесту, которому нужно поведение «переменной нет», достаточно
+    `monkeypatch.delenv("JEDICODER_STATE_PATH", raising=False)`.
+
+    Чего фикстура НЕ закрывает: подпроцесс, запущенный с вычищенным
+    окружением, переменной не увидит и уйдёт в настоящий `$HOME`. Такие
+    тесты обязаны подменять `HOME` сами.
+    """
+    monkeypatch.setenv(
+        "JEDICODER_STATE_PATH",
+        str(tmp_path_factory.mktemp("isolated-state") / "state.json"),
+    )
+
+
 @pytest.fixture
 def content_root():
     return CONTENT_ROOT

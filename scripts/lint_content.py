@@ -215,6 +215,8 @@ def lint(content_root, skills_root=None, corpus=None):
     act_items = _safe(content.load_acts, content_root, problems)
     onboarding = _safe(content.load_onboarding, content_root, problems)
     remarks = _safe(content.load_remarks, content_root, problems)
+    instructions = _safe(content.load_instructions, content_root, problems)
+    roadmaps = _safe(content.load_roadmaps, content_root, problems)
     if problems:
         return problems
 
@@ -223,10 +225,14 @@ def lint(content_root, skills_root=None, corpus=None):
     problems += _duplicate_ids(rules, "rule")
     problems += _duplicate_ids(recipes, "recipe")
     problems += _duplicate_ids(remarks, "event")
+    problems += _duplicate_ids(instructions, "artifact")
+    problems += _duplicate_ids(roadmaps, "track")
     problems += _alias_collisions(terms)
     problems += _act_problems(act_items)
     problems += _onboarding_problems(onboarding)
     problems += _remark_problems(remarks)
+    problems += _instruction_problems(instructions)
+    problems += _roadmap_problems(roadmaps)
     problems += _length_problems(
         act_items, rules, recipes, terms, onboarding, remarks,
         DEFAULT_SKILLS_ROOT if skills_root is None else Path(skills_root),
@@ -639,6 +645,95 @@ def _remark_problems(items):
                     "увидит его буква в букву; маркеры линтера ставятся во "
                     "фронтматтере".format(name, number)
                 )
+    return problems
+
+
+def _instruction_problems(items):
+    """Состав инструкций артефактов: файл на каждый артефакт реестра.
+
+    Линтер сверяет **состав**, а не текст. Понятна ли инструкция, годится
+    ли она коллеге падавана и не проговорилась ли она словом игры — это
+    читает автор, и прибора для этого нет. А вот дыра в составе не видна
+    глазами вовсе: Свиток соберётся на файл короче, промолчит об этом, и
+    заметит человек, у которого инструкции уже нет.
+
+    Реестр берётся из движка (ranks.ALL_ARTIFACTS) — второго списка имён в
+    проекте быть не должно, иначе новый артефакт появится в одном перечне
+    и не появится в другом.
+
+    Ни VERBATIM_MAX, ни правило новизны сюда не применяются намеренно:
+    инструкцию человек читает у себя в проекте и в своём темпе, а не
+    слышит репликой в терминале. Потолок реплики запретил бы полноценный
+    текст ровно там, где он и нужен.
+    """
+    problems = []
+    known = set(ranks.ALL_ARTIFACTS)
+    seen = set(item.artifact for item in items)
+    missing = [name for name in ranks.ALL_ARTIFACTS if name not in seen]
+    if missing:
+        problems.append(
+            "нет инструкций для артефактов: {}".format(", ".join(missing))
+        )
+    for item in items:
+        name = item.path.name
+        if item.artifact not in known:
+            problems.append(
+                "{}: artifact '{}' — такого артефакта в игре нет, "
+                "инструкция обещает несуществующее".format(name, item.artifact)
+            )
+        elif item.artifact != item.path.stem:
+            problems.append(
+                "{}: artifact '{}' не совпадает с именем файла".format(
+                    name, item.artifact
+                )
+            )
+    return problems
+
+
+def _roadmap_problems(items):
+    """Состав дорожных карт: карта на каждый трек и одна для не выбравшего.
+
+    Проверяется состав, а не текст, — по той же причине, что у инструкций:
+    годится ли карта, читает автор, а прибора для этого нет. Зато дыра в
+    составе не видна вовсе. Движок ищет карту по слагу трека из сохранения,
+    не нашёл — молчит, и Свиток выдаётся на файл короче; заметит это
+    человек, у которого карты уже нет.
+
+    Реестр треков берётся из движка (acts.TRACKS) — второго списка имён в
+    проекте быть не должно. Карта TRACK_ANY в реестр не входит и входить не
+    может: это не третья дорога через игру, а карта для того, кто дорогу
+    ещё не выбрал, — а Свиток выдаётся на любом ранге, в том числе до
+    выбора.
+    """
+    problems = []
+    # Реестр движка, а не копия схемы: линтер импортирует acts и обязан
+    # сверять состав с ним. Совпадение самой копии (content.ROADMAP_TRACKS)
+    # держит тест сверки.
+    expected = tuple(acts.TRACKS) + (content.TRACK_ANY,)
+    seen = set(item.track for item in items)
+    missing = [track for track in expected if track not in seen]
+    if missing:
+        problems.append(
+            "нет дорожных карт для треков: {}".format(", ".join(missing))
+        )
+    for item in items:
+        name = item.path.name
+        if item.track not in expected:
+            problems.append(
+                "{}: track '{}' — такого трека в игре нет, карта не "
+                "достанется никому".format(name, item.track)
+            )
+        elif item.track != item.path.stem:
+            problems.append(
+                "{}: track '{}' не совпадает с именем файла".format(
+                    name, item.track
+                )
+            )
+        if "{url}" not in item.lead_url:
+            problems.append(
+                "{}: в lead_url нет '{{url}}' — эта строка звучит, когда "
+                "адрес продукта известен, и обязана его называть".format(name)
+            )
     return problems
 
 

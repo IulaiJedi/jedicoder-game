@@ -101,7 +101,11 @@ def bump_streak(streak, today):
 
 
 def today_utc():
-    return datetime.now(timezone.utc).strftime(DATE_FORMAT)
+    """Календарная дата UTC. Часы одни на игру — те же, что у журнала
+    Тёмной стороны: две реализации разошлись бы молча, а даты серии и
+    даты журнала стоят в Разборе рядом.
+    """
+    return st.today_utc()
 
 
 def dirty_count(project_dir):
