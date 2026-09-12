@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -18,11 +19,25 @@ from jedicoder import state as st  # noqa: E402
 SUBCOMMANDS = (
     "status", "contract", "enter", "check", "ack", "project", "track",
     "artifact", "debrief", "scroll", "link", "sync", "finale", "book", "root",
+    "reset", "recipe",
 )
 
-# Адрес Голокрона. Переменная окружения — по образцу sync.endpoint(): нужна
-# тестам и локальной проверке, падавану про неё знать незачем.
+# Адрес сайта: на нём живёт Книга — разворот главы в браузере. Переменная
+# окружения — по образцу sync.endpoint(): нужна тестам и локальной проверке,
+# падавану про неё знать незачем.
 DEFAULT_SITE_URL = "https://jedicoder.store"
+
+# Метка, которую ставит десктопный Голокрон, запуская Claude Code у себя в
+# Верстаке (golokron/src/main/workbench/launch.ts, GOLOKRON_MARK). Внутри
+# него Книга в браузере не нужна: разворот главы, доску квестов и счётчики
+# показывает Сцена справа — то же самое, только рядом с терминалом. Вопрос
+# «открывать ли Книгу» падавану внутри Голокрона звучит как «открыть
+# Голокрон в браузере?» — живой прогон 2026-09-10 — и не задаётся.
+GOLOKRON_MARK = "JEDICODER_GOLOKRON"
+
+
+def _inside_golokron():
+    return bool(os.environ.get(GOLOKRON_MARK))
 
 # Маршрут страницы финала на сайте. Отдельной константой и ровно одной: тот
 # же адрес печатает карточка ранга и уносит с собой Свиток, а адрес, набранный
@@ -135,19 +150,30 @@ def render_status(data, project_exists):
     # term.xp (лут словаря) приедет с хуком словаря-лута.
     if data.get("xp", 0):
         lines.append("XP: {}".format(data["xp"]))
-    lines += [
-        "Тёмная сторона: {}".format(data.get("dark_side", 0)),
+    # Нулевой счётчик молчит — все три, а не только XP. Довод у них общий и
+    # уже записан строкой выше: вечный ноль читается как сломанная механика, а
+    # появившееся число — как награда. Живой заход 2026-09-10 показал вторую
+    # половину той же цены: новичок, впервые открывший игру, получал список из
+    # пяти незнакомых величин — «Тёмная сторона: 0», «Серия сохранений: 0
+    # (лучшая 0)» — и читал первый экран как приборную панель чужого самолёта.
+    # Тёмная сторона на нуле вдобавок называет наказание раньше, чем падаван
+    # успел что-то сделать; она обязана появляться вместе с первым очком, и
+    # тогда её видно.
+    if data.get("dark_side", 0):
+        lines.append("Тёмная сторона: {}".format(data["dark_side"]))
+    streak = data.get("streak", {})
+    if streak.get("current", 0) or streak.get("best", 0):
         # «Сохранений», а не «коммитов»: эта строка печатается на самом
         # первом экране, до любого акта, а слово «коммит» падаван получает
         # только в Акте 2. Игра сама называет коммит точкой сохранения —
         # значит на первом экране у счётчика есть честное имя, которое ничего
         # не должно объяснять заранее. Регрессия закрыта тестом первого
         # экрана в tests/test_cli.py: линтер контента сюда не дотягивается.
-        "Серия сохранений: {} (лучшая {})".format(
-            data.get("streak", {}).get("current", 0),
-            data.get("streak", {}).get("best", 0),
-        ),
-    ]
+        lines.append(
+            "Серия сохранений: {} (лучшая {})".format(
+                streak.get("current", 0), streak.get("best", 0)
+            )
+        )
     lines.append("")
     lines += _project_lines(data, project_exists)
     lines.append("")
@@ -155,6 +181,15 @@ def render_status(data, project_exists):
     for number in sorted(ranks.ACTS):
         entry = (data.get("acts") or {}).get(str(number)) or {}
         status = entry.get("status")
+        if ranks.is_muted(number):
+            # Выключенный акт с карты не убран намеренно: падаван должен
+            # видеть, что дорога есть и она не кончилась насовсем.
+            lines.append(
+                "  [·] Акт {}. {} — готовится, в клубе".format(
+                    number, ranks.ACTS[number]["title"]
+                )
+            )
+            continue
         if status == ranks.STATUS_DONE:
             mark = "[x]"
         elif status == ranks.STATUS_IN_PROGRESS:
@@ -411,6 +446,30 @@ def _parse_act(raw):
         raise ValueError("нет акта {!r}".format(raw))
 
 
+def _print_quest_list(data, act, content_root):
+    branch = acts.branch_of(data, act)
+    ids = acts.quest_ids(act, branch)
+    titles = {}
+    try:
+        scene = next(
+            (item for item in content.load_acts(content_root) if item.act == act),
+            None,
+        )
+    except (OSError, UnicodeDecodeError, content.ContentError,
+            frontmatter.FrontmatterError):
+        scene = None
+    if scene is not None:
+        titles = dict(zip(scene.quests, scene.quest_titles))
+    print("")
+    print("Квесты акта ({}):".format(len(ids)))
+    for quest_id in ids:
+        title = titles.get(quest_id, "")
+        tail = " — {}".format(title) if title else ""
+        if acts.quest_kind(act, quest_id) == acts.KIND_ACK:
+            tail += " (без проверки: ack {} {})".format(act, quest_id)
+        print("  {}{}".format(quest_id, tail))
+
+
 def _cmd_enter(args, state_path, content_root, quests_root):
     if not args:
         print("Укажи номер акта: enter 1")
@@ -423,6 +482,19 @@ def _cmd_enter(args, state_path, content_root, quests_root):
         act = _parse_act(args[0])
     except ValueError as exc:
         print(str(exc))
+        return 1
+    # Выключенный акт отказывает раньше порядка: тому, кто дошёл до конца,
+    # надо услышать «пятый готовится», а не «сперва закрой четвёртый».
+    if ranks.is_muted(act):
+        info = ranks.ACTS.get(act) or {}
+        print(
+            "Акт {}. {} — готовится. Игра пока заканчивается Актом {}.".format(
+                act, info.get("title", ""), ranks.FINAL_ACT
+            )
+        )
+        print(
+            "Деплой, домен и публикацию разбираем в клубе — ссылка в финале: finale."
+        )
         return 1
     # Порядок отказов: сначала порядок актов, потом наличие квестов. Тому,
     # кто не закрыл Акт 2, надо услышать про Акт 2 — про то, что Акт 3 ещё
@@ -505,14 +577,21 @@ def _cmd_enter(args, state_path, content_root, quests_root):
             prev_entry["claude_md_sha"] = _claude_md_sha(project_path)
     # Флаг «вопрос напечатан» вносится в тот же data, что уходит в st.save
     # ниже: вторая запись состояния расширила бы окно гонки долга №8, а
-    # печатать вопрос дважды нельзя.
-    if not asked_before:
+    # печатать вопрос дважды нельзя. Внутри Голокрона вопрос не задаётся и
+    # флаг не ставится: выйдя в обычный терминал, падаван его услышит.
+    inside_golokron = _inside_golokron()
+    if not asked_before and not inside_golokron:
         data["book_asked"] = True
     st.save(data, state_path)
     info = ranks.ACTS[act]
     print("Акт {}. {} — начат.".format(act, info["title"]))
     print("Артефакт этого акта: {}".format(info["artifact"]))
     print("Ранг за прохождение: {}".format(ranks.RANK_TITLES[info["rank"]]))
+    # Состав ветки — здесь, а не только в скилле: после `enter 4` падаван
+    # узнавал список квестов из SKILL.md, игра его не называла (живой прогон
+    # 2026-09-10). Подписи — из фронтматтера акта; ack помечен прямо в
+    # строке, чтобы check не гоняли там, где нужен ack.
+    _print_quest_list(data, act, content_root)
     # Все печати — после st.save: если что-то в них взорвётся, акт уже начат
     # и записан. Катсцена — безусловно, никакого «если привязан»: игра
     # обязана быть проходимой непривязанной, и повествование часть игры,
@@ -530,11 +609,14 @@ def _cmd_enter(args, state_path, content_root, quests_root):
     if scene is not None:
         print("")
         print(scene.body)
+    if inside_golokron:
+        # Книгу показывает Сцена справа; ни ссылки, ни вопроса, ни вкладки.
+        return 0
     print("")
     print("Разворот этой главы: {}".format(_book_url(data, act)))
     if not data.get("link_key"):
         print(
-            "Прогресс в книге появится после привязки: ключ выдаёт команда "
+            "Прогресс в Книге появится после привязки: ключ выдаёт команда "
             "/link в боте потока, привязывает — link <ключ>."
         )
     if not asked_before:
@@ -543,14 +625,17 @@ def _cmd_enter(args, state_path, content_root, quests_root):
         # EOFError. Тот же приём, что у project db / track / project deploy:
         # печатает вопрос CLI, задаёт его падавану модель, пишет ответ ручка.
         print("")
-        # Первое место, где падаван видит слово «Голокрон», — значит здесь
+        # Первое место, где падаван видит слово «Книга», — значит здесь
         # и глосса (D-04: слово остаётся, но объясняется при первой встрече).
-        # Позднейшие упоминания её не повторяют: поясняют один раз.
+        # Позднейшие упоминания её не повторяют: поясняют один раз. Имя —
+        # из словаря сайта (CONTEXT.md, «Книга»): «Голокрон» там — десктопное
+        # приложение, и звать так же браузерную книгу нельзя — падаван
+        # внутри Голокрона читал бы «открыть Голокрон в браузере?».
         print(
-            "Голокрон — книга твоего пути: то же, что ты проходишь в "
+            "Книга — книга твоего пути: то же, что ты проходишь в "
             "терминале, только страницами и в браузере."
         )
-        print("Открывать его на входе в каждую главу?")
+        print("Открывать её на входе в каждую главу?")
         print("  book yes — открывать вкладку самому")
         print("  book no — не открывать, зайду по ссылке сам")
     if data.get("book_open") is True:
@@ -600,6 +685,13 @@ def _maybe_close_act(state, act, state_path):
     # эти два значения расходятся. Игра не должна называть ранг, которого нет.
     rank = state.get("rank", st.RANK_YOUNGLING)
     print("Новый ранг: {}.".format(ranks.RANK_TITLES.get(rank, rank)))
+    if act == ranks.FINAL_ACT:
+        # Последний играбельный акт закрыт — это и есть конец игры. Молчание
+        # здесь читалось бы как «игра сломалась»: падаван закрыл акт, дальше
+        # тишина, и непонятно, кончилось или оборвалось.
+        print("")
+        print("Это конец игры — той, что бесплатна и открыта целиком.")
+        print("Забери, что унёс: finale — карточка ранга, и scroll — Свиток в твой проект.")
     return True
 
 
@@ -868,6 +960,80 @@ def _valid_service(value):
     )
 
 
+def _recipes(content_root):
+    """Рецепты из контент-ядра. Отказ чтения — пустой список: игра обязана
+    идти дальше без рецептов, а не падать на них трейсбеком."""
+    try:
+        return list(content.load_recipes(content_root))
+    except (OSError, UnicodeDecodeError, content.ContentError,
+            frontmatter.FrontmatterError):
+        return []
+
+
+def _recipe_names(content_root):
+    return [item.recipe for item in _recipes(content_root)]
+
+
+def _recipe_by_name(content_root, name):
+    for item in _recipes(content_root):
+        if item.recipe == name:
+            return item
+    return None
+
+
+def _cmd_recipe(args, state_path, content_root, quests_root):
+    """Рецепт по типу продукта: стек, грабли, что проверить.
+
+    Рецепты лежали в контент-ядре с самого начала, линтер их валидировал,
+    тесты прибивали состав — и показать их падавану было нечем (прогон
+    падаваном 2026-09-10). Квест 01 Акта 2 при этом велит «выбрать стек по
+    рецепту своего типа продукта».
+
+    Без аргумента — рецепт выбранного типа, а если тип не выбран, список
+    того, из чего выбирать: падаван решает, глядя на три названия, а не
+    вслепую. С именем — любой рецепт, и выбор при этом не меняется:
+    посмотреть чужой можно, не назначая его себе.
+    """
+    recipes = _recipes(content_root)
+    if not recipes:
+        print("Рецепты не читаются — похоже, плагин установлен не полностью.")
+        return 1
+    name = args[0] if args else (_load(state_path).get("project") or {}).get("type")
+    if not name:
+        print("Тип продукта не выбран. Вот из чего выбирают:")
+        for item in recipes:
+            print("  {} — {} (деплой: {})".format(item.recipe, item.title, item.deploy_path))
+        print("")
+        print("Назови свой: project type <имя>. Посмотреть чужой: recipe <имя>.")
+        return 0
+    item = _recipe_by_name(content_root, name)
+    if item is None:
+        print("Нет рецепта {!r}. Есть: {}.".format(name, ", ".join(r.recipe for r in recipes)))
+        return 1
+    print("{} ({})".format(item.title, item.recipe))
+    print("Стек: {}".format(", ".join(item.stack)))
+    print("Путь деплоя: {}".format(item.deploy_path))
+    print("")
+    print(_readable(item.body))
+    return 0
+
+
+def _readable(body):
+    """Тело контента без служебных строк.
+
+    В рецептах стоят пометки для линтера вида `<!-- lint:novelty-ok: … -->` —
+    они объясняют, почему раннее слово здесь допустимо, и адресованы автору,
+    а не падавану. Печатать их человеку — то же, что показать ему изнанку
+    декорации.
+    """
+    lines = [line for line in body.strip().split("\n")
+             if not line.strip().startswith("<!-- lint:")]
+    # Пустая строка, оставшаяся от снятой пометки, не должна разрывать текст.
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
 def _cmd_project(args, state_path, content_root, quests_root):
     data = _load(state_path)
     if not args:
@@ -890,9 +1056,23 @@ def _cmd_project(args, state_path, content_root, quests_root):
             lines.append("  Порт: {}".format(port))
         else:
             lines.append("  Порт: не назван")
+        kind = project.get("type")
+        item = _recipe_by_name(content_root, kind) if kind else None
+        if kind:
+            lines.append("  Тип продукта: {}".format(item.title if item else kind))
+        else:
+            lines.append("  Тип продукта: не назван")
         deploy = project.get("deploy_path")
         if deploy:
             lines.append("  Путь деплоя: {}".format(deploy))
+        elif item is not None and item.deploy_path:
+            # Рецепт уже назвал путь, а «не назван» рядом читалось как
+            # противоречие (живой прогон 2026-09-11). Выбор остаётся за
+            # падаваном: рецепт советует, ручка записывает.
+            lines.append(
+                "  Путь деплоя: не назван — рецепт «{}» ждёт {}: "
+                "project deploy {}".format(item.title, item.deploy_path, item.deploy_path)
+            )
         else:
             lines.append("  Путь деплоя: не назван")
         alias = project.get("ssh_alias")
@@ -961,6 +1141,32 @@ def _cmd_project(args, state_path, content_root, quests_root):
         data["project"]["port"] = port
         st.save(data, state_path)
         print("Порт проекта: {}".format(port))
+        return 0
+    if args[0] == "type":
+        names = _recipe_names(content_root)
+        if len(args) < 2:
+            print("Укажи тип продукта: project type {}".format("|".join(names) or "<имя>"))
+            return 1
+        item = _recipe_by_name(content_root, args[1])
+        if item is None:
+            # Состояние не трогаем: мусор не должен затирать выбор.
+            print(
+                "Не знаю тип продукта {!r}. Допустимые: {}.".format(
+                    args[1], ", ".join(names)
+                )
+            )
+            return 1
+        data["project"] = data.get("project") or {}
+        data["project"]["type"] = item.recipe
+        # Паспорт несёт тип в контракт: без него модель получала «Тип
+        # продукта: unknown» и выбирала стек наугад.
+        data["passport"] = data.get("passport") or {}
+        data["passport"]["product_type"] = item.recipe
+        st.save(data, state_path)
+        print("Тип продукта: {} ({}).".format(item.title, item.recipe))
+        print("Стек рецепта: {}".format(", ".join(item.stack)))
+        print("Путь деплоя, которого он ждёт: {}".format(item.deploy_path))
+        print("Сам рецепт — команда recipe: стек, грабли и что проверить.")
         return 0
     if args[0] == "deploy":
         if len(args) < 2:
@@ -1042,7 +1248,7 @@ def _cmd_project(args, state_path, content_root, quests_root):
         st.save(data, state_path)
         print("Публикация: {}".format(args[1]))
         return 0
-    print("Неизвестная подкоманда 'project {}'. Используй: project [path <путь>|db yes|no|port <номер>|deploy managed|vps|ssh <алиас>|url <адрес>|service <юнит>|post <ссылка>]".format(
+    print("Неизвестная подкоманда 'project {}'. Используй: project [path <путь>|type <тип>|db yes|no|port <номер>|deploy managed|vps|ssh <алиас>|url <адрес>|service <юнит>|post <ссылка>]".format(
         args[0]
     ))
     return 1
@@ -1512,9 +1718,26 @@ def _project_commit_count(data):
     return done.stdout.strip() or None
 
 
+#: Строка трофея по акту, которым кончилась игра. Отсылает к катсцене того
+#: же акта — иначе финал поздравляет падавана с чужой победой.
+TROPHY_LINES = {
+    4: "Щит поставлен: ключи твои, сервер твой, и чужому в него не войти.",
+    5: "Клинок собран, и он режет.",
+}
+
+
 def _is_master(facts):
-    """Дошёл ли падаван до последнего ранга. Один предикат на три развилки."""
-    return facts.get("rank") == ranks.RANKS[-1]
+    """Дошёл ли падаван до конца игры. Один предикат на три развилки.
+
+    Сверяется с ranks.FINAL_RANK, а не с последним рангом реестра: пока Акт 5
+    выключен (ranks.MUTED_ACTS), последний ранг реестра принадлежит акту, в
+    который не войти, и ворота финала по нему не открылись бы никогда.
+    Вернётся акт — вернётся и Мастер, без правки здесь.
+    """
+    rank = facts.get("rank")
+    if rank not in ranks.RANKS:
+        return False
+    return ranks.RANKS.index(rank) >= ranks.RANKS.index(ranks.FINAL_RANK)
 
 
 def _rank_name(facts):
@@ -1580,11 +1803,16 @@ def render_rank_card(facts, commits=None):
     facts = facts if isinstance(facts, dict) else {}
     lines = ["=== {} ===".format(_rank_card_title(facts)), ""]
     if _is_master(facts):
-        # Отсылка к катсцене Акта 5: «Клинок собран. Пора узнать, режет ли
-        # он». Здесь уже известно, что режет, — это и есть весь трофей.
-        lines += ["Клинок собран, и он режет.", ""]
+        # Трофей — отсылка к катсцене того акта, которым игра кончилась.
+        # «Клинок собран, и он режет» — про Акт 5, где продукт вышел к людям;
+        # сказать это тому, кто до пятого не дошёл, значит поздравить его с
+        # тем, чего не было. Пока акт выключен, финал — Щит, и трофей его.
+        lines += [TROPHY_LINES.get(ranks.FINAL_ACT, TROPHY_LINES[4]), ""]
     done = facts.get("acts_completed") or []
-    lines.append("Закрыто актов: {} из {}.".format(len(done), len(ranks.ACTS)))
+    # Знаменатель — играбельные акты, а не весь реестр: пока Акт 5 выключен,
+    # «3 из 5» назвало бы падавану дорогу, которой сейчас нет, и его законный
+    # финал выглядел бы недоходом.
+    lines.append("Закрыто актов: {} из {}.".format(len(done), len(ranks.playable_acts())))
     for number in done:
         title = (ranks.ACTS.get(number) or {}).get("title")
         lines.append(
@@ -1627,9 +1855,13 @@ def _render_finale_locked(facts):
     финал середину пути.
     """
     title = _rank_name(facts)
+    playable = ranks.playable_acts()
+    closed = [act for act in (facts.get("acts_completed") or []) if act in playable]
     lines = [
-        "Финал ждёт Мастера. Твой ранг сейчас — {}, закрыто актов: {} из {}."
-        .format(title, len(facts.get("acts_completed") or []), len(ranks.ACTS)),
+        "Финал ждёт {}. Твой ранг сейчас — {}, закрыто актов: {} из {}.".format(
+            scroll.genitive(ranks.RANK_TITLES[ranks.FINAL_RANK]),
+            title, len(closed), len(playable),
+        ),
     ]
     nearest = _nearest_open_act(facts)
     if nearest is not None:
@@ -1649,7 +1881,7 @@ def _render_finale_locked(facts):
 def _nearest_open_act(facts):
     """Первый акт реестра, которого нет среди закрытых: (номер, название)."""
     done = set(facts.get("acts_completed") or [])
-    for number in sorted(ranks.ACTS):
+    for number in ranks.playable_acts():
         if number not in done:
             return number, ranks.ACTS[number]["title"]
     return None
@@ -1812,8 +2044,75 @@ def _cmd_sync(args, state_path, content_root, quests_root):
 BOOK_ANSWERS = {"yes": True, "no": False}
 
 
+def _cmd_reset(args, state_path, content_root, quests_root):
+    """Начать игру заново: сохранение уходит в архив, не в корзину.
+
+    Двухшаговая нарочно. Команду зовёт модель по слову падавана, и «начни
+    заново», сказанное вскользь, не должно стирать месяц пути: без аргумента
+    ручка только показывает, что уйдёт в архив, и называет второй шаг —
+    `reset confirm`. Скилл обязан переспросить человека до него.
+
+    Архив, а не удаление: файл переименовывается рядом с датой в имени, и
+    вернуть его — одно `mv` обратно. Резервная копия `.bak` едет следом с тем
+    же хвостом. Ключ привязки к боту уходит в архив вместе со всем — новое
+    сохранение привязывается заново командой `link <ключ>`; неотправленные
+    боту события пропадают, и об этом говорится, а не умалчивается.
+
+    Файлы проекта падавана не трогаются: они его, а не игры.
+    """
+    path = Path(state_path) if state_path else st.state_path()
+    if not path.exists():
+        print("Сохранения нет — начинать заново нечего: игра и так с чистого листа.")
+        return 0
+    try:
+        data = st.load(path)
+    except st.StateError:
+        data = {}
+    rank = data.get("rank", st.RANK_YOUNGLING)
+    summary = [
+        "Ранг: {}".format(ranks.RANK_TITLES.get(rank, rank)),
+        "XP: {}".format(data.get("xp", 0)),
+        "Папка проекта: {}".format((data.get("project") or {}).get("path") or "не назначена"),
+        "Ключ привязки к боту: {}".format("есть" if data.get("link_key") else "нет"),
+        "Событий, не отправленных боту: {}".format(len(data.get("pending_sync") or [])),
+    ]
+    if not args or args[0] != "confirm":
+        print("Начать заново — значит убрать в архив это сохранение:")
+        for line in summary:
+            print("  " + line)
+        print("")
+        print("Файлы проекта останутся на месте: они твои, а не игры.")
+        print("Подтверждение — reset confirm. Без него ничего не меняется.")
+        return 0
+    stamp = time.strftime("%Y-%m-%d-%H%M", time.gmtime())
+    archive = path.with_name(path.name + ".arhiv-" + stamp)
+    # Хвост с секундами — только если минута уже занята: два reset подряд
+    # не должны затирать первый архив вторым.
+    if archive.exists():
+        archive = path.with_name(path.name + ".arhiv-" + time.strftime("%Y-%m-%d-%H%M%S", time.gmtime()))
+    os.replace(str(path), str(archive))
+    backup = st.backup_path(path)
+    if backup.exists():
+        os.replace(str(backup), str(archive) + ".bak")
+    print("Сохранение убрано в архив: {}".format(archive))
+    print("Вернуть, если передумал: mv {} {}".format(archive, path))
+    if data.get("link_key"):
+        print("Ключ привязки уехал вместе с ним: новое сохранение привяжи заново — link <ключ>.")
+    if data.get("pending_sync"):
+        print("Неотправленные боту события пропали вместе с архивом — их было {}.".format(
+            len(data["pending_sync"])))
+    if _inside_golokron():
+        # Голокрон закрывает Подготовку в одну сторону и исчезнувшее
+        # сохранение не замечает намеренно: заново спросить папку и всё
+        # остальное он сможет только с перезапуска.
+        print("Теперь закрой Голокрон целиком и открой заново — он спросит папку продукта и всё остальное с начала.")
+    else:
+        print("Новая игра начнётся с первой же команды: /jedicoder:start.")
+    return 0
+
+
 def _cmd_book(args, state_path, content_root, quests_root):
-    """Ответ падавана про Голокрон: открывать вкладку или нет.
+    """Ответ падавана про Книгу: открывать вкладку или нет.
 
     Спрашивает модель, отвечает эта ручка — input() из cli.py невозможен
     (TTY нет). Запись идёт через st.update_state: новый код обязан ходить
@@ -1823,11 +2122,11 @@ def _cmd_book(args, state_path, content_root, quests_root):
         data = _load(state_path)
         answer = data.get("book_open")
         if answer is True:
-            print("Голокрон: открывается сам на входе в главу.")
+            print("Книга: открывается сама на входе в главу.")
         elif answer is False:
-            print("Голокрон: сам не открывается, ссылку печатаю.")
+            print("Книга: сама не открывается, ссылку печатаю.")
         else:
-            print("Голокрон: не отвечено.")
+            print("Книга: не отвечено.")
             print("book yes — открывать вкладку; book no — не открывать.")
         return 0
     choice = args[0]
@@ -1843,7 +2142,7 @@ def _cmd_book(args, state_path, content_root, quests_root):
         # раньше, чем игра успела спросить.
         fresh["book_asked"] = True
     if BOOK_ANSWERS[choice]:
-        print("Голокрон буду открывать на входе в каждую главу.")
+        print("Книгу буду открывать на входе в каждую главу.")
     else:
         print("Не буду открывать — ссылку на разворот всё равно напечатаю.")
     return 0
@@ -1864,6 +2163,8 @@ HANDLERS = {
     "sync": _cmd_sync,
     "finale": _cmd_finale,
     "book": _cmd_book,
+    "reset": _cmd_reset,
+    "recipe": _cmd_recipe,
 }
 
 

@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
-# Акт 3, квест 05: DECISIONS.md — журнал, который вёлся, а не создан разом.
+# Акт 3, квест 05: DECISIONS.md — журнал решений, который ведут по ходу.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../../_lib/emit.sh"
 
 DATE_RE='^##[[:space:]]+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
 
+command -v git >/dev/null 2>&1 || jc_bail "не найден git — поставь его и вернись"
+git rev-parse --git-dir >/dev/null 2>&1 \
+  || jc_bail "это не git-репозиторий — сначала пройди Акт 2"
+
 enough_entries() {
   awk -v re="$DATE_RE" '$0 ~ re {n++} END {exit (n >= 2) ? 0 : 1}' DECISIONS.md
 }
 
-distinct_days() {
-  awk -v re="$DATE_RE" '$0 ~ re {d[$2] = 1}
-       END {n = 0; for (k in d) n++; exit (n >= 2) ? 0 : 1}' DECISIONS.md
+# Дни считаются по коммитам, трогавшим журнал, а не по датам в заголовках:
+# вчерашнюю дату можно вписать руками, вчерашний коммит — нет. До 2026-09-11
+# проверка смотрела в заголовки, и квест «вернись завтра» закрывался в тот
+# же день (найдено живым прогоном). Дата автора, короткая, в его часовом
+# поясе — как её видит сам падаван в git log.
+commit_days() {
+  git log --format=%ad --date=short -- DECISIONS.md 2>/dev/null | sort -u | grep -c .
 }
+
+# Один день коммитов при двух записях — не провал, а календарь: попытка не
+# тратится, протокол «третья попытка — стоп» не печатается (живой прогон
+# 2026-09-11: на календарном квесте он советовал «начни новый чат»).
+if [ -s DECISIONS.md ] && enough_entries && [ "$(commit_days)" -eq 1 ]; then
+  jc_bail "Журнал в порядке, но коммитили его пока один день. Вернись завтра с новым решением — попытка не тратится"
+fi
+
+distinct_commit_days() { [ "$(commit_days)" -ge 2 ]; }
 
 jc_init "act3/05-decisions"
 jc_check decisions_exists "DECISIONS.md есть и непустой" \
@@ -21,7 +38,7 @@ jc_check decisions_exists "DECISIONS.md есть и непустой" \
 jc_check decisions_entries "В журнале не меньше двух записей «## ГГГГ-ММ-ДД …»" \
   "Каждая запись — заголовок «## 2026-07-27 — что решили» и абзац почему" \
   enough_entries
-jc_check decisions_dates "Записи сделаны минимум в два разных дня" \
-  "Журнал ведут по ходу работы — вернись к нему завтра с новым решением" \
-  distinct_days
+jc_check decisions_dates "Журнал коммитили минимум в два разных дня" \
+  "Дни считаются по коммитам, трогавшим DECISIONS.md: закоммить сегодняшнюю запись и вернись к журналу завтра с новым решением" \
+  distinct_commit_days
 jc_finish

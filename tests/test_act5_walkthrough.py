@@ -1,11 +1,24 @@
 """Сквозной тест Акта 5: оба трека до ранга Мастер и карточки finale,
 той же дверью, что падаван, — через cli.py. Веб и сервер — стабы в PATH.
+
+Акт 5 выключен (ranks.MUTED_ACTS, решение автора 2026-09-10): войти в него
+нельзя, значит и пройти его дверью падавана нельзя тоже. Файл не удалён и не
+переписан: он оживёт сам в тот день, когда номер уйдёт из MUTED_ACTS.
+
+Проверки самого акта при этом гоняются как прежде — они в
+tests/test_act5_checks.py и от входа в акт не зависят.
 """
 import pytest
 
 from test_act4_checks import fake_ssh  # noqa: F401 — фикстура pytest
 from test_act5_checks import fake_web  # noqa: F401 — фикстура pytest
 from jedicoder import cli, ranks, state as st
+
+
+pytestmark = pytest.mark.skipif(
+    ranks.is_muted(5),
+    reason="Акт 5 выключен (ranks.MUTED_ACTS): войти в него нельзя, пройти — тем более",
+)
 
 
 def run_cli(args, paths, capsys):

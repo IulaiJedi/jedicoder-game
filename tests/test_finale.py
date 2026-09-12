@@ -52,9 +52,18 @@ def facts(**over):
 
 
 def midway(**over):
-    """Факты того, кто в середине пути: Страж, четыре акта из пяти."""
+    """Факты того, кто до конца ещё не дошёл.
+
+    Пока Акт 5 выключен, «конец» — это Страж, и серединой пути стал Рыцарь:
+    ранг ниже финального ровно на один акт. Список закрытых актов взят
+    оттуда же, а не набран руками, — иначе тест разошёлся бы с реестром в тот
+    день, когда акт вернут.
+    """
+    last = ranks.FINAL_ACT
+    midway_rank = ranks.ACTS[last - 1]["rank"]
     base = facts(
-        rank="sentinel", rank_title="Страж", acts_completed=[1, 2, 3, 4],
+        rank=midway_rank, rank_title=ranks.RANK_TITLES[midway_rank],
+        acts_completed=list(range(1, last)),
         product_url=None, days_in_path=9, terms_unlocked=12, xp=210,
     )
     base.update(over)
@@ -83,9 +92,17 @@ def test_master_card_carries_the_finale_page():
 def test_card_is_given_at_any_rank_not_only_to_the_master():
     """Свиток выдаётся на любом ранге — карточка в нём тоже."""
     card = cli.render_rank_card(midway(), commits=12)
-    assert "=== Карточка Стража ===" in card
-    assert "Закрыто актов: 4 из 5." in card
-    assert "Акт 4. Щит" in card
+    # Имя ранга — из реестра, а не строкой: с выключенным Актом 5 серединой
+    # пути стал Рыцарь, и прибитая строка сломалась бы при каждом сдвиге.
+    midway_title = ranks.RANK_TITLES[ranks.ACTS[ranks.FINAL_ACT - 1]["rank"]]
+    assert "=== Карточка {} ===".format(scroll.genitive(midway_title)) in card
+    # Числитель тоже из реестра: середина пути — на один акт короче финала.
+    assert "Закрыто актов: {} из {}.".format(
+        ranks.FINAL_ACT - 1, len(ranks.playable_acts())
+    ) in card
+    # Последний закрытый акт середины пути — предпоследний играбельный.
+    last_closed = ranks.FINAL_ACT - 1
+    assert "Акт {}. {}".format(last_closed, ranks.ACTS[last_closed]["title"]) in card
     assert "Акт 5. Выход в свет" not in card
 
 
@@ -105,7 +122,7 @@ def test_midway_card_promises_nothing_and_never_says_almost():
 def test_youngling_card_stands_on_an_empty_save():
     card = cli.render_rank_card(debrief.facts({}))
     assert "=== Карточка Юнлинга ===" in card
-    assert "Закрыто актов: 0 из 5." in card
+    assert "Закрыто актов: 0 из {}.".format(len(ranks.playable_acts())) in card
     assert "Дней в пути" not in card
     assert "Продукт:" not in card
     assert "Коммитов" not in card
@@ -182,11 +199,17 @@ def test_finale_draws_the_card_and_invites_to_take_the_scroll(
 def test_finale_below_master_names_what_is_missing_and_offers_the_scroll(
     paths, capsys
 ):
-    seeded(paths, closed=(1, 2, 3, 4))
+    """Финал заперт тому, кто не закрыл последний играбельный акт.
+
+    Номера взяты у реестра, а не вписаны: вернётся Акт 5 — тест поедет за ним
+    сам, и незакрытым окажется он.
+    """
+    last = ranks.FINAL_ACT
+    seeded(paths, closed=tuple(range(1, last)))
     code, out = run(["finale"], paths, capsys)
     assert code == 1
-    assert "Страж" in out
-    assert "Акт 5" in out and "Выход в свет" in out
+    assert ranks.RANK_TITLES[ranks.ACTS[last - 1]["rank"]] in out
+    assert "Акт {}".format(last) in out and ranks.ACTS[last]["title"] in out
     # Свиток предлагается уже сейчас — он выдаётся на любом ранге.
     assert "Свиток" in out
     assert "scroll" in out
@@ -245,7 +268,7 @@ def test_the_scroll_carries_a_rank_card_at_any_rank(paths, capsys, project):
     assert run(["scroll"], paths, capsys)[0] == 0
     card = scroll_card(folder)
     assert "=== Карточка Искателя ===" in card
-    assert "Закрыто актов: 1 из 5." in card
+    assert "Закрыто актов: 1 из {}.".format(len(ranks.playable_acts())) in card
 
 
 def test_the_scroll_names_the_card_in_its_table_of_contents(

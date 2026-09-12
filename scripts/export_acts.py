@@ -65,6 +65,12 @@ export interface ActChapter {{
     cutscene: string
     quests: ActQuest[]
     image: string
+    /**
+     * Акт временно выключен: в игру он не пускает, и сайт обязан говорить о
+     * нём как о готовящемся. Источник — ranks.MUTED_ACTS плагина: своей копии
+     * этого списка на сайте нет и быть не должно, иначе она разойдётся молча.
+     */
+    muted: boolean
 }}
 """
 
@@ -134,6 +140,7 @@ def render(items):
         # Ось — из линтера, тем же словом, которым он сверяет фронтматтер:
         # своя копия условия здесь разошлась бы с ним молча.
         out.append("        axis: {},".format(_lit(lint_content.act_axis(item.act))))
+        out.append("        muted: {},".format("true" if ranks.is_muted(item.act) else "false"))
         out.append("        cutscene: {},".format(_lit(item.body)))
         out.append("        quests: [")
         for quest_id, title, branch in _quests(item):

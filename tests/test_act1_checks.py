@@ -5,6 +5,7 @@
 промах на единицу в «не меньше трёх» — дефект ровно того сорта, который
 178 тестов A1 не поймали.
 """
+import pytest
 from jedicoder import quests
 
 SLUG = "act1-poisk-boli"
@@ -149,6 +150,40 @@ def test_one_evening_fails_without_estimate(quests_root, project):
 
 
 # --- 03c-who ---
+
+# Квест называется «назван измеримый критерий», и до 2026-09-10 число в нём
+# НЕ засчитывалось: список принимал только слова. «3–4 раза в неделю»
+# проваливало квест, «постоянно» проходило. Найдено прогоном падаваном.
+MEASURABLE = [
+    "Пользуюсь 3–4 раза в неделю.",
+    "Пользуюсь 3-4 раза в неделю.",
+    "Открываю 2 раза в день.",
+    "Захожу 1 раз в месяц.",
+    "Дважды в неделю.",
+    "Каждый день, утром.",
+    "Раз в неделю по выходным.",
+    "Пользуюсь постоянно.",
+]
+
+VAGUE = [
+    "Иногда захожу.",
+    "Когда вспомню.",
+    "Часто пользуюсь.",
+]
+
+
+@pytest.mark.parametrize("line", MEASURABLE)
+def test_who_accepts_measurable_frequency(quests_root, project, line):
+    body = "# Для кого\n\nДля себя. " + line + "\n"
+    assert run(quests_root, project, "03c-who", {"WHO.md": body}).ok is True
+
+
+@pytest.mark.parametrize("line", VAGUE)
+def test_who_rejects_vague_frequency(quests_root, project, line):
+    body = "# Для кого\n\nДля себя. " + line + "\n"
+    result = run(quests_root, project, "03c-who", {"WHO.md": body})
+    assert "who_frequency" in {c["id"] for c in quests.failed_checks(result)}
+
 
 def test_who_passes(quests_root, project):
     result = run(quests_root, project, "03c-who", {"WHO.md": WHO_OK})

@@ -3,7 +3,7 @@ node: model-choice
 title: Первый вечер — чем именно за тебя думают
 order: 44
 section: first-session
-options: [python-check]
+options: [usage-limit]
 option_titles: ["Дальше"]
 ---
 Моделей несколько, и они разной силы. У каждой есть ещё мощность

@@ -1,6 +1,8 @@
 """Сквозной тест Акта 3. Наполняется по мере готовности квестов;
 проход целиком — в финальной задаче плана.
 """
+import os
+import subprocess
 import pytest
 
 from test_act3_checks import commit_all, live_server  # noqa: F401 — фикстура pytest
@@ -103,6 +105,17 @@ def test_full_walkthrough_through_cli(
     _git(proj, "add", "-A")
     _git(proj, "commit", "-q", "-m", "костыль")
     _git(proj, "revert", "--no-edit", "HEAD")
+
+    # журнал решений: дни считаются по коммитам, трогавшим DECISIONS.md, —
+    # вторая запись «вчера», как у падавана, который вернулся к журналу
+    (proj / "DECISIONS.md").write_text(DECISIONS + "\nЕщё абзац.\n", encoding="utf-8")
+    _git(proj, "add", "-A")
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "журнал: вчерашняя запись"],
+        cwd=str(proj), check=True, capture_output=True,
+        env=dict(os.environ, GIT_AUTHOR_DATE="2026-07-27T12:00:00+0000",
+                 GIT_COMMITTER_DATE="2026-07-27T12:00:00+0000"),
+    )
 
     # босс требует изменить CLAUDE.md после входа
     (proj / "CLAUDE.md").write_text(

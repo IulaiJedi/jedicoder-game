@@ -138,6 +138,25 @@ def test_render_uses_teen_register():
     assert "налог" in out.lower()
 
 
+def test_track_is_not_invented_before_the_padawan_picks_it():
+    """Трек не выбран — контракт так и говорит, а не подставляет Ремесленника.
+
+    Прогон падаваном 2026-09-10: `contract` печатал «Трек Ремесленник: не
+    заводи разговор о рынке» ещё до вопроса о треке. Будущий Основатель
+    получал указание ровно наоборот, и заметить это было нечем: `status`
+    в ту же минуту честно писал «трек не выбран».
+    """
+    rendered = contract.render("тело", {})
+    assert "Трек ещё не выбран" in rendered
+    assert "Трек Ремесленник" not in rendered
+    assert "Трек Основатель" not in rendered
+
+
+def test_chosen_track_still_wins():
+    assert "Трек Ремесленник" in contract.render("тело", {"track": "craftsman"})
+    assert "Трек Основатель" in contract.render("тело", {"track": "founder"})
+
+
 def test_render_founder_and_craftsman_differ():
     craftsman = contract.render("тело", {"track": "craftsman"})
     founder = contract.render("тело", {"track": "founder"})

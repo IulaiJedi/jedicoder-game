@@ -740,3 +740,16 @@ def test_scroll_issued_is_a_known_event_the_scene_stays_silent_on():
     assert "scroll_issued" in st.EVENT_TYPES
     assert "scroll_issued" in st.SILENT_EVENTS
     assert "scroll_issued" not in content.MAGISTR_EVENTS
+
+
+def test_debrief_counts_acts_against_the_playable_ones(monkeypatch):
+    """Разбор и карточка ранга печатают одно и то же «из скольких»: число
+    берётся из playable_acts, а не из полного реестра, иначе при выключенном
+    Акте 5 Разбор говорит «4 из 5», а finale в той же сессии — «4 из 4».
+    Найдено живым прогоном 2026-09-10."""
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (5,))
+    page = texts(scroll.build(facts(), instructions("goal"), today=TODAY))[
+        scroll.DEBRIEF_NAME
+    ]
+    assert "- Закрыто актов: 1 из {}".format(len(ranks.playable_acts())) in page
+    assert "из {}".format(len(ranks.ACTS)) not in page

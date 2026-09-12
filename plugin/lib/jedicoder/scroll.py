@@ -478,7 +478,12 @@ def _path_section(facts):
         "{} ({})".format(title, rank) if title and title != rank else title
     ))
     done = facts.get("acts_completed") or []
-    lines.append("- Закрыто актов: {} из {}".format(len(done), len(ranks.ACTS)))
+    # Знаменатель — играбельные акты, как у карточки ранга в cli.py: полный
+    # реестр при выключенном Акте 5 давал «4 из 5» в Разборе против
+    # «4 из 4» на карточке в той же сессии (живой прогон 2026-09-10).
+    lines.append("- Закрыто актов: {} из {}".format(
+        len(done), len(ranks.playable_acts())
+    ))
     for number in done:
         entry = ranks.ACTS.get(number) or {}
         name = entry.get("title")

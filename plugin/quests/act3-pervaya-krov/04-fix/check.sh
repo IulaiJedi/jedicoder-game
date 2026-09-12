@@ -29,12 +29,20 @@ has_fix_commit() {
   [ "$(git rev-list --count "${marker}..HEAD" 2>/dev/null || echo 0)" -ge 1 ]
 }
 
+# Корень или /health: рецепт велит боту завести страницу «жив», и её кладут
+# на /health по привычке всего мира; проверка не вправе требовать корень
+# (живой прогон 2026-09-11: попытка ушла на 404 корня при живом /health).
+jc_alive() {
+  curl -sf --max-time 10 -o /dev/null "$1" \
+    || curl -sf --max-time 10 -o /dev/null "$1/health"
+}
+
 jc_init "act3/04-fix"
 jc_check fix_committed "После слома есть коммит с починкой" \
   "Скорми ИИ ошибку целиком, почини и закоммить починку" \
   has_fix_commit
 jc_check server_alive \
-  "Проект снова отвечает на http://localhost:${JEDICODER_PORT}" \
+  "Проект снова отвечает на http://localhost:${JEDICODER_PORT} (корень или /health)" \
   "Проверь, что проект запускается после починки" \
-  curl -sf --max-time 10 -o /dev/null "http://localhost:${JEDICODER_PORT}"
+  jc_alive "http://localhost:${JEDICODER_PORT}"
 jc_finish

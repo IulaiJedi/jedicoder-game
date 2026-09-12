@@ -268,7 +268,7 @@ def test_act4_terms_present(content_root):
 # сменил объявленную точку введения на ту, где человек действительно
 # впервые открывает терминал, и снял два маркера `lint:novelty-ok` из узлов
 # Акта 0 — подавление правила ради слова, которое встречается именно здесь.
-ACT0_TERMS = ("model-effort", "permission-mode", "terminal")
+ACT0_TERMS = ("model-effort", "permission-mode", "terminal", "usage")
 
 
 def test_act0_terms_named_and_questless(content_root):
@@ -300,10 +300,12 @@ def test_act0_terms_named_and_questless(content_root):
 # Числа сюда не попадают намеренно: летучие факты живут в командах
 # `/context` и `/usage`, а не в тексте (см. тест на летучие числа в
 # tests/test_language.py).
+# `usage` из этой карты ушёл в Акт 0 (2026-09-10, вместе со строкой состояния):
+# в лимит падаван упирается не тогда, когда разговор стал длинным по-настоящему,
+# а когда угодно — и узнать про него обязан до того, а не после.
 CLAUDE_CODE_TERMS = {
     "context-window": (3, "01-launch"),
     "clear": (3, "02-feature"),
-    "usage": (3, "02-feature"),
 }
 
 

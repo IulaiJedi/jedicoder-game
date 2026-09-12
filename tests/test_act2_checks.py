@@ -159,6 +159,50 @@ def test_env_guard_catches_openai_project_key_in_history(quests_root, project):
     assert ids == ["no_secrets_in_history"]
 
 
+def _leak(quests_root, project, line):
+    """Строка попала в коммит: чем кончится проверка Акта 2."""
+    proj = project(gitignore=".env\n", git=True, commits=1)
+    (proj / "conf.py").write_text(line + "\n", encoding="utf-8")
+    _git(proj, "add", "-A")
+    _git(proj, "commit", "-q", "-m", "конфиг")
+    return check(quests_root, "05-env-guard", proj)
+
+
+# Второй заход по паттерну (2026-09-10, прогон игры по CLI): три самых
+# частых утечки уходили мимо. Все три — у падавана, который довёл продукт до
+# денег и до чужой инфраструктуры, то есть ровно у того, кому Акт 4 и нужен.
+# Ключи собраны из двух кусков нарочно: цельный литерал вида sk_live_… или xoxb-…
+# защита GitHub принимает за настоящий секрет и отклоняет push публичной
+# выгрузки (проверено 2026-09-12). Проверке плагина это безразлично — в
+# файл падавана попадает уже склеенная строка.
+_STRIPE_TAIL = "51HAbCdEfGhIjKlMnOpQrStUv"
+
+
+@pytest.mark.parametrize("line", [
+    'STRIPE_SECRET = "sk_live_' + _STRIPE_TAIL + '"',
+    'STRIPE_TEST = "sk_test_' + _STRIPE_TAIL + '"',
+    'STRIPE_RESTRICTED = "rk_live_' + _STRIPE_TAIL + '"',
+    'AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"',
+    'SLACK_BOT_TOKEN = "xoxb-' + "123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx" + '"',
+])
+def test_env_guard_catches_common_leaks(quests_root, project, line):
+    result = _leak(quests_root, project, line)
+    assert [c["id"] for c in quests.failed_checks(result)] == ["no_secrets_in_history"]
+
+
+# Обратная сторона: паттерн, который ловит лишнее, учит неправде. Публикуемый
+# ключ Stripe живёт в коде страницы по замыслу, «risk-» — обычное слово, а
+# `*_test_` встречается в именах функций чаще, чем в ключах.
+@pytest.mark.parametrize("line", [
+    'STRIPE_PUBLISHABLE = "pk_live_' + _STRIPE_TAIL + '"',
+    'DOC = "risk-assessment-document-2026-quarter"',
+    'def task_test_helper_function(): pass',
+    'NOTE = "AKIASHORT"',
+])
+def test_env_guard_ignores_things_that_only_look_like_keys(quests_root, project, line):
+    assert _leak(quests_root, project, line).ok is True
+
+
 def test_env_guard_passes_when_clean(quests_root, project):
     proj = project(gitignore=".env\n.venv\n", git=True, commits=1)
     assert check(quests_root, "05-env-guard", proj).ok is True

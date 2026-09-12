@@ -28,6 +28,22 @@ def run(*args):
     )
 
 
+# Мьют акта едет с генератором (решение 2026-09-10): своей копии MUTED_ACTS
+# на сайте нет, иначе она разойдётся с плагином молча — тем же способом, каким
+# однажды разошёлся текст Акта 0 между двумя репозиториями.
+
+def test_generated_acts_carry_the_mute_flag():
+    from jedicoder import ranks
+    out = run().stdout.decode("utf-8")
+    # Режем по началу строки с отступом: подстрока «act: » есть и внутри
+    # «artifact: », и наивный split обрывал бы блок на первом же поле.
+    marker = "\n        act: "
+    for number in sorted(ranks.ACTS):
+        block = out.split("{}{},".format(marker, number), 1)[1].split(marker, 1)[0]
+        expected = "muted: true" if ranks.is_muted(number) else "muted: false"
+        assert expected in block, "акт {}: нет строки {!r}".format(number, expected)
+
+
 def test_real_content_exports_cleanly():
     result = run()
     assert result.returncode == 0, result.stderr.decode("utf-8")

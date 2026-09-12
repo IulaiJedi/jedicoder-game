@@ -66,7 +66,7 @@ def test_subcommands_declared():
     assert cli.SUBCOMMANDS == (
         "status", "contract", "enter", "check", "ack", "project", "track",
         "artifact", "debrief", "scroll", "link", "sync", "finale", "book",
-        "root",
+        "root", "reset", "recipe",
     )
 
 
@@ -375,11 +375,166 @@ def test_book_url_names_the_act(monkeypatch):
     assert cli._book_url({"link_key": None}, 2) == "https://example.test/kniga"
 
 
+def test_inside_golokron_book_is_not_offered(paths, capsys, monkeypatch):
+    """Внутри десктопного Голокрона Книга в браузере не предлагается.
+
+    Живой прогон 2026-09-10: падаван в Голокроне на входе в акт читал
+    «Голокрон — книга твоего пути в браузере, открывать?» — приложение, в
+    котором он сидит, предлагало открыть само себя в браузере. Сцена справа
+    показывает то же, что Книга; ни ссылки, ни вопроса, ни вкладки.
+    Флаг «спрошено» не ставится: выйдя в обычный терминал, падаван вопрос
+    услышит.
+    """
+    monkeypatch.setenv(cli.GOLOKRON_MARK, "1")
+    run(["track", "craftsman"], paths, capsys)
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    assert "Акт 1." in out
+    assert "book yes" not in out
+    assert "Разворот этой главы" not in out
+    assert "браузер" not in out
+    assert "book_asked" not in st.load(paths["state_path"]) or \
+        st.load(paths["state_path"])["book_asked"] is not True
+
+
+# --- Тип продукта и рецепты (прогон падаваном 2026-09-10) ---
+#
+# Три рецепта лежали в контент-ядре, линтер их валидировал, тесты прибивали
+# состав — и ни одна команда их не показывала. Ручки типа не было вовсе, а в
+# контракт модели всегда уходило «Тип продукта: unknown». Квест 01 Акта 2 при
+# этом велит «выбрать стек по рецепту своего типа продукта».
+
+def test_project_type_writes_and_shows(paths, capsys):
+    code, out = run(["project", "type", "telegram-bot"], paths, capsys)
+    assert code == 0
+    assert "Телеграм-бот" in out
+    assert st.load(paths["state_path"])["project"]["type"] == "telegram-bot"
+    code, out = run(["project"], paths, capsys)
+    assert code == 0
+    assert "Телеграм-бот" in out
+
+
+def test_project_type_rejects_unknown_and_keeps_previous(paths, capsys):
+    run(["project", "type", "landing"], paths, capsys)
+    code, out = run(["project", "type", "квадрокоптер"], paths, capsys)
+    assert code == 1
+    assert "telegram-bot" in out and "landing" in out and "web-service" in out
+    # Мусор не затирает выбор — то же правило, что у трека и пути деплоя.
+    assert st.load(paths["state_path"])["project"]["type"] == "landing"
+
+
+def test_project_type_names_the_deploy_path_the_recipe_expects(paths, capsys):
+    """Рецепт знает путь деплоя; падавану про это говорят сразу, а не в Акте 4."""
+    code, out = run(["project", "type", "web-service"], paths, capsys)
+    assert code == 0
+    assert "vps" in out
+
+
+def test_recipe_prints_the_recipe_of_the_chosen_type(paths, capsys):
+    run(["project", "type", "telegram-bot"], paths, capsys)
+    code, out = run(["recipe"], paths, capsys)
+    assert code == 0
+    assert "Телеграм-бот" in out
+    assert "aiogram" in out
+    # Тело рецепта, а не только заголовок: грабли и есть главное в нём.
+    assert "грабел" in out.lower()
+    # Служебные пометки линтера адресованы автору, а не падавану.
+    assert "lint:" not in out
+
+
+def test_recipe_without_type_lists_what_there_is(paths, capsys):
+    code, out = run(["recipe"], paths, capsys)
+    assert code == 0
+    assert "telegram-bot" in out and "landing" in out and "web-service" in out
+    assert "project type" in out
+
+
+def test_recipe_by_name_without_choosing(paths, capsys):
+    """Посмотреть чужой рецепт можно, не назначая его себе: падаван выбирает
+    из трёх, а не вслепую."""
+    code, out = run(["recipe", "landing"], paths, capsys)
+    assert code == 0
+    assert "Лендинг" in out
+    assert st.load(paths["state_path"]).get("project", {}).get("type") is None
+
+
+def test_contract_carries_the_chosen_type(paths, capsys):
+    run(["project", "type", "web-service"], paths, capsys)
+    code, out = run(["contract"], paths, capsys)
+    assert code == 0
+    assert "Тип продукта: web-service" in out
+    assert "unknown" not in out
+
+
+def test_reset_without_confirm_changes_nothing(paths, capsys):
+    """«Начни заново», сказанное вскользь, не стирает путь: без подтверждения
+    ручка только показывает, что уйдёт в архив."""
+    data = st.default_state("local-test")
+    data["xp"] = 80
+    st.save(data, paths["state_path"])
+    before = Path(paths["state_path"]).read_bytes()
+    code, out = run(["reset"], paths, capsys)
+    assert code == 0
+    assert "reset confirm" in out
+    assert "XP: 80" in out
+    assert Path(paths["state_path"]).read_bytes() == before
+
+
+def test_reset_confirm_archives_save_next_to_it(paths, capsys):
+    """Архив, а не удаление: файл переименован рядом с датой в имени, содержимое
+    то же, и назван путь обратно."""
+    data = st.default_state("local-test")
+    data["xp"] = 80
+    st.save(data, paths["state_path"])
+    before = Path(paths["state_path"]).read_bytes()
+    code, out = run(["reset", "confirm"], paths, capsys)
+    assert code == 0
+    assert not Path(paths["state_path"]).exists()
+    archives = list(Path(paths["state_path"]).parent.glob("state.json.arhiv-*"))
+    archives = [a for a in archives if not a.name.endswith(".bak")]
+    assert len(archives) == 1
+    assert archives[0].read_bytes() == before
+    assert str(archives[0]) in out
+    assert "mv " in out
+    # Дальше — чистый лист: первый экран новичка.
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Юнлинг" in out and "XP" not in out
+
+
+def test_reset_confirm_names_lost_link_and_events(paths, capsys):
+    data = st.default_state("local-test")
+    data["link_key"] = "abcd1234"
+    data["pending_sync"] = [{"type": "x"}, {"type": "y"}]
+    st.save(data, paths["state_path"])
+    code, out = run(["reset", "confirm"], paths, capsys)
+    assert code == 0
+    assert "link <ключ>" in out
+    assert "было 2" in out
+
+
+def test_reset_without_save_is_a_no_op(paths, capsys):
+    code, out = run(["reset", "confirm"], paths, capsys)
+    assert code == 0
+    assert "нечего" in out
+    assert list(Path(paths["state_path"]).parent.glob("state.json.arhiv-*")) == []
+
+
+def test_reset_inside_golokron_says_to_restart(paths, capsys, monkeypatch):
+    """Голокрон закрывает Подготовку в одну сторону: заново спросить папку он
+    сможет только с перезапуска, и об этом говорится сразу."""
+    monkeypatch.setenv(cli.GOLOKRON_MARK, "1")
+    st.save(st.default_state("local-test"), paths["state_path"])
+    code, out = run(["reset", "confirm"], paths, capsys)
+    assert code == 0
+    assert "закрой Голокрон" in out
+
+
 def test_book_question_asked_once(paths, capsys):
     run(["track", "craftsman"], paths, capsys)
     code, first = run(["enter", "1"], paths, capsys)
     assert code == 0
-    assert "book yes" in first and "Голокрон" in first
+    assert "book yes" in first and "Книга" in first
     assert st.load(paths["state_path"])["book_asked"] is True
     code, again = run(["enter", "1"], paths, capsys)
     assert code == 0
@@ -1371,10 +1526,41 @@ def test_status_never_says_commit(paths, capsys):
     позднего слова, а этот называет ровно тот случай, который нашёл живой
     падаван.
     """
+    data = st.default_state("local-test")
+    # Счётчик серии на нуле молчит, поэтому слово надо чем-то вызвать: имя
+    # проверяется у появившегося счётчика, а не у отсутствующего.
+    data["streak"] = {"current": 2, "best": 3}
+    st.save(data, paths["state_path"])
     code, out = run(["status"], paths, capsys)
     assert code == 0
     assert "коммит" not in out.lower()
     assert "Серия сохранений" in out
+
+
+def test_first_screen_hides_zero_counters(paths, capsys):
+    """Первый экран новичка не перечисляет нули.
+
+    Живой заход 2026-09-10: падаван впервые открыл игру и получил список из
+    пяти незнакомых величин — Тёмная сторона 0, серия 0 (лучшая 0) — и прочёл
+    его как приборную панель чужого самолёта. Правило для XP было записано
+    давно и обосновано теми же словами; здесь оно распространено на остальные.
+    """
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Тёмная сторона" not in out
+    assert "Серия сохранений" not in out
+    # Ранг при этом на месте: он не счётчик, он ответ на «кто я сейчас».
+    assert "Юнлинг" in out
+
+
+def test_first_screen_shows_dark_side_once_earned(paths, capsys):
+    """Появившееся очко называется сразу: молчит нуль, а не механика."""
+    data = st.default_state("local-test")
+    data["dark_side"] = 1
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Тёмная сторона: 1" in out
 
 
 def test_first_screen_names_current_dir_when_no_path(paths, capsys):
@@ -1495,3 +1681,51 @@ def test_main_without_a_path_writes_where_the_variable_points(
     assert code == 0
     assert target.exists(), "движок не увидел JEDICODER_STATE_PATH"
     assert json.loads(target.read_text(encoding="utf-8"))["padawan_id"]
+
+
+# --- Вход в акт печатает состав ветки --------------------------------------
+
+def test_enter_lists_the_quests_of_the_branch(paths, capsys):
+    """Падаван после катсцены должен знать, что делать, из самой игры, а не
+    из скилла. Печатаются квесты его ветки с подписями из контент-ядра;
+    чужой ветки нет. Найдено живым прогоном 2026-09-10: после `enter 4`
+    список квестов узнавали из SKILL.md."""
+    assert run(["track", "craftsman"], paths, capsys)[0] == 0
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    assert "Квесты акта" in out
+    assert "01-idea" in out and "Идея" in out
+    assert "03c-who" in out
+    assert "03f-market" not in out
+    # Список стоит до катсцены: сначала карта пути, потом слово.
+    assert out.index("01-idea") < out.index("амысел")
+
+
+def test_enter_marks_ack_quests(paths, capsys):
+    """Квест без проверки помечен прямо в списке: иначе падаван будет гонять
+    check там, где нужен ack (в прогоне так и было с 04m-guard)."""
+    run(["track", "craftsman"], paths, capsys)
+    data = st.load(paths["state_path"])
+    data["acts"] = {"1": {"status": "done", "quests": {}}}
+    st.save(data, paths["state_path"])
+    code, out = run(["enter", "2"], paths, capsys)
+    assert code == 0
+    assert "06-pipeline" in out
+    line = next(l for l in out.splitlines() if "06-pipeline" in l)
+    assert "ack" in line
+
+
+def test_project_names_the_recipes_deploy_path_until_chosen(paths, capsys):
+    """`recipe` печатал «Путь деплоя: managed», а `project` рядом — «не
+    назван»: читалось как противоречие (живой прогон 2026-09-11). Пока путь
+    не выбран, `project` называет, чего ждёт рецепт, и ручку."""
+    assert run(["project", "type", "telegram-bot"], paths, capsys)[0] == 0
+    code, out = run(["project"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if "Путь деплоя" in l)
+    assert "не назван" in line and "managed" in line
+    assert "project deploy managed" in line
+    assert run(["project", "deploy", "vps"], paths, capsys)[0] == 0
+    _, out = run(["project"], paths, capsys)
+    line = next(l for l in out.splitlines() if "Путь деплоя" in l)
+    assert line.strip() == "Путь деплоя: vps"
