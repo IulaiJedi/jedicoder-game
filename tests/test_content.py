@@ -20,6 +20,7 @@ TERM_OK = (
     "act: 2\n"
     "category: git\n"
     "xp: 5\n"
+    "example: Сохранил игру перед боссом — можно вернуться.\n"
     "---\n"
     "**Коммит** — точка сохранения.\n"
     "\n"
@@ -67,6 +68,48 @@ def test_term_without_quest_loads(tmp_path):
 def test_quest_is_not_required(tmp_path):
     """quest не в TERM_REQUIRED — иначе фаза обязана разметить все 55."""
     assert "quest" not in content.TERM_REQUIRED
+
+
+def test_term_example_parsed(tmp_path):
+    """Пример из жизни — вторая строка карточки в терминале (#66)."""
+    write(tmp_path, "lexicon/commit.md", TERM_OK)
+    term = content.load_terms(tmp_path)[0]
+    assert term.example == "Сохранил игру перед боссом — можно вернуться."
+
+
+def test_term_without_example_is_a_schema_error(tmp_path):
+    """Поле обязательное с #72: все термины поставки его несут, и термин без
+    примера не доедет до карточки в терминале."""
+    write(tmp_path, "lexicon/commit.md", TERM_OK.replace(
+        "example: Сохранил игру перед боссом — можно вернуться.\n", ""
+    ))
+    with pytest.raises(content.ContentError) as exc:
+        content.load_terms(tmp_path)
+    assert "example" in str(exc.value)
+    assert "example" in content.TERM_REQUIRED
+
+
+def test_example_words_limit_is_the_sentence_limit():
+    """Пример — одна фраза, предел тот же, что у фразы в language.md."""
+    assert content.EXAMPLE_WORDS_MAX == 15
+
+
+@pytest.mark.parametrize("value, hint", [
+    ("[а, б]", "строкой"),
+    ("''", "обязательных"),
+    (" ".join("слово{}".format(i) for i in range(16)), "16 слов"),
+    ("Первая фраза. Вторая фраза.", "одна фраза"),
+])
+def test_bad_example_is_a_schema_error(tmp_path, value, hint):
+    """Список, пустая строка, 16 слов или две фразы — ошибка схемы с причиной."""
+    write(tmp_path, "lexicon/commit.md", TERM_OK.replace(
+        "example: Сохранил игру перед боссом — можно вернуться.\n",
+        "example: {}\n".format(value),
+    ))
+    with pytest.raises(content.ContentError) as exc:
+        content.load_terms(tmp_path)
+    assert "example" in str(exc.value)
+    assert hint in str(exc.value)
 
 
 def test_terms_sorted_by_filename(tmp_path):

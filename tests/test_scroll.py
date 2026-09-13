@@ -91,17 +91,17 @@ def test_build_returns_named_files_and_touches_no_disk(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-# Имя Свитка — имя ранга владельца. Слова здесь, в тесте, а не в движке:
+# Имя памятки — имя ранга владельца. Слова здесь, в тесте, а не в движке:
 # именительный падеж живёт в ranks.RANK_TITLES единственным источником, а
 # склонение выводится правилом. Переименуют ранг — упадёт эта строка, а не
 # молча разойдётся вторая таблица имён.
 SCROLL_NAMES = {
-    "youngling": "Свиток Юнлинга",
-    "seeker": "Свиток Искателя",
-    "padawan": "Свиток Падавана",
-    "knight": "Свиток Рыцаря",
-    "sentinel": "Свиток Стража",
-    "master": "Свиток Мастера",
+    "youngling": "Памятка Юнлинга",
+    "seeker": "Памятка Искателя",
+    "padawan": "Памятка Падавана",
+    "knight": "Памятка Рыцаря",
+    "sentinel": "Памятка Стража",
+    "master": "Памятка Мастера",
 }
 
 
@@ -131,7 +131,7 @@ def test_unknown_rank_falls_back_to_the_title_it_was_given():
         facts(rank="archivist", rank_title="Архивариус"),
         instructions("goal"), today=TODAY,
     ))[scroll.INDEX_NAME]
-    assert "Свиток Архивариуса" in page
+    assert "Памятка Архивариуса" in page
 
 
 def test_build_orders_instructions_by_the_engine_registry():
@@ -155,7 +155,7 @@ def test_instruction_page_is_title_plus_body_and_nothing_else():
     page = texts(scroll.build(facts(), {"plan": item}, today=TODAY))["plan.md"]
     assert page.startswith("# Как спланировать\n")
     assert "## Что это" in page
-    assert "Свиток" not in page
+    assert "Свиток" not in page and "Памятка" not in page
     assert "ранг" not in page.lower()
 
 
@@ -753,3 +753,13 @@ def test_debrief_counts_acts_against_the_playable_ones(monkeypatch):
     ]
     assert "- Закрыто актов: 1 из {}".format(len(ranks.playable_acts())) in page
     assert "из {}".format(len(ranks.ACTS)) not in page
+
+
+def test_debrief_names_the_track_in_words_the_padawan_heard():
+    """Разбор ложится в проект падавана: трек словами «для себя» / «для
+    людей», а не именем ручки craftsman (прогон 2026-09-13)."""
+    page = texts(scroll.build(facts(track="craftsman"), instructions("goal"), today=TODAY))[
+        scroll.DEBRIEF_NAME
+    ]
+    assert "- Продукт: для себя" in page
+    assert "craftsman" not in page

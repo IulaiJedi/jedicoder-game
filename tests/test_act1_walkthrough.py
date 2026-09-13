@@ -130,14 +130,16 @@ def test_act1_does_not_close_early_for_founder(tmp_path, quests_root, project):
 def test_enter_act1_without_track_refuses(tmp_path, quests_root, capsys):
     jc, state_path = runner(tmp_path, quests_root)
     assert jc("enter", "1") == 1
-    assert "трек" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "для себя" in out and "для людей" in out
     assert st.load(state_path)["acts"] == {}, "отказанный вход не начинает акт"
 
 
 def test_status_without_track_says_so(tmp_path, quests_root, capsys):
     jc, _ = runner(tmp_path, quests_root)
     assert jc("status") == 0
-    assert "трек не выбран" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "для кого продукт" in out and "craftsman" not in out
 
 
 def test_wrong_track_quest_is_refused(tmp_path, quests_root, project, capsys):

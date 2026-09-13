@@ -85,7 +85,7 @@ def test_full_walkthrough_through_cli(
     )
     assert scene.body in out
     assert any(
-        line.startswith("Разворот этой главы: ") for line in out.splitlines()
+        line.startswith("Книга — ") for line in out.splitlines()
     ), out
     assert st.load(paths["state_path"])["link_key"] is None
 

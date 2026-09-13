@@ -136,7 +136,7 @@ def can_enter_act(state, act):
     if entry and entry.get("status") == STATUS_DONE:
         return True, ""
     return False, (
-        "Акт {} опирается на артефакты Акта {}. Сначала закрой Акт {} — "
+        "Акт {} опирается на приёмы Акта {}. Сначала закрой Акт {} — "
         "иначе дальше придётся возвращаться.".format(act, previous, previous)
     )
 

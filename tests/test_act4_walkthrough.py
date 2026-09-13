@@ -49,6 +49,8 @@ def test_managed_walkthrough(paths, capsys, project):
     assert code == 0
     assert "закрыт" in out
     assert "Страж" in out
+    # Конец игры зовёт памятку словами таблицы замен (language.md).
+    assert "памятк" in out.lower() and "Свиток" not in out
 
     data = st.load(paths["state_path"])
     assert data["rank"] == "sentinel"

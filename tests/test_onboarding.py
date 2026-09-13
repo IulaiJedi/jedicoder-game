@@ -125,97 +125,46 @@ def test_shipped_onboarding_is_clean(content_root):
     assert lint_content._onboarding_problems(items) == []
 
 
-# --- Поставка: где играть спрашивают один раз -------------------------
+# --- Поставка: пять шагов, один путь ----------------------------------
 #
 # Именные стражи того же рода, что ACT0_TERMS в test_content.py: линтер
 # меряет форму дерева, а не то, какие шаги в нём стоят и в каком порядке.
-# Миров, в которых запускают игру, три — терминал, приложение Claude и
-# Голокрон, — и ни один из них человеку не предлагают дважды.
 #
-# Вопросов при этом два, и они разные. Голокрон ставит машину сам, поэтому
-# про него спрашивают в начале, сразу после системы: предложить его после
-# установки значило бы сначала заставить человека сделать руками ровно то,
-# за чем он бы и скачал приложение. Терминал и приложение Claude — вопрос
-# про запуск, и он стоит в конце, когда игра уже стоит.
-#
-# Чего здесь больше нет: Голокрона отдельным шагом после первого запуска.
-# Тогда про способ игры спрашивали дважды об одном и том же — сначала
-# «терминал или приложение», потом «а вот ещё одно окно под ту же игру».
+# Вход в игру один — приложение под свою систему (ADR-0015). Акт 0 — пять
+# шагов, одинаковых для Windows, macOS и Linux, без единой развилки: скачай
+# → открой → приложение поставит остальное → войди в Claude → код от бота.
+# Прежнего дерева с вопросами «где играть» и веткой для macOS без приложения
+# больше нет, и его стражи сняты вместе с ним.
 
-WHERE_NODE = "where-to-play"
-GOLOKRON_NODE = "golokron"
-GOLOKRON_URL = "https://jedicoder.store/golokron"
+STEPS = ("start", "open", "prepare", "login", "link-key")
+START_NODE, OPEN_NODE, PREPARE_NODE, LOGIN_NODE, LINK_NODE = STEPS
+LINK_SECTION = "link"
+# Узел — одно сообщение бота и одна карточка на сайте: до пяти абзацев.
+NODE_PARAGRAPHS_MAX = 5
+
+# Ссылки на выпуски — те же, что на странице /golokron сайта: репозиторий
+# выпусков и имена файлов из golokron/electron-builder.yml (artifactName,
+# без номера версии — иначе адрес «последнего выпуска» умрёт на первом же
+# релизе). Одна на систему; AppImage не предлагается — в имени файла есть
+# подчёркивание, а его бот принимает за разметку и роняет сообщение.
+RELEASES = "https://github.com/IulaiJedi/golokron-releases/releases/latest/download/"
+DOWNLOADS = (
+    RELEASES + "golokron-setup.exe",
+    RELEASES + "golokron-arm64.dmg",
+    RELEASES + "golokron-amd64.deb",
+)
 # Два шага мимо предупреждения SmartScreen — то, что человек ищет глазами в
 # момент испуга. Подписи кнопок Windows приводятся дословно, в «ёлочках».
 SMARTSCREEN_STEPS = ("«Подробнее»", "«Выполнить в любом случае»")
-# Три мира, в которых запускают игру. Порядок — тот, в каком их предлагают:
-# сначала Голокрон в начале пути, потом терминал и приложение Claude в конце.
-WORLDS = (GOLOKRON_NODE, "project-folder", "app-project")
-# Две двери последнего вопроса, в порядке кнопок: первым стоит тот мир, в
-# котором человек уже находится, — терминал (он начинается с папки продукта).
-HAND_WORLDS = ("project-folder", "app-project")
-INSTALL_NODE = "plugin-install"
-# Разбор «такой команды нет» — общий для всех трёх миров: первый запуск игры
-# стоит теперь в каждом из них.
-NO_COMMAND_NODE = "no-command"
-LINK_SECTION = "link"
-TROUBLE_SECTION = "trouble"
-
-
-# Узлы, на которых предлагают приложение. Их два, потому что развилка стоит
-# сразу после определения системы, а формулировка у Windows и Linux разная:
-# на Windows приложение снимает ещё и установку Linux внутри Windows.
-FORK_NODES = ("windows", "linux")
-MACOS_NODE = "macos"
-# Шаги установки, которых на ветке приложения быть не должно: установка
-# Claude Code и установка самой игры. Их делает Подготовка внутри Голокрона.
-INSTALL_STEPS = ("install-linux", "plugin-install")
-
-
-def _flow_edges(by_node, name):
-    """Переходы узла по потоку: разбор поломок не в счёт — это дорога назад."""
-    return [
-        target
-        for target in by_node[name].options
-        if by_node[target].section != TROUBLE_SECTION
-    ]
-
-
-def _steps_to(by_node, start, finish):
-    """Число шагов от start до finish по потоку; None — не дойти.
-
-    Обход в ширину, потому что мерить надо кратчайший путь: длинная дорога
-    в обход ничего не говорит о том, сколько сообщений прочитает человек.
-    """
-    seen = {start: 0}
-    queue = [start]
-    while queue:
-        name = queue.pop(0)
-        if name == finish:
-            return seen[name]
-        for target in _flow_edges(by_node, name):
-            if target not in seen:
-                seen[target] = seen[name] + 1
-                queue.append(target)
-    return None
-
-
-def _reach_all(by_node, start):
-    """Всё, куда можно попасть из start, включая разбор поломок.
-
-    Отдельно от `_flow_from` нарочно. Ветку мерить надо по потоку, а вот
-    «сюда не попасть никогда» — только по всему графу: дорога в чужую дверь
-    через разбор поломок остаётся дорогой, и человек по ней ходит.
-    """
-    seen = set()
-    queue = [start]
-    while queue:
-        name = queue.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        queue.extend(by_node[name].options)
-    return seen
+# Кнопки экрана Подготовки — дословно те, что стоят в
+# golokron/src/renderer/src/preparation/text.ts: узел называет то, что
+# человек увидит на экране, а не пересказывает.
+PREPARATION_BUTTONS = ("«Поставить", "«Сделаю сам")
+FIRST_COMMAND = "/jedicoder:start"
+# Символы разметки Telegram: непарный `_` или `*` роняет sendMessage целиком,
+# и человек не видит вообще ничего. Тот же запрет держит тест бота — здесь
+# он стоит у источника, чтобы краснеть до генератора, а не после выкатки.
+TELEGRAM_MARKUP = re.compile(r"[_*]")
 
 
 def shipped_nodes(content_root):
@@ -237,241 +186,41 @@ def the_link_node(by_node):
     return link[0]
 
 
-def test_the_last_question_offers_both_ways_to_launch(content_root):
-    """Последний вопрос — где запускать: терминал и приложение Claude.
-
-    Порядок значим: человек читает кнопки сверху вниз, и первым стоит тот
-    мир, в котором он уже находится, — терминал.
-
-    Голокрона здесь нет и быть не может. Сюда доходит только тот, кто ставил
-    руками, а значит уже отказался от приложения в начале пути; кнопка на
-    него здесь читалась бы как «а теперь начни заново».
-    """
-    by_node = shipped_nodes(content_root)
-    assert WHERE_NODE in by_node, "в поставке нет вопроса «где играть»"
-    assert by_node[WHERE_NODE].options == HAND_WORLDS
-
-
-def _flow_from(by_node, start):
-    """Узлы, достижимые из двери по потоку: без разбора поломок.
-
-    Разбор поломок возвращает человека в его же мир — это дорога назад, а не
-    продолжение ветки; считать его значило бы мерить всё дерево. Больше
-    ничего из обхода не изъято: изъятие узла прячет ровно то, что тест и
-    ищет, — путь, которым человек попадает не туда.
-    """
-    seen = set()
-    queue = [start]
-    while queue:
-        name = queue.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        for target in _flow_edges(by_node, name):
-            queue.append(target)
-    return seen
-
-
-def test_every_world_leads_to_the_key_and_not_to_another_world(content_root):
-    """Выбрал дверь — идёшь ею до ключа; в соседнюю можно только через вопрос.
-
-    Прежде обе ветки первого запуска вели в Голокрон, и человек, уже
-    выбравший терминал, получал второе предложение сменить мир. Именно это и
-    было «спрашивают дважды».
-    """
-    by_node = shipped_nodes(content_root)
-    link = the_link_node(by_node)
-    for world in WORLDS:
-        assert world in by_node, "в поставке нет двери '{}'".format(world)
-        reached = _flow_from(by_node, world)
-        assert link.node in reached, "из двери '{}' не дойти до ключа".format(world)
-        leaked = sorted((set(WORLDS) & reached) - {world})
-        assert not leaked, "из двери '{}' попадаешь в чужую: {}".format(
-            world, ", ".join(leaked)
+def _walk(by_node):
+    """Путь от корня по единственной кнопке каждого узла до конца."""
+    current = min(by_node.values(), key=lambda item: item.order)
+    path = [current.node]
+    while current.options:
+        assert len(current.options) == 1, "в узле '{}' развилка: {}".format(
+            current.node, ", ".join(current.options)
         )
+        current = by_node[current.options[0]]
+        path.append(current.node)
+    return tuple(path)
 
 
-def test_every_world_has_a_way_out_when_the_game_does_not_answer(content_root):
-    """В каждой двери есть выход в разбор «такой команды нет».
+def test_the_tree_is_five_steps_in_one_line(content_root):
+    """Ровно пять узлов, и они идут одной цепочкой без развилок.
 
-    Первый запуск игры теперь стоит в каждом из трёх миров, а значит, в
-    каждом же и может не найтись команды. Дверь без этого выхода вела бы к
-    ключу при нерабочей игре — и человек ушёл бы с ним ни с чем.
+    Это и есть ADR-0015: вход один, и человеку нечего выбирать. Второй
+    выход из любого узла — уже дерево, а дерево здесь удалено, не спрятано.
     """
     by_node = shipped_nodes(content_root)
-    for world in WORLDS:
-        branch = _flow_from(by_node, world)
-        assert any(NO_COMMAND_NODE in by_node[name].options for name in branch), (
-            "из двери '{}' некуда пойти с «такой команды нет»".format(world)
-        )
+    assert set(by_node) == set(STEPS)
+    assert _walk(by_node) == STEPS
 
 
-def test_no_path_offers_the_same_world_twice(content_root):
-    """Мир предлагают один раз за проход; разбор поломок не в счёт.
-
-    Ветки разбора возвращают человека в его же мир, и это дорога назад, а не
-    второй вопрос. Второй вопрос — это когда один и тот же мир попадается на
-    кнопке дважды: так было, пока первый запуск в терминале и в приложении
-    вёл в Голокрон.
-
-    Развилок про Голокрон две — своя для Windows и своя для Linux, потому
-    что на Windows приложение снимает ещё и установку Linux внутри Windows,
-    и сказать это надо разными словами. Человек проходит ровно одну из них,
-    и меряется это так: если два узла предлагают один и тот же мир, из
-    одного не должно быть дороги в другой.
-    """
+def test_reading_order_matches_the_walk(content_root):
+    """Порядок чтения на сайте и в markdown (order) — тот же, что кнопок."""
     by_node = shipped_nodes(content_root)
-    for world in WORLDS:
-        offers = sorted(
-            item.node
-            for item in by_node.values()
-            if world in item.options and item.section != TROUBLE_SECTION
-        )
-        assert offers, "мир '{}' не предлагают нигде".format(world)
-        for name in offers:
-            met = sorted((set(offers) - {name}) & _flow_from(by_node, name))
-            assert not met, (
-                "мир '{}' предлагают дважды на одном пути: '{}', а следом "
-                "'{}'".format(world, name, ", ".join(met))
-            )
-
-
-def test_the_app_is_offered_right_after_the_system_and_before_install(content_root):
-    """Место первого вопроса: сразу за системой и до любого шага установки.
-
-    В этом весь смысл ранней развилки. Прежде человек на Windows ставил
-    руками Linux внутри Windows, Claude Code и игру — ровно то, что
-    Подготовка делает сама, — и только в конце узнавал, что приложение
-    вообще есть.
-
-    «Сразу за системой» меряется переходом с корня: до развилки нет ни
-    одного узла, кроме вопроса о системе. Порядок чтения на сайте и в
-    markdown держит поле order.
-    """
-    by_node = shipped_nodes(content_root)
-    root = min(by_node.values(), key=lambda item: item.order)
-    for fork in FORK_NODES:
-        assert fork in by_node, "в поставке нет развилки '{}'".format(fork)
-        assert fork in root.options, (
-            "на развилку '{}' не попасть прямо с вопроса о системе".format(fork)
-        )
-        for step in INSTALL_STEPS:
-            assert by_node[fork].order < by_node[step].order, (
-                "развилку '{}' читают позже шага '{}'".format(fork, step)
-            )
-
-
-def test_the_launch_question_stands_after_the_game_is_installed(content_root):
-    """Место второго вопроса: сразу после установки игры и до обустройства.
-
-    Порядок кнопок в боте задают переходы, порядок чтения на сайте и в
-    markdown — поле order; тест держит оба, чтобы человек на сайте не
-    прочитал про свою дверь раньше, чем ему предложат выбрать.
-    """
-    by_node = shipped_nodes(content_root)
-    assert by_node[INSTALL_NODE].options == (WHERE_NODE,), (
-        "после установки игры спрашивают не про то"
+    by_order = tuple(
+        item.node for item in sorted(by_node.values(), key=lambda item: item.order)
     )
-    question = by_node[WHERE_NODE]
-    assert by_node[INSTALL_NODE].order < question.order
-    for world in HAND_WORLDS:
-        assert question.order < by_node[world].order, world
-    assert question.order < the_link_node(by_node).order
-
-
-def test_golokron_step_names_download_page_and_smartscreen_path(content_root):
-    """Адрес страницы загрузки и два шага мимо предупреждения — дословно.
-
-    Адрес закреплён спекой сайта раньше, чем появилась страница; подписи
-    кнопок Windows — ровно те, что человек увидит на экране. Остальное в
-    узле — текст, и его правдивость меряется не тестом, а глазами.
-    """
-    text = lint_content.visible_text(shipped_nodes(content_root)[GOLOKRON_NODE].body)
-    assert GOLOKRON_URL in text
-    for label in SMARTSCREEN_STEPS:
-        assert label in text, "в узле нет шага {}".format(label)
-    assert "Windows" in text
-
-
-# --- Ранняя развилка: приложение вместо установки руками ---------------
-#
-# Голокрон ставит Linux внутри Windows, Claude Code и саму игру сам, по
-# кнопке и на глазах. Значит предлагать его надо ДО того, как человек
-# проделает те же шаги руками, а его ветка обязана быть короткой — иначе
-# это не короткий путь, а второй такой же. Мерить это глазами нельзя:
-# длина ветки видна только обходом дерева.
-
-def test_the_app_branch_is_shorter_than_installing_by_hand(content_root):
-    """От развилки до ключа приложением — короче, чем руками.
-
-    Это и есть смысл ранней развилки: человек на Windows руками проходит
-    ровно те шаги, которые Подготовка делает сама. Если ветка приложения не
-    короче, развилка не сэкономила ничего и стоит зря.
-    """
-    by_node = shipped_nodes(content_root)
-    link = the_link_node(by_node)
-    for fork in FORK_NODES:
-        assert fork in by_node, "в поставке нет развилки '{}'".format(fork)
-        item = by_node[fork]
-        assert GOLOKRON_NODE in item.options, (
-            "на развилке '{}' не предлагают приложение".format(fork)
-        )
-        # Считаем от самой развилки, а не от двери: единица — это нажатие
-        # кнопки, и человек его тоже читает.
-        door = _steps_to(by_node, GOLOKRON_NODE, link.node)
-        assert door is not None, "из приложения не дойти до ключа"
-        by_app = door + 1
-        hands = [
-            _steps_to(by_node, target, link.node)
-            for target in item.options
-            if target != GOLOKRON_NODE
-        ]
-        assert hands and None not in hands, (
-            "с развилки '{}' руками до ключа не дойти".format(fork)
-        )
-        by_hand = min(hands) + 1
-        assert by_app < by_hand, (
-            "с развилки '{}' приложением {} шагов, руками {} — не короче".format(
-                fork, by_app, by_hand
-            )
-        )
-
-
-def test_the_app_branch_carries_no_install_steps(content_root):
-    """На ветке приложения нет установки Claude Code и игры.
-
-    Ровно эти два шага Подготовка делает сама. Оставить их на ветке значило
-    бы попросить человека сделать руками то, за чем он и скачал приложение.
-    """
-    by_node = shipped_nodes(content_root)
-    branch = _flow_from(by_node, GOLOKRON_NODE)
-    intruders = sorted(set(INSTALL_STEPS) & branch)
-    assert not intruders, "на ветке приложения остались шаги установки: {}".format(
-        ", ".join(intruders)
-    )
-
-
-def test_macos_never_meets_the_app(content_root):
-    """С macOS в Голокрон не попасть ни одной дорогой — его под macOS нет.
-
-    Прежде ветка Голокрона висела общей, и человека на маке уводили в неё, а
-    выбираться он должен был кнопкой «я на macOS». Дверь, из которой сразу
-    надо выходить, — не дверь.
-
-    Меряется по ВСЕМУ графу, включая разбор поломок: ровно там дорога и
-    нашлась в первый раз — `macos → … → no-command → «Есть — я в Голокроне»`.
-    Обход по одному потоку её не видел, то есть прятал именно то, что тест
-    и обязан искать.
-    """
-    by_node = shipped_nodes(content_root)
-    assert MACOS_NODE in by_node
-    assert GOLOKRON_NODE not in _reach_all(by_node, MACOS_NODE), (
-        "с macOS всё ещё можно прийти в Голокрон"
-    )
+    assert by_order == STEPS
 
 
 def test_link_node_is_unique_and_terminal(content_root):
-    """Ограничение бота, продиктовавшее место Голокрона.
+    """Ограничение бота, продиктовавшее место конца пути.
 
     Бот выдаёт ключ по разделу узла: второй узел раздела link завёл бы
     строку падавана дважды за проход, а кнопка у конца пути — узел после
@@ -481,7 +230,72 @@ def test_link_node_is_unique_and_terminal(content_root):
     следующий узел «после ключа» краснел до генератора, а не после выкатки.
     """
     link = the_link_node(shipped_nodes(content_root))
+    assert link.node == LINK_NODE
     assert link.options == (), "у конца пути появились кнопки"
+
+
+def test_start_names_a_download_for_each_of_three_systems(content_root):
+    """Первый шаг — три ссылки на выпуски, по одной на систему, дословно.
+
+    Адреса — те же, что на странице /golokron: выдуманная ссылка ведёт в
+    404, и человек уходит с первого же шага.
+    """
+    text = lint_content.visible_text(shipped_nodes(content_root)[START_NODE].body)
+    for url in DOWNLOADS:
+        assert url in text, "в первом шаге нет ссылки {}".format(url)
+    for system in ("Windows", "macOS", "Linux"):
+        assert system in text
+
+
+def test_open_names_the_smartscreen_path(content_root):
+    """Два шага мимо синего окна Windows — дословно подписями кнопок."""
+    text = lint_content.visible_text(shipped_nodes(content_root)[OPEN_NODE].body)
+    for label in SMARTSCREEN_STEPS:
+        assert label in text, "в шаге «открой» нет кнопки {}".format(label)
+    assert "macOS" in text, "шаг «открой» молчит про macOS"
+
+
+def test_prepare_names_the_buttons_of_the_preparation_screen(content_root):
+    """Шаг про Подготовку называет её кнопки теми словами, что на экране."""
+    text = lint_content.visible_text(shipped_nodes(content_root)[PREPARE_NODE].body)
+    for label in PREPARATION_BUTTONS:
+        assert label in text, "в шаге про Подготовку нет кнопки {}".format(label)
+
+
+def test_login_carries_the_first_command_as_the_probe(content_root):
+    """Единственная команда Акта 0 — первая команда игры, и она в probe.
+
+    Бот печатает probe отдельным моноширинным блоком, сайт — строкой для
+    копирования; текстом узла команду не заменить.
+    """
+    assert shipped_nodes(content_root)[LOGIN_NODE].probe == FIRST_COMMAND
+
+
+def test_every_node_fits_in_five_paragraphs(content_root):
+    """Узел — до пяти абзацев: что нажать, что появится, что делать, если нет."""
+    for item in shipped_nodes(content_root).values():
+        paragraphs = [
+            block for block in lint_content.visible_text(item.body).split("\n\n")
+            if block.strip()
+        ]
+        assert len(paragraphs) <= NODE_PARAGRAPHS_MAX, "узел '{}': {} абзацев".format(
+            item.node, len(paragraphs)
+        )
+
+
+def test_no_node_carries_telegram_markup(content_root):
+    """Ни `_`, ни `*` в тексте узла — иначе бот не отправит сообщение вовсе."""
+    for item in shipped_nodes(content_root).values():
+        hit = TELEGRAM_MARKUP.search(lint_content.visible_text(item.body))
+        assert hit is None, "узел '{}': символ разметки {!r}".format(
+            item.node, hit.group(0) if hit else None
+        )
+
+
+def test_no_node_is_exempt_from_language_rules():
+    """Узлы переписаны под правила языка целиком: в LEGACY их нет."""
+    exempt = sorted(label for label in lint_content.LEGACY if label.startswith("узел "))
+    assert exempt == [], "узлы Акта 0 всё ещё в LEGACY: {}".format(", ".join(exempt))
 
 
 # --- Связность дерева -------------------------------------------------
@@ -695,7 +509,7 @@ def test_export_md_of_shipped_content_is_clean():
     assert result.returncode == 0, result.stderr.decode("utf-8")
     out = result.stdout.decode("utf-8")
     assert out.startswith("<!-- Сгенерировано")
-    assert "## Не получилось" in out
+    assert "## По шагам" in out
 
 
 def test_export_md_carries_every_node_and_its_text(content_root):
@@ -709,7 +523,7 @@ def test_export_md_carries_every_node_and_its_text(content_root):
 
 
 def test_export_md_has_no_dead_links():
-    """Развилка обязана вести в существующий якорь.
+    """Переход «Дальше» обязан вести в существующий якорь.
 
     В боте связность держит `_onboarding_problems`, но там переход — это
     кнопка, а здесь адрес внутри файла: сам якорь ставит генератор, и
@@ -718,19 +532,21 @@ def test_export_md_has_no_dead_links():
     out = run_export("--format", "md").stdout.decode("utf-8")
     anchors = set(re.findall(r'<a id="node-([a-z0-9-]+)"></a>', out))
     links = set(re.findall(r"\]\(#node-([a-z0-9-]+)\)", out))
-    assert links, "в markdown не оказалось ни одной развилки"
+    assert links, "в markdown не оказалось ни одного перехода"
     assert links - anchors == set()
 
 
-def test_export_md_puts_trouble_after_the_flow(content_root):
-    """Разбор поломок — глава внизу, а не вперемешку с основным потоком."""
+def test_export_md_reads_in_the_order_of_the_walk(content_root):
+    """Шаги в markdown идут в порядке пути, одной главой, без разбора поломок."""
     from jedicoder import content
 
     out = run_export("--format", "md").stdout.decode("utf-8")
-    border = out.index("## Не получилось")
-    for item in content.load_onboarding(content_root):
-        at = out.index('<a id="node-{}"></a>'.format(item.node))
-        assert (at > border) == (item.section == "trouble"), item.node
+    assert "## Не получилось" not in out, "в markdown вернулась глава разбора поломок"
+    positions = [
+        out.index('<a id="node-{}"></a>'.format(item.node))
+        for item in content.load_onboarding(content_root)
+    ]
+    assert positions == sorted(positions)
 
 
 def test_shipped_install_md_matches_generator():

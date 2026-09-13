@@ -1,16 +1,18 @@
 ---
 node: start
-title: Перед началом
+title: Скачай приложение
 order: 10
 section: install
-options: [windows, macos, linux]
-option_titles: ["Windows", "macOS", "Linux"]
+options: [open]
+option_titles: ["Скачал"]
 ---
-Дальше — установка Claude Code. Это то, чем ты будешь работать весь путь: ты
-пишешь словами, что нужно сделать, оно пишет код и правит файлы у тебя на
-машине.
+Игра идёт в приложении Голокрон: внутри него окно с командами, вокруг — акты,
+квесты и ранг. Скачай его под свою систему, файл весит около 100 МБ.
 
-Ставится всё одной строкой, и строка эта одна на все системы. А вот
-подготовка разная: где-то её нет вовсе, где-то нужен шаг до, а на двух
-системах из трёх всю установку можно не делать руками вовсе. Поэтому сначала
-скажи, где ты работаешь.
+Windows: https://github.com/IulaiJedi/golokron-releases/releases/latest/download/golokron-setup.exe
+
+macOS (Mac с чипом Apple: M1, M2 и новее): https://github.com/IulaiJedi/golokron-releases/releases/latest/download/golokron-arm64.dmg
+
+Linux (Ubuntu, Debian): https://github.com/IulaiJedi/golokron-releases/releases/latest/download/golokron-amd64.deb
+
+Файл не скачивается — напиши в канал https://t.me/vibecodejedi: какая система и что ответил браузер.

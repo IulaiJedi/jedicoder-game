@@ -18,6 +18,7 @@ TERM = (
     "act: 2\n"
     "category: git\n"
     "xp: 5\n"
+    "example: Пример из жизни одной фразой.\n"
     "{extra}"
     "---\n"
     "Тело термина.\n"
@@ -76,9 +77,13 @@ ACT = (
     "{body}\n"
 )
 
-# Тело длиннее порога ACT_BODY_MIN: короткое тело — это отдельный кейс, и
-# все остальные проверки не должны на нём спотыкаться заодно.
-ACT_BODY = "Тело катсцены, достаточно длинное, чтобы пройти порог. " * 6
+# Тело длиннее порога ACT_BODY_MIN и ровно в две фразы (правило `cutscene`):
+# короткое тело и лишняя фраза — отдельные кейсы, и остальные проверки не
+# должны на них спотыкаться заодно.
+ACT_BODY = (
+    "Тело катсцены, достаточно длинное, чтобы пройти порог длины.\n\n"
+    "Вторая фраза объясняет, зачем это нужно."
+)
 
 REMARK = (
     "---\n"
@@ -692,7 +697,8 @@ def recipe_with_body(name, body):
     ).format(name, name, body)
 
 
-def term_with_body(name, body):
+def term_with_body(name, body, example="Пример из жизни одной фразой."):
+    """Термин с телом. `example=None` — без поля: загрузчик такой отвергает."""
     return (
         "---\n"
         "term: {}\n"
@@ -701,9 +707,13 @@ def term_with_body(name, body):
         "act: 2\n"
         "category: git\n"
         "xp: 5\n"
+        "{}"
         "---\n"
         "{}\n"
-    ).format(name, name, name, body)
+    ).format(
+        name, name, name,
+        "" if example is None else "example: {}\n".format(example), body,
+    )
 
 
 def skills_with(root, files):

@@ -1,4 +1,4 @@
-"""Свиток: что падаван уносит из игры к себе в проект.
+"""Памятка (в коде — scroll): что падаван уносит из игры к себе в проект.
 
 Игра до сих пор ничего после себя не оставляла: артефакты живут ровно
 столько, сколько установлен плагин. Свиток — папка `docs/jedicoder/` в
@@ -25,7 +25,7 @@ ADR-0009 в репозитории сайта.
 import hashlib
 from pathlib import Path
 
-from . import ranks
+from . import acts, ranks
 from . import state as st
 
 # Папка Свитка внутри проекта падавана. Корень чужого проекта не трогаем:
@@ -101,7 +101,7 @@ def genitive(title):
 
     Правило школьное и на всех шести именах верное: мягкий знак и «й»
     уходят в «я», прочий согласный получает «а». Имя на гласную не
-    склоняется вовсе — вернём как есть: «Свиток Йода» криво, «Свиток Йодаа»
+    склоняется вовсе — вернём как есть: «Памятка Йода» криво, «Памятка Йодаа»
     неверно, и первое честнее.
     """
     if not title:
@@ -115,11 +115,11 @@ def genitive(title):
 
 
 def scroll_title(facts):
-    """«Свиток Искателя» — имя носит ранг владельца."""
+    """«Памятка Искателя» — имя носит ранг владельца (language.md: Свиток → памятка)."""
     facts = facts if isinstance(facts, dict) else {}
     rank = facts.get("rank")
     name = facts.get("rank_title") or ranks.RANK_TITLES.get(rank) or rank
-    return "Свиток {}".format(genitive(name)) if name else "Свиток"
+    return "Памятка {}".format(genitive(name)) if name else "Памятка"
 
 
 def debrief_page(facts, acts=(), today=None):
@@ -433,7 +433,7 @@ def _index_page(facts, instructions, personal, today):
         "",
         "## Откуда это берётся",
         "",
-        "Свиток кладёт сюда одна команда, которую ты набираешь сам. Больше",
+        "Памятку кладёт сюда одна команда, которую ты набираешь сам. Больше",
         "ничто в игре в твой проект не пишет.",
         "",
         "Твои правки здесь не пропадут. Игра помнит отпечаток каждого",
@@ -472,11 +472,9 @@ def _path_section(facts):
     lines = ["## Путь", ""]
     rank = facts.get("rank")
     title = facts.get("rank_title") or ranks.RANK_TITLES.get(rank) or rank
-    # «Искатель (seeker)» — той же парой, что на первом экране: имя для
-    # чтения и слаг, по которому число сверяется с сохранением.
-    lines.append("- Ранг: {}".format(
-        "{} ({})".format(title, rank) if title and title != rank else title
-    ))
+    # Только имя, как на первом экране: страница ложится Разбором в проект
+    # падавана, и слаг в скобках читался бы там как опечатка (#73).
+    lines.append("- Ранг: {}".format(title))
     done = facts.get("acts_completed") or []
     # Знаменатель — играбельные акты, как у карточки ранга в cli.py: полный
     # реестр при выключенном Акте 5 давал «4 из 5» в Разборе против
@@ -493,10 +491,8 @@ def _path_section(facts):
         )
     track = facts.get("track")
     if track:
-        # Слагом, как его печатает сама игра в `track`: русских имён треков
-        # в движке нет, и заводить их в Свитке значило бы назвать падавану
-        # то, чего он в игре не слышал.
-        lines.append("- Трек: {}".format(track))
+        # Словами, как их слышит падаван в игре: «для себя» / «для людей».
+        lines.append("- Продукт: {}".format(acts.TRACK_WORDS.get(track, track)))
     deploy = facts.get("deploy_path")
     if deploy:
         lines.append("- Путь деплоя: {}".format(deploy))
@@ -567,7 +563,7 @@ def _dark_side_section(facts):
     dark = facts.get("dark_side")
     if not isinstance(dark, dict):
         dark = {}
-    lines = ["## Тёмная сторона", ""]
+    lines = ["## Штрафы", ""]
     lines.append("- Очков: {}".format(dark.get("points") or 0))
     if dark.get("days"):
         lines.append("- Дней, когда это случалось: {}".format(dark["days"]))

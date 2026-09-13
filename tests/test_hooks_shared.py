@@ -59,7 +59,10 @@ def test_magistr_invite_fires_once_at_threshold():
     assert _shared.magistr_invite(state) == ""
     state["dark_side"] = 5
     first = _shared.magistr_invite(state)
-    assert "/magistr" in first
+    assert "/jedicoder:magistr" in first
+    # Слова таблицы замен (language.md): штрафы, не Тёмная сторона.
+    assert "штраф" in first.lower()
+    assert "Тёмная сторона" not in first
     assert state["magistr_called"] is True
     state["dark_side"] = 9
     assert _shared.magistr_invite(state) == "", "приглашение не повторяется"

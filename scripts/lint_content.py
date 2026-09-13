@@ -29,6 +29,17 @@
 слов за квест.** Он доказывает ровно одно — что этого нет в наших файлах и
 что регрессия не вернётся молча. Речь модели проверяется только живым
 прогоном.
+
+## Правила простого языка (спека #64)
+
+Шесть правил из `content/ru/language.md` — фраза до SENTENCE_MAX слов,
+запрещённые образы, катсцена в две фразы, слова не раньше первого ранга,
+карточка в две строки, приём с приставкой `/jedicoder:` — меряются теми же единицами категории A плюс телами
+рецептов; образы и ранние слова ищутся ещё и в скиллах, `start.md` и
+`behavior.md` целиком, потому что модель пересказывает их падавану. Единицы,
+ещё не переписанные под правила, перечислены в `LEGACY` явно: список только
+убывает, и снимок в тестах это держит. Маркер `lint:language-ok` устроен как
+`lint:novelty-ok` — декларация с причиной, на файл, на одно правило.
 """
 import importlib.util
 import re
@@ -67,11 +78,12 @@ WIKI_LINK = re.compile(r"\[\[([^\]|]+)")
 TERM_SECTION = "**Зачем"
 RULE_SECTION = "**Что делать"
 
-# Минимальная длина катсцены. Маркера обязательной секции у неё нет —
-# катсцена сплошная проза, — поэтому от «пропала половина текста» защищает
-# длина. Порог с большим запасом: самая короткая катсцена поставки — 494
-# символа, случайно его не пробить, а вырезанный абзац уронит.
-ACT_BODY_MIN = 200
+# Минимальная длина катсцены. Верх держит правило `cutscene` (две фразы,
+# language.md), поэтому нижний порог ловит только пустое или обрезанное
+# тело: две фразы короче 60 символов не бывает. Катсцены Актов 2–5 до
+# переписывания (#72) длиннее, и потерю абзаца в них порог не заметит —
+# долг №13 в CLAUDE.md.
+ACT_BODY_MIN = 60
 
 # Потолок длины дословного текста, в символах. Число живёт здесь и в
 # behavior.md; расхождение ловится тестом — менять его в одном месте нельзя.
@@ -205,8 +217,14 @@ def ordered_corpus(content_root, skills_root=None, commands_root=None):
     return sorted(corpus, key=lambda item: item[1])
 
 
-def lint(content_root, skills_root=None, corpus=None):
-    """Вернуть список проблем. Пустой список — контент чистый."""
+def lint(content_root, skills_root=None, corpus=None, legacy=None,
+         commands_root=None):
+    """Вернуть список проблем. Пустой список — контент чистый.
+
+    `legacy` — список исключений правил языка; None — поставочный LEGACY,
+    пустой словарь — проверять всё (так тесты и считают, что в списке
+    ничего лишнего).
+    """
     problems = []
     terms = _safe(content.load_terms, content_root, problems)
     rules = _safe(content.load_rules, content_root, problems)
@@ -241,6 +259,16 @@ def lint(content_root, skills_root=None, corpus=None):
     problems += _early_use_problems(
         terms,
         ordered_corpus(content_root, skills_root) if corpus is None else corpus,
+    )
+    problems += _language_problems(
+        _language_units(
+            content_root,
+            DEFAULT_SKILLS_ROOT if skills_root is None else Path(skills_root),
+            DEFAULT_COMMANDS_ROOT if commands_root is None else Path(commands_root),
+            terms, rules, recipes, act_items, onboarding, remarks,
+            instructions, roadmaps,
+        ),
+        LEGACY if legacy is None else legacy,
     )
 
     known = set()
@@ -767,6 +795,16 @@ def _load_render_card():
     return getattr(_loot_module(), "render_card", None)
 
 
+def _load_example_prefix():
+    """Префикс строки примера из хука лута (EXAMPLE_PREFIX). None — не вышло.
+
+    По этой строке правило card видит, что у термина есть `example`:
+    меряется итоговая карточка, а не файл, и литерал живёт в одном месте —
+    в хуке, который её печатает.
+    """
+    return getattr(_loot_module(), "EXAMPLE_PREFIX", None)
+
+
 def _load_alias_pattern():
     """Достать _alias_pattern из хука лута. None — если не вышло.
 
@@ -1047,6 +1085,454 @@ def _early_use_problems(terms, corpus):
                 )
             break
     return problems
+
+
+# --- Правила простого языка (спека #64, тикет #65). ----------------------
+#
+# Пределы живут здесь и в content/ru/language.md; тесты сверяют, что
+# документ называет те же числа и те же слова, что и прибор.
+
+# Потолок длины фразы в словах. Включительный: ровно 15 — норма, 16 — дефект.
+SENTENCE_MAX = 15
+
+# Катсцена акта — две фразы: что делаем и зачем; дальше список квестов.
+CUTSCENE_SENTENCES_MAX = 2
+
+# Карточка нового слова в терминале — две строки после заголовка: что это
+# и пример. «Зачем» и «проверь себя» остаются на Полке и в Книге.
+CARD_LINES_MAX = 2
+
+# Позиция, на которой падаван получает первый ранг: закрытие первого
+# играемого акта. Всё, что читается на этой позиции и раньше, — до ранга.
+FIRST_RANK_POSITION = min(ranks.playable_acts())
+
+# Идентификаторы правил — ими помечаются исключения в LEGACY и в маркере.
+RULE_SENTENCE = "sentence"
+RULE_IMAGES = "images"
+RULE_CUTSCENE = "cutscene"
+RULE_EARLY = "early"
+RULE_CARD = "card"
+RULE_PREFIX = "prefix"
+LANGUAGE_RULES = (
+    RULE_SENTENCE, RULE_IMAGES, RULE_CUTSCENE, RULE_EARLY, RULE_CARD, RULE_PREFIX,
+)
+# Правила для текста, который модель пересказывает (скиллы, start.md,
+# behavior.md): длину фразы там не меряем — меряем источник, а не пересказ.
+PROSE_RULES = (RULE_IMAGES, RULE_EARLY, RULE_PREFIX)
+
+# Маркер-исключение по образцу lint:novelty-ok: действует на файл целиком,
+# на одно названное правило, и обязан нести причину в том же комментарии.
+LANGUAGE_OK = re.compile(r"<!--\s*lint:language-ok:\s*([a-z]+)")
+
+# Запрещённые образы метафоры. Регистр первой буквы — классом символов, а
+# не lower(): складывание регистра кириллицы зависит от локали. Границы
+# слова `\b` в Python идут по Unicode и кириллицу понимают: «мечта» и
+# «замечать» под «меч» не попадают. «Сила» запрещена только как имя, с
+# заглавной: «сила привычки» — обычное слово. «Джедайкодер» — имя игры,
+# и лукахед его выпускает.
+FORBIDDEN_IMAGES = (
+    ("меч", r"\b[Мм]еч(?:а|у|ом|е|и|ей|ам|ами|ах)?\b"),
+    ("рукоять", r"\b[Рр]укоят\w*"),
+    ("Сила", r"\bСил(?:а|ы|е|у|ой|ою)\b"),
+    ("джедай", r"\b[Дд]жеда(?!йкодер)\w*"),
+    ("ситх", r"\b[Сс]итх\w*"),
+    ("Тёмная сторона", r"\b[Тт][её]мн\w*\s+сторон\w*"),
+    ("светлая сторона", r"\b[Сс]ветл\w*\s+сторон\w*"),
+)
+
+# Слова, которым рано звучать до первого ранга (ADR-0014): Книга и привязка
+# — одним предложением после ранга Искатель, клуб — только в финале;
+# «Тёмная сторона», «артефакт» и «Свиток» заменены штрафами, приёмом и
+# памяткой везде, но в ранних текстах их отсутствие держится и этим правилом.
+EARLY_WORDS = (
+    ("Тёмная сторона", r"\b[Тт][её]мн\w*\s+сторон\w*"),
+    ("артефакт", r"\b[Аа]ртефакт\w*"),
+    ("Свиток", r"\b[Сс]вит(?:ок|к[а-я]+)\b"),
+    ("Книга", r"\b[Кк]ниг(?:а|и|е|у|ой|ою)\b"),
+    ("клуб", r"\b[Кк]луб(?:а|е|у|ом|ы|ов|ам|ами|ах)?\b"),
+    ("бот потока", r"\b[Бб]от\w*\s+потока\b"),
+    ("привязка", r"\b[Пп]ривязк\w*"),
+)
+
+# Приёмы зовутся с приставкой плагина: голого `/brainstorm` в Claude Code
+# нет, команды плагина живут только как `/jedicoder:<имя>`, и новичок в
+# прогоне 2026-09-13 набрал `/brainstorm` и не нашёл. Имена — реестр приёмов
+# плюс `magistr`: седьмой приём попадёт под правило сам. Слэш, перед которым
+# стоит буква, двоеточие или другой слэш, — путь или адрес
+# (`docs/jedicoder/plan.md`, `https://домен/deploy`), а не команда; слово
+# после имени (`/planet`) отрезается границей. Обратные кавычки не
+# спасают: падаван копирует команду из них.
+PREFIXED_COMMANDS = tuple(ranks.ALL_ARTIFACTS) + ("magistr",)
+BARE_COMMAND = re.compile(
+    r"(?<![\w:/])/(?:{})(?![\w:-])".format(
+        "|".join(re.escape(name) for name in PREFIXED_COMMANDS)
+    )
+)
+
+# Разметка, по которой текст режется на фразы. Код и адреса ссылок
+# маскируются символами той же длины: точки внутри `a.b` фразу не режут,
+# а слова внутри не считаются — и при этом фраза для отчёта вырезается из
+# оригинала, а не из маски.
+CODE_SPAN = re.compile(r"`[^`\n]+`")
+MD_LINK_TARGET = re.compile(r"\]\([^)\s]*\)")
+HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s")
+LIST_MARKER = re.compile(r"^\s*(?:[-*+—]|\d+[.)])\s+")
+FENCE_LINE = re.compile(r"^\s{0,3}(?:```|~~~)")
+INDENTED_CODE = re.compile(r"^(?: {4}|\t)")
+QUOTE_MARKER = re.compile(r"^\s*>\s?")
+TABLE_LINE = re.compile(r"^\s*\|")
+PHRASE_END = re.compile(r"[.!?…]+[»”\")\]]*(?=\s|$)")
+WORD = re.compile(r"\w")
+
+# Единицы, ещё не переписанные под правила языка: подпись единицы →
+# правила, которые для неё пока не проверяются. Список опустел тикетом #72
+# и остаётся пустым: тест в tests/test_lint_language.py падает на любой
+# записи. Исключение по делу — маркер lint:language-ok на файл, с причиной.
+LEGACY = {}
+
+
+def _mask(text):
+    """Скрыть код и адреса ссылок под символами той же длины."""
+    def blank(match):
+        return "\x00" * len(match.group(0))
+    return MD_LINK_TARGET.sub(blank, CODE_SPAN.sub(blank, text))
+
+
+def _blocks(text):
+    """Куски текста, внутри которых фраза может продолжаться.
+
+    Абзац — один кусок; пункт списка (в том числе через тире) и строка
+    таблицы — свои куски, потому что точки в конце у них обычно нет, а фразы
+    разные; заголовок — не фраза вовсе, это подпись. Блоки кода — в
+    ограде из кавычек или с отступом в четыре пробела — не текст: команды и
+    вывод терминала словами не считаются, как и код в обратных кавычках.
+    """
+    blocks = []
+    current = []
+    in_fence = False
+
+    def close():
+        if current:
+            blocks.append(" ".join(current))
+            del current[:]
+
+    for line in visible_text(text).split("\n"):
+        stripped = line.strip()
+        if FENCE_LINE.match(line):
+            close()
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if not stripped or HEADING_LINE.match(line):
+            close()
+            continue
+        if INDENTED_CODE.match(line) and not current:
+            continue
+        if TABLE_LINE.match(line):
+            close()
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            blocks.append(" ".join(cell for cell in cells if cell))
+            continue
+        marker = LIST_MARKER.match(line)
+        if marker is not None:
+            close()
+            current.append(line[marker.end():].strip())
+            continue
+        quote = QUOTE_MARKER.match(line)
+        if quote is not None:
+            line = line[quote.end():]
+        current.append(line.strip())
+    close()
+    return blocks
+
+
+def phrases(text):
+    """Фразы текста: режутся по `.`, `!`, `?`, `…` вне кода и ссылок."""
+    result = []
+    for block in _blocks(text):
+        masked = _mask(block)
+        start = 0
+        for match in PHRASE_END.finditer(masked):
+            if WORD.search(masked[start:match.end()]):
+                result.append(block[start:match.end()].strip())
+            start = match.end()
+        if WORD.search(masked[start:]):
+            result.append(block[start:].strip())
+    return result
+
+
+def word_count(phrase):
+    """Слова фразы — по пробелам; код, ссылки и знаки без букв не в счёт."""
+    return sum(1 for token in _mask(phrase).split() if WORD.search(token))
+
+
+def long_sentences(text, limit=SENTENCE_MAX):
+    """Фразы длиннее limit слов, в порядке текста."""
+    return [phrase for phrase in phrases(text) if word_count(phrase) > limit]
+
+
+def sentence_count(text):
+    """Сколько фраз в тексте — по тем же правилам разреза."""
+    return len(phrases(text))
+
+
+def _matches(text, patterns):
+    """Найденные образцы в порядке списка, каждое написание один раз."""
+    masked = _mask(visible_text(text))
+    hits = []
+    for _, pattern in patterns:
+        for match in re.finditer(pattern, masked):
+            found = match.group(0)
+            if found not in hits:
+                hits.append(found)
+    return hits
+
+
+def forbidden_images(text, patterns=FORBIDDEN_IMAGES):
+    """Образы метафоры, найденные в тексте, как они написаны."""
+    return _matches(text, patterns)
+
+
+def early_words(text, patterns=EARLY_WORDS):
+    """Слова, которым рано звучать до первого ранга, как они написаны."""
+    return _matches(text, patterns)
+
+
+def bare_commands(text):
+    """Приёмы, названные без приставки плагина: `/plan` вместо `/jedicoder:plan`."""
+    return BARE_COMMAND.findall(text)
+
+
+def early_words_problems(units, patterns=EARLY_WORDS,
+                         first_rank_position=FIRST_RANK_POSITION):
+    """Правило (г) на единицах (подпись, позиция, текст): проблемы строками."""
+    problems = []
+    for label, position, text in units:
+        if position > first_rank_position:
+            continue
+        for hit in early_words(text, patterns):
+            problems.append(
+                "{}: «{}» звучит рано — на позиции {} падаван ещё без ранга, "
+                "и это слово ему не объяснено".format(label, hit, position)
+            )
+    return problems
+
+
+def card_line_count(rendered):
+    """Строки карточки после заголовка «✦ Новое слово»; пустые не в счёт."""
+    lines = [line for line in rendered.split("\n") if line.strip()]
+    return max(len(lines) - 1, 0)
+
+
+def card_has_example(rendered, prefix=None):
+    """Есть ли в карточке строка примера — та, что печатается из `example`."""
+    prefix = _load_example_prefix() if prefix is None else prefix
+    if not prefix:
+        return True  # хук не загрузился — об этом уже сказано отдельно
+    return any(line.strip().startswith(prefix) for line in rendered.split("\n"))
+
+
+def _skill_position(name):
+    """Позиция скилла в потоке: акт по слагу или по имени приёма, иначе 0.
+
+    Ноль — строжайшая позиция, и она же честная для core и magistr: оба
+    доступны с первой сессии.
+    """
+    for number, info in ranks.ACTS.items():
+        if name in (info["slug"], info["artifact"]):
+            return number
+    return 0
+
+
+def _read_or_empty(path):
+    """Текст файла; нечитаемый — пустая строка, о нём скажет _unreadable."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _language_units(content_root, skills_root, commands_root,
+                    terms, rules, recipes, act_items, onboarding, remarks,
+                    instructions=(), roadmaps=()):
+    """Единицы правил языка: (подпись, позиция, текст, путь, правила).
+
+    Категория A и тела рецептов меряются всеми правилами, что к ним
+    применимы; врезки скиллов — только длиной фразы, потому что образы и
+    ранние слова ищутся в SKILL.md целиком: модель пересказывает и обычный
+    текст скилла, не только цитату. Карточка термина меряется тем же
+    render_card, которым печатается, — правило (д) про итоговую строку.
+    """
+    verbatim = (RULE_SENTENCE, RULE_IMAGES, RULE_EARLY, RULE_PREFIX)
+    units = []
+    for item in act_items:
+        units.append((
+            "катсцена " + item.slug, item.act, item.body, item.path,
+            verbatim + (RULE_CUTSCENE,),
+        ))
+    for item in rules:
+        # Правило Кодекса о штрафах показывает хук с первой сессии.
+        position = 0 if item.dark_side else item.act
+        units.append(("правило " + item.rule, position, item.body, item.path, verbatim))
+    for item in recipes:
+        units.append(("рецепт " + item.recipe, RECIPE_POSITION, item.body, item.path, verbatim))
+    for item in onboarding:
+        units.append(("узел " + item.node, 0, item.body, item.path, verbatim))
+    # Памятка и дорожная карта читаются вне игры (человеком без плагина),
+    # поэтому слова до ранга там не меряются — «клуб» на карте законен, это
+    # финал; длина фразы, образы и приставка — меряются.
+    for item in instructions:
+        units.append((
+            "инструкция " + item.artifact, len(ranks.ACTS), item.body, item.path,
+            (RULE_SENTENCE, RULE_IMAGES, RULE_PREFIX),
+        ))
+    for item in roadmaps:
+        units.append((
+            "карта " + item.track, len(ranks.ACTS), item.body, item.path,
+            (RULE_SENTENCE, RULE_IMAGES, RULE_PREFIX),
+        ))
+    for item in remarks:
+        position = REMARK_POSITION.get(item.event, 0)
+        for number, text in enumerate(item.variants, 1):
+            units.append((
+                "реплика {} №{}".format(item.event, number), position, text,
+                item.path, verbatim,
+            ))
+    render_card = _load_render_card()
+    if render_card is not None:
+        for term in terms:
+            # Строки карточки — отдельные абзацы: терминал печатает их как
+            # есть, и продолжением одной фразы соседняя строка не является.
+            card = "\n\n".join(render_card(term).split("\n"))
+            units.append((
+                "карточка " + term.term, term.act, card, term.path,
+                verbatim + (RULE_CARD,),
+            ))
+    skills_root = Path(skills_root)
+    if skills_root.is_dir():
+        for path in sorted(skills_root.glob("**/SKILL.md")):
+            name = path.parent.name
+            position = _skill_position(name)
+            raw = _read_or_empty(path)
+            units.append(("SKILL " + name, position, raw, path, PROSE_RULES))
+            for number, block in enumerate(_quote_blocks(raw), 1):
+                units.append((
+                    "врезка {} №{}".format(name, number), position, block, path,
+                    (RULE_SENTENCE,),
+                ))
+    for label, path in (
+        ("start.md", Path(commands_root) / "start.md"),
+        (BEHAVIOR_FILE, Path(content_root) / BEHAVIOR_FILE),
+    ):
+        if path.is_file():
+            units.append((label, 0, _read_or_empty(path), path, PROSE_RULES))
+    return units
+
+
+def _language_findings(units):
+    """Находки правил языка без учёта LEGACY: (подпись, правило, текст)."""
+    findings = []
+    allowed_by_path = {}
+    for label, position, text, path, applicable in units:
+        if path not in allowed_by_path:
+            names = set(LANGUAGE_OK.findall(_read_or_empty(path)))
+            for name in sorted(names - set(LANGUAGE_RULES)):
+                findings.append((
+                    label, "marker",
+                    "{}: маркер lint:language-ok называет правило '{}', а "
+                    "правила такие: {}".format(
+                        Path(path).name, name, ", ".join(LANGUAGE_RULES)
+                    ),
+                ))
+            allowed_by_path[path] = names
+        allowed = allowed_by_path[path]
+        rules = [rule for rule in applicable if rule not in allowed]
+        if RULE_SENTENCE in rules:
+            for phrase in long_sentences(text):
+                findings.append((label, RULE_SENTENCE,
+                    "{}: фраза из {} слов при пределе {} — «{}»".format(
+                        label, word_count(phrase), SENTENCE_MAX, _clip(phrase)
+                    )))
+        if RULE_IMAGES in rules:
+            for hit in forbidden_images(text):
+                findings.append((label, RULE_IMAGES,
+                    "{}: образ метафоры «{}» — объяснения пишутся без "
+                    "образов (language.md)".format(label, hit)))
+        if RULE_CUTSCENE in rules:
+            count = sentence_count(text)
+            if count > CUTSCENE_SENTENCES_MAX:
+                findings.append((label, RULE_CUTSCENE,
+                    "{}: {} фраз при пределе {} — катсцена это две фразы и "
+                    "список квестов".format(label, count, CUTSCENE_SENTENCES_MAX)))
+        if RULE_EARLY in rules:
+            for problem in early_words_problems([(label, position, text)]):
+                findings.append((label, RULE_EARLY, problem))
+        if RULE_PREFIX in rules:
+            for hit in bare_commands(text):
+                findings.append((label, RULE_PREFIX,
+                    "{}: приём назван без приставки — «{}»; в Claude Code "
+                    "команда плагина это /jedicoder:{} (language.md)".format(
+                        label, hit, hit.lstrip("/"))))
+        if RULE_CARD in rules:
+            count = card_line_count(text)
+            if count > CARD_LINES_MAX:
+                findings.append((label, RULE_CARD,
+                    "{}: {} строк после заголовка при пределе {} — карточка в "
+                    "терминале это что-это и пример".format(
+                        label, count, CARD_LINES_MAX)))
+            if not card_has_example(text):
+                findings.append((label, RULE_CARD,
+                    "{}: нет поля example — вторая строка карточки в "
+                    "терминале, пример из жизни (language.md)".format(label)))
+    return findings
+
+
+def _clip(phrase, limit=70):
+    """Начало фразы для отчёта: автор найдёт её поиском, а строка не разбухнет."""
+    phrase = " ".join(phrase.split())
+    return phrase if len(phrase) <= limit else phrase[:limit].rstrip() + "…"
+
+
+def _language_problems(units, legacy):
+    """Находки правил языка минус LEGACY, строками для отчёта."""
+    return [
+        message
+        for label, rule, message in _language_findings(units)
+        if rule not in legacy.get(label, ())
+    ]
+
+
+def language_findings(content_root, skills_root=None, commands_root=None):
+    """Все находки правил языка по поставке, без LEGACY: (подпись, правило, текст).
+
+    Публична для теста, который держит LEGACY честным: каждая пара из
+    списка обязана всё ещё находиться, иначе она давно снята.
+    """
+    content_root = Path(content_root)
+    return _language_findings(_language_units(
+        content_root,
+        DEFAULT_SKILLS_ROOT if skills_root is None else Path(skills_root),
+        DEFAULT_COMMANDS_ROOT if commands_root is None else Path(commands_root),
+        content.load_terms(content_root),
+        content.load_rules(content_root),
+        content.load_recipes(content_root),
+        content.load_acts(content_root),
+        content.load_onboarding(content_root),
+        content.load_remarks(content_root),
+        _optional(content.load_instructions, content_root),
+        _optional(content.load_roadmaps, content_root),
+    ))
+
+
+def _optional(loader, content_root):
+    """Раздел, которого у синтетического дерева может не быть: тогда пусто.
+
+    Состав и схему разделов держит lint(); здесь только тексты."""
+    try:
+        return loader(content_root)
+    except (OSError, content.ContentError):
+        return ()
 
 
 def main(argv=None):

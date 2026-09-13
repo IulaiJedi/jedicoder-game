@@ -18,6 +18,10 @@ from .ranks import ACTS, STATUS_DONE
 TRACK_BOTH = "both"
 TRACK_CRAFTSMAN = "craftsman"
 TRACK_FOUNDER = "founder"
+# Слова трека для падавана: имена craftsman/founder — ручки CLI, модель их
+# не произносит (прогон новичком 2026-09-13: «Трек: craftsman» ушёл на экран).
+# Один словарь на движок: печатают его и CLI, и страница Разбора.
+TRACK_WORDS = {TRACK_CRAFTSMAN: "для себя", TRACK_FOUNDER: "для людей"}
 
 # Треки, которые может выбрать падаван. TRACK_BOTH сюда не входит: это
 # свойство квеста, а не выбор человека.

@@ -27,6 +27,11 @@ SUBCOMMANDS = (
 # падавану про неё знать незачем.
 DEFAULT_SITE_URL = "https://jedicoder.store"
 
+# Бот игры — ссылкой в каждой строке, где звучит /link: «ключ выдаёт бот»
+# новичку ничего не говорит, какой бот и где его искать (прогон новичком
+# 2026-09-13). Тот же адрес набран на сайте в src/data/bot.ts.
+BOT_URL = "https://t.me/Jedicoderstore_bot"
+
 # Метка, которую ставит десктопный Голокрон, запуская Claude Code у себя в
 # Верстаке (golokron/src/main/workbench/launch.ts, GOLOKRON_MARK). Внутри
 # него Книга в браузере не нужна: разворот главы, доску квестов и счётчики
@@ -65,6 +70,17 @@ NOTICES = {
         "первого, — он вернётся сам, как только закроешь Акт 1."
     ),
 }
+
+
+# Подсказка «для кого продукт» — одна на все места, где трек ещё не назван:
+# первый экран говорит только словами, отказ входа и `track` добавляют ручку.
+# Слова «для себя» / «для людей» падаван слышит, имена ручек — только модель.
+TRACK_QUESTION = "сначала скажи, для кого продукт: для себя или для людей"
+TRACK_WORDS = acts.TRACK_WORDS
+TRACK_HINT = (
+    "Ответ записывает команда: track craftsman — для себя, "
+    "track founder — для людей."
+)
 
 
 def _project_path(data):
@@ -121,8 +137,8 @@ def _project_lines(data, project_exists):
         # строкой выше врёт здесь ровно так же, как на мёртвом пути.
         return [
             "Папка проекта не установлена.",
-            "  Проверки квестов пойдут из текущей папки, серия сохранений "
-            "не растёт.",
+            "  Проверки квестов пойдут из текущей папки — той, где открыт "
+            "Claude Code.",
             "  Назови папку: project path <путь>",
         ]
     if project_exists is False:
@@ -132,24 +148,74 @@ def _project_lines(data, project_exists):
         # проекта», и вместе они читаются как одна строка о разном.
         return [
             "Папка проекта не найдена: {}".format(path),
-            "  Игра смотрит туда: квесты не проверяются, серия сохранений "
-            "не растёт.",
+            "  Игра смотрит туда, и проверки квестов не пройдут.",
             "  Назови папку заново: project path <путь>",
         ]
     return ["Папка проекта: {}".format(path)]
 
 
-def render_status(data, project_exists):
+#: Где живёт продукт — словами падавана; ключи — значения `project deploy`.
+DEPLOY_WORDS = {acts.DEPLOY_MANAGED: "у хостинга", acts.DEPLOY_VPS: "на своём сервере"}
+
+
+def _deploy_tail(data, act, recipe):
+    """Хвост строки карты у акта, состав которого ждёт пути деплоя.
+
+    До закрытия предыдущего акта — пусто, только название: у новичка до
+    Акта 4 два акта впереди, а «хостинг» и «сервер» он ещё не слышал
+    (прогон новичком 2026-09-13). Выбран тип продукта — называется путь его
+    рецепта, тот же, что называет `project`; выбор всё равно за падаваном.
+
+    Простыми словами, без «пути деплоя»: ручка та же, слово «деплой»
+    разбирается в Акте 5, а строка читается раньше.
+
+    Условие не берётся у ranks.can_enter_act, хотя правило то же: там
+    `state.get("acts", {})`, и `"acts": null` в правленом руками сохранении
+    уронил бы самую частую команду игры, которую карта сейчас переживает.
+    """
+    previous = (data.get("acts") or {}).get(str(act - 1)) or {}
+    current = data.get("current_act")
+    reached = (previous.get("status") == ranks.STATUS_DONE
+               or (isinstance(current, int) and current >= act))
+    if not reached:
+        return ""
+    if recipe is not None and recipe.deploy_path in DEPLOY_WORDS:
+        return (
+            " — где будет жить продукт, не сказано; рецепт «{}» советует: "
+            "{} (project deploy {})".format(
+                recipe.title, DEPLOY_WORDS[recipe.deploy_path], recipe.deploy_path
+            )
+        )
+    return " — где будет жить продукт, не сказано: {}".format(" или ".join(
+        "{} (project deploy {})".format(DEPLOY_WORDS[path], path)
+        for path in (acts.DEPLOY_MANAGED, acts.DEPLOY_VPS)
+    ))
+
+
+def render_status(data, project_exists, recipe):
+    """Первый экран. `recipe` — рецепт выбранного типа продукта или None.
+
+    Контент читает вызывающий, печать остаётся чистой функцией. Параметр
+    обязателен по той же причине, что и `project_exists`: забытый рецепт
+    молча дал бы общую строку там, где выбор уже сделан.
+    """
     rank = data.get("rank", st.RANK_YOUNGLING)
+    # Без слага в скобках: «Искатель (seeker)» ушёл на экран падавана (прогон
+    # новичком 2026-09-13). Слаг не нужен и модели — ни одна ручка CLI его
+    # не принимает, а имя со слагом сверяет ranks.RANK_TITLES.
     lines = [
-        "Ранг: {} ({})".format(ranks.RANK_TITLES.get(rank, rank), rank),
+        "Ранг: {}".format(ranks.RANK_TITLES.get(rank, rank)),
     ]
     # Начисление за квесты уже живо (20 XP за первое закрытие check/ack).
     # Нулевой счётчик не печатается до первого начисления: вечное «XP: 0»
     # читается как сломанная механика, а появившееся число — как награда.
     # term.xp (лут словаря) приедет с хуком словаря-лута.
     if data.get("xp", 0):
-        lines.append("XP: {}".format(data["xp"]))
+        # Пояснение в той же строке: новичок только что услышал, что ранг
+        # растёт за акты, а не за очки, — и увидел очки (прогон 2026-09-13).
+        lines.append(
+            "XP: {} — очки за квесты и новые слова, на ранг не влияют".format(data["xp"])
+        )
     # Нулевой счётчик молчит — все три, а не только XP. Довод у них общий и
     # уже записан строкой выше: вечный ноль читается как сломанная механика, а
     # появившееся число — как награда. Живой заход 2026-09-10 показал вторую
@@ -160,7 +226,7 @@ def render_status(data, project_exists):
     # успел что-то сделать; она обязана появляться вместе с первым очком, и
     # тогда её видно.
     if data.get("dark_side", 0):
-        lines.append("Тёмная сторона: {}".format(data["dark_side"]))
+        lines.append("Штрафы: {}".format(data["dark_side"]))
     streak = data.get("streak", {})
     if streak.get("current", 0) or streak.get("best", 0):
         # «Сохранений», а не «коммитов»: эта строка печатается на самом
@@ -170,7 +236,8 @@ def render_status(data, project_exists):
         # не должно объяснять заранее. Регрессия закрыта тестом первого
         # экрана в tests/test_cli.py: линтер контента сюда не дотягивается.
         lines.append(
-            "Серия сохранений: {} (лучшая {})".format(
+            "Серия сохранений: {} (лучшая {}) — дней подряд, когда работа "
+            "была сохранена".format(
                 streak.get("current", 0), streak.get("best", 0)
             )
         )
@@ -185,7 +252,7 @@ def render_status(data, project_exists):
             # Выключенный акт с карты не убран намеренно: падаван должен
             # видеть, что дорога есть и она не кончилась насовсем.
             lines.append(
-                "  [·] Акт {}. {} — готовится, в клубе".format(
+                "  [·] Акт {}. {} — готовится".format(
                     number, ranks.ACTS[number]["title"]
                 )
             )
@@ -220,11 +287,9 @@ def render_status(data, project_exists):
                 # Ловится раньше UnknownActError намеренно: TrackRequiredError
                 # от неё наследуется, и в обратном порядке падаван читал бы
                 # «квесты ещё не завезены» вместо «выбери трек».
-                progress = " — трек не выбран: track craftsman или track founder"
+                progress = " — " + TRACK_QUESTION
             except acts.DeployRequiredError:
-                progress = (
-                    " — путь деплоя не назван: project deploy managed|vps"
-                )
+                progress = _deploy_tail(data, number, recipe)
             except acts.UnknownActError:
                 progress = ""
         lines.append(
@@ -234,11 +299,17 @@ def render_status(data, project_exists):
     artifacts = data.get("artifacts") or []
     lines.append("")
     lines.append(
-        "Артефакты: {}".format(", ".join(artifacts) if artifacts else "пока ни одного")
+        "Приёмы: {}".format(", ".join(artifacts) if artifacts else "пока ни одного")
     )
-    lines.append(
-        "Открыто слов: {}".format(len(data.get("lexicon_unlocked") or []))
-    )
+    # Тот же довод, что у остальных счётчиков: нуль молчит. Появившееся число
+    # объясняется в той же строке тем, что падаван уже видел, — карточкой
+    # «✦ Новое слово», которую печатает хук словаря.
+    words = len(data.get("lexicon_unlocked") or [])
+    if words:
+        lines.append(
+            "Открыто слов: {} — карточек «Новое слово», которые ты уже "
+            "встретил".format(words)
+        )
     counters = data.get("first_try") or {}
     if counters.get("attempted"):
         lines.append(
@@ -275,7 +346,10 @@ def _load(state_path):
 
 def _cmd_status(args, state_path, content_root, quests_root):
     data = _load(state_path)
-    print(render_status(data, _project_exists(data)))
+    project = data.get("project")
+    kind = project.get("type") if isinstance(project, dict) else None
+    recipe = _recipe_by_name(content_root, kind) if isinstance(kind, str) else None
+    print(render_status(data, _project_exists(data), recipe))
     # Объяснение печатается после карты: именно на карте человек и видит то,
     # что его удивило — переоткрытый Акт 1 и упавший ранг.
     notices = data.get("notices")
@@ -466,7 +540,10 @@ def _print_quest_list(data, act, content_root):
         title = titles.get(quest_id, "")
         tail = " — {}".format(title) if title else ""
         if acts.quest_kind(act, quest_id) == acts.KIND_ACK:
-            tail += " (без проверки: ack {} {})".format(act, quest_id)
+            # Словами, а не ручкой: «(без проверки: ack 2 06-pipeline)» падаван
+            # читал как команду себе (прогон новичком 2026-09-13). Ручку ack
+            # модель знает из скилла core.
+            tail += " — подтверждается словами"
         print("  {}{}".format(quest_id, tail))
 
 
@@ -492,9 +569,7 @@ def _cmd_enter(args, state_path, content_root, quests_root):
                 act, info.get("title", ""), ranks.FINAL_ACT
             )
         )
-        print(
-            "Деплой, домен и публикацию разбираем в клубе — ссылка в финале: finale."
-        )
+        print("Что дальше — расскажет страница финала: finale.")
         return 1
     # Порядок отказов: сначала порядок актов, потом наличие квестов. Тому,
     # кто не закрыл Акт 2, надо услышать про Акт 2 — про то, что Акт 3 ещё
@@ -516,17 +591,14 @@ def _cmd_enter(args, state_path, content_root, quests_root):
         acts.quest_ids(act, acts.branch_of(data, act))
     except acts.TrackRequiredError:
         print(
-            "Состав Акта {} зависит от трека. Квестов у Ремесленника: {}, "
-            "у Основателя: {}.".format(
+            "Сначала скажи, для кого продукт. Квестов в Акте {}: для себя — "
+            "{}, для людей — {}.".format(
                 act,
                 len(acts.quest_ids(act, acts.TRACK_CRAFTSMAN)),
                 len(acts.quest_ids(act, acts.TRACK_FOUNDER)),
             )
         )
-        print(
-            "Выбери: track craftsman — делаю для себя и близких; "
-            "track founder — ищу пользователей."
-        )
+        print(TRACK_HINT)
         return 1
     except acts.DeployRequiredError:
         print(
@@ -579,13 +651,19 @@ def _cmd_enter(args, state_path, content_root, quests_root):
     # ниже: вторая запись состояния расширила бы окно гонки долга №8, а
     # печатать вопрос дважды нельзя. Внутри Голокрона вопрос не задаётся и
     # флаг не ставится: выйдя в обычный терминал, падаван его услышит.
+    #
+    # До первого ранга Книга и привязка не звучат вовсе (ADR-0014): Юнлинг
+    # входит в Акт 1 и получает две фразы катсцены и список квестов; вопрос
+    # про Книгу ждёт его на входе в Акт 2, уже Искателем. Порог — ранг, а не
+    # номер акта: Искатель, вернувшийся в Акт 1, слышит то же, что в Акте 2.
     inside_golokron = _inside_golokron()
-    if not asked_before and not inside_golokron:
+    past_first_rank = data.get("rank", st.RANK_YOUNGLING) != st.RANK_YOUNGLING
+    if not asked_before and not inside_golokron and past_first_rank:
         data["book_asked"] = True
     st.save(data, state_path)
     info = ranks.ACTS[act]
     print("Акт {}. {} — начат.".format(act, info["title"]))
-    print("Артефакт этого акта: {}".format(info["artifact"]))
+    print("Приём этого акта: {}".format(info["artifact"]))
     print("Ранг за прохождение: {}".format(ranks.RANK_TITLES[info["rank"]]))
     # Состав ветки — здесь, а не только в скилле: после `enter 4` падаван
     # узнавал список квестов из SKILL.md, игра его не называла (живой прогон
@@ -609,15 +687,24 @@ def _cmd_enter(args, state_path, content_root, quests_root):
     if scene is not None:
         print("")
         print(scene.body)
-    if inside_golokron:
+    if inside_golokron or not past_first_rank:
         # Книгу показывает Сцена справа; ни ссылки, ни вопроса, ни вкладки.
+        # Юнлингу — по той же причине, что и флаг выше: до первого ранга
+        # о Книге и привязке не слышно.
         return 0
     print("")
-    print("Разворот этой главы: {}".format(_book_url(data, act)))
+    # Книга — одним предложением после первого ранга (language.md): что это
+    # и где; первое место, где падаван видит это слово, — значит здесь и
+    # глосса. Ниже — то же про привязку, тоже одной строкой.
+    print(
+        "Книга — те же акты страницами в браузере: {}".format(
+            _book_url(data, act)
+        )
+    )
     if not data.get("link_key"):
         print(
-            "Прогресс в Книге появится после привязки: ключ выдаёт команда "
-            "/link в боте потока, привязывает — link <ключ>."
+            "Прогресс попадёт туда после привязки: ключ выдаёт бот {} "
+            "командой /link, записывает — link <ключ>.".format(BOT_URL)
         )
     if not asked_before:
         # input() здесь невозможен: cli.py запускается инструментом Bash из
@@ -625,17 +712,10 @@ def _cmd_enter(args, state_path, content_root, quests_root):
         # EOFError. Тот же приём, что у project db / track / project deploy:
         # печатает вопрос CLI, задаёт его падавану модель, пишет ответ ручка.
         print("")
-        # Первое место, где падаван видит слово «Книга», — значит здесь
-        # и глосса (D-04: слово остаётся, но объясняется при первой встрече).
-        # Позднейшие упоминания её не повторяют: поясняют один раз. Имя —
-        # из словаря сайта (CONTEXT.md, «Книга»): «Голокрон» там — десктопное
-        # приложение, и звать так же браузерную книгу нельзя — падаван
-        # внутри Голокрона читал бы «открыть Голокрон в браузере?».
-        print(
-            "Книга — книга твоего пути: то же, что ты проходишь в "
-            "терминале, только страницами и в браузере."
-        )
-        print("Открывать её на входе в каждую главу?")
+        # Имя — из словаря сайта (CONTEXT.md, «Книга»): «Голокрон» там —
+        # десктопное приложение, и звать так же браузерную книгу нельзя —
+        # падаван внутри Голокрона читал бы «открыть Голокрон в браузере?».
+        print("Открывать Книгу на входе в каждый акт?")
         print("  book yes — открывать вкладку самому")
         print("  book no — не открывать, зайду по ссылке сам")
     if data.get("book_open") is True:
@@ -691,7 +771,7 @@ def _maybe_close_act(state, act, state_path):
         # тишина, и непонятно, кончилось или оборвалось.
         print("")
         print("Это конец игры — той, что бесплатна и открыта целиком.")
-        print("Забери, что унёс: finale — карточка ранга, и scroll — Свиток в твой проект.")
+        print("Забери, что унёс: finale — карточка ранга, и scroll — памятка в твой проект.")
     return True
 
 
@@ -717,8 +797,9 @@ def _quest_kind(act, quest_id, branch=None):
         # Ловится раньше UnknownActError: она её родитель, и в обратном
         # порядке падаван услышал бы «квестов нет» вместо «выбери трек».
         return None, (
-            "Состав Акта {} зависит от трека. Выбери трек: "
-            "track craftsman или track founder.".format(act)
+            "Состав Акта {} зависит от ответа «для кого продукт» — {}. {}".format(
+                act, TRACK_QUESTION, TRACK_HINT
+            )
         )
     except acts.DeployRequiredError:
         return None, (
@@ -887,9 +968,9 @@ def _cmd_check(args, state_path, content_root, quests_root):
     if quests.loop_warning(data, act, quest_id):
         print("")
         print(
-            "Третья попытка — стоп. Дальше по кругу: откатись на рабочий "
-            "коммит, начни новый чат, дай ошибку целиком и попроси сначала "
-            "объяснить причину, а не чинить."
+            "Третья попытка. Дальше — протокол «ИИ ходит по кругу»: откатись "
+            "на рабочий коммит, начни новый чат, дай ошибку целиком и попроси "
+            "сначала объяснить причину, а не чинить."
         )
     return 1
 
@@ -1021,9 +1102,9 @@ def _cmd_recipe(args, state_path, content_root, quests_root):
 def _readable(body):
     """Тело контента без служебных строк.
 
-    В рецептах стоят пометки для линтера вида `<!-- lint:novelty-ok: … -->` —
-    они объясняют, почему раннее слово здесь допустимо, и адресованы автору,
-    а не падавану. Печатать их человеку — то же, что показать ему изнанку
+    В рецептах могут стоять пометки для линтера вида
+    `<!-- lint:novelty-ok: … -->` — они объясняют, почему раннее слово здесь
+    допустимо, и адресованы автору, а не падавану. Печатать их человеку — то же, что показать ему изнанку
     декорации.
     """
     lines = [line for line in body.strip().split("\n")
@@ -1260,12 +1341,9 @@ def _cmd_track(args, state_path, content_root, quests_root):
         track = acts.track_of(data)
         if track is None:
             print("Трек: не выбран.")
-            print(
-                "Выбери: track craftsman — делаю для себя и близких; "
-                "track founder — ищу пользователей."
-            )
+            print(TRACK_HINT)
         else:
-            print("Трек: {}.".format(track))
+            print("Продукт: {}.".format(TRACK_WORDS.get(track, track)))
         return 0
     choice = args[0]
     if choice not in acts.TRACKS:
@@ -1280,7 +1358,7 @@ def _cmd_track(args, state_path, content_root, quests_root):
     data["passport"]["track"] = choice
     st.enqueue_event(data, "linked", payload=_passport_snapshot(data))
     st.save(data, state_path)
-    print("Трек: {}.".format(choice))
+    print("Записано: продукт {}.".format(TRACK_WORDS[choice]))
     print("Сменить можно в любой момент — уже пройденное при этом не пропадает.")
     return 0
 
@@ -1292,34 +1370,34 @@ def _cmd_artifact(args, state_path, content_root, quests_root):
     характере, не выполняя тело.
     """
     if not args:
-        print("Укажи артефакт: artifact brainstorm")
+        print("Укажи приём: artifact brainstorm")
         return 1
     name = args[0]
     known = {info["artifact"] for info in ranks.ACTS.values()}
     if name not in known:
         print(
-            "Нет такого артефакта: {}. Есть: {}.".format(
+            "Нет такого приёма: {}. Есть: {}.".format(
                 name, ", ".join(sorted(known))
             )
         )
         return 1
     data = _load(state_path)
     if ranks.artifact_unlocked(data, name):
-        print("Артефакт {} открыт.".format(name))
+        print("Приём {} открыт.".format(name))
         return 0
     owner = next(
         number for number, info in sorted(ranks.ACTS.items())
         if info["artifact"] == name
     )
     print(
-        "Артефакт {} ещё не собран — он выдаётся на входе в Акт {}.".format(
+        "Приём {} ещё не выдан — его выдают на входе в Акт {}.".format(
             name, owner
         )
     )
     return 1
 
 
-# --- Свиток ----------------------------------------------------------------
+# --- Памятка (scroll) --------------------------------------------------------
 #
 # Единственная команда игры, которая пишет файлы в проект падавана. Ни хук,
 # ни проверка, ни вход в акт этого не делают и делать не будут (ADR-0009 в
@@ -1408,7 +1486,7 @@ def _cmd_debrief(args, state_path, content_root, quests_root):
     if verb == "clear":
         with st.update_state(state_path) as fresh:
             fresh["debrief"] = {"text": "", "facts": ""}
-        print("Разбор стёрт. Свиток выдастся с фактами и без него.")
+        print("Разбор стёрт. Памятка выдастся с фактами и без него.")
         return 0
     if _stdin_is_terminal():
         # Перенаправления нет — чтение stdin повисло бы молча, и повисло бы
@@ -1433,7 +1511,7 @@ def _cmd_debrief(args, state_path, content_root, quests_root):
             "facts": scroll.fingerprint(_debrief_facts(fresh, content_root)),
         }
     print("Разбор записан: {} строк.".format(len(text.split("\n"))))
-    print("В Свиток он ляжет под заголовком «{}» — командой scroll.".format(
+    print("В памятку он ляжет под заголовком «{}» — командой scroll.".format(
         scroll.DEBRIEF_HEADING.lstrip("# ")
     ))
     return 0
@@ -1603,25 +1681,25 @@ def render_scroll(title, directory, report):
 
 
 def _cmd_scroll(args, state_path, content_root, quests_root):
-    """Выдать Свиток в проект падавана. Пишет только эта команда."""
+    """Выдать памятку в проект падавана. Пишет только эта команда."""
     data = _load(state_path)
     path = _project_path(data)
     if path is None:
         # Те же слова, что на первом экране: один случай не должен
         # называться на двух экранах по-разному.
-        print("Папка проекта не установлена — Свиток класть некуда.")
+        print("Папка проекта не установлена — памятку класть некуда.")
         print("Назови папку: project path <путь>")
         return 1
     if not Path(path).is_dir():
         print("Папка проекта не найдена: {}".format(path))
-        print("Свиток класть некуда, ничего не создано.")
+        print("Памятку класть некуда, ничего не создано.")
         print("Назови папку заново: project path <путь>")
         return 1
     try:
         instructions = _scroll_instructions(content_root, data)
         act_pages = content.load_acts(content_root)
     except (OSError, content.ContentError) as error:
-        print("Не нашёл тексты Свитка: {}".format(error))
+        print("Не нашёл тексты памятки: {}".format(error))
         print("Похоже, плагин установлен не целиком. Переустанови его.")
         return 1
     directory = scroll.directory_for(path)
@@ -1678,10 +1756,10 @@ def _cmd_scroll(args, state_path, content_root, quests_root):
         # Сказать об этом обязательно: молчаливо выданный Свиток без Разбора
         # читался бы как «Магистр промолчал», а он не молчал.
         print()
-        print("Разбор Магистра в Свиток не вошёл: он написан по другим "
+        print("Разбор Магистра в памятку не вошёл: он написан по другим "
               "числам.")
         print("Позови Магистра переписать его по сегодняшним — и выдай "
-              "Свиток заново.")
+              "памятку заново.")
     # Код 1, когда хоть один файл до падавана не доехал. Отчёт при этом
     # печатается целиком: остальное легло и никуда не денется, а нуль на
     # недоставленном файле читался бы как «всё на месте».
@@ -1747,7 +1825,7 @@ def _rank_name(facts):
 
 
 def _rank_card_title(facts):
-    """«Карточка Мастера» — имя носит ранг владельца, как и у Свитка.
+    """«Карточка Мастера» — имя носит ранг владельца, как и у памятки.
 
     Склонение берётся у Свитка (scroll.genitive), а не пишется здесь заново:
     второго списка имён рангов в игре нет и быть не должно — он разошёлся бы
@@ -1780,7 +1858,7 @@ def _rank_card_numbers(facts, commits):
     return lines + [
         "Слов открыто: {}".format(facts.get("terms_unlocked") or 0),
         "XP: {}".format(facts.get("xp") or 0),
-        "Тёмная сторона: {}".format(dark.get("points") or 0),
+        "Штрафы: {}".format(dark.get("points") or 0),
     ]
 
 
@@ -1830,14 +1908,14 @@ def render_rank_card(facts, commits=None):
     else:
         lines += [
             "В карточке только закрытое: незакрытый акт в неё не идёт ни",
-            "авансом, ни округлением. Возьмёшь Свиток снова — она соберётся",
+            "авансом, ни округлением. Возьмёшь памятку снова — она соберётся",
             "заново, по закрытому на тот день.",
         ]
     return "\n".join(lines)
 
 
 def _scroll_folder():
-    """Папка Свитка в словах падавана: «docs/jedicoder».
+    """Папка памятки в словах падавана: «docs/jedicoder».
 
     Собирается из scroll.RELATIVE_DIR, а не набирается заново: имя папки
     падаван прочтёт в приглашении и пойдёт искать её глазами, и разойтись с
@@ -1868,8 +1946,8 @@ def _render_finale_locked(facts):
         lines.append("Ближайший незакрытый — Акт {} «{}».".format(*nearest))
     lines += [
         "",
-        "Свиток можно забрать уже сейчас: он выдаётся на любом ранге и отдаёт",
-        "то, что открыто, — инструкции артефактов, Разбор и твою карточку",
+        "Памятку можно забрать уже сейчас: она выдаётся на любом ранге и отдаёт",
+        "то, что открыто, — инструкции приёмов, Разбор и твою карточку",
         "{}. Ляжет папкой {} в твой проект.".format(
             scroll.genitive(title), _scroll_folder()
         ),
@@ -1888,19 +1966,19 @@ def _nearest_open_act(facts):
 
 
 def _render_finale_invite():
-    """Приглашение забрать Свиток — тому, у кого финал уже случился."""
+    """Приглашение забрать памятку — тому, у кого финал уже случился."""
     return "\n".join([
-        "Забери Свиток: он ляжет папкой {} в твой проект — инструкции".format(
+        "Забери памятку: она ляжет папкой {} в твой проект — инструкции".format(
             _scroll_folder()
         ),
-        "артефактов рабочим языком, Разбор твоего прохождения и эта карточка",
-        "отдельным файлом. Игру можно будет удалить, а Свиток останется.",
+        "приёмов рабочим языком, Разбор твоего прохождения и эта карточка",
+        "отдельным файлом. Игру можно будет удалить, а памятка останется.",
         "  scroll",
     ])
 
 
 def _cmd_finale(args, state_path, content_root, quests_root):
-    """Финал: карточка ранга, страница финала и приглашение забрать Свиток.
+    """Финал: карточка ранга, страница финала и приглашение забрать памятку.
 
     Ранг берётся из фактов Разбора (ranks.rank_for), а не из поля сохранения:
     правило игры — ранг считается по закрытым актам, и у ворот финала оно
@@ -1956,7 +2034,7 @@ def _valid_key(value):
 
 
 def _passport_snapshot(data):
-    """Снимок паспорта для бота потока — без путей и имён проектов.
+    """Снимок паспорта для бота — без путей и имён проектов.
 
     Приватность: это единственное, что уходит по сети про падавана, и в
     нём нет ничего, что раскрывало бы, над каким проектом он работает.
@@ -1986,7 +2064,7 @@ def _cmd_link(args, state_path, content_root, quests_root):
     if len(args) < 1 or not _valid_key(args[0]):
         print(
             "Укажи ключ из бота: link <ключ>. Ключ выдаёт команда /link "
-            "в Telegram-боте потока."
+            "в Telegram-боте игры: {}".format(BOT_URL)
         )
         return 1
     data = _load(state_path)
@@ -2000,7 +2078,7 @@ def _cmd_link(args, state_path, content_root, quests_root):
         # сработать без танцев — переписывать то же значение можно всегда.
         print(
             "Ключ записан, но бот его не узнал. Сверь ключ с командой /link "
-            "в боте и повтори: link <ключ>."
+            "в боте {} и повтори: link <ключ>.".format(BOT_URL)
         )
         return 1
     if status == "ok" and remaining == 0:
@@ -2018,7 +2096,7 @@ def _cmd_sync(args, state_path, content_root, quests_root):
     if not data.get("link_key"):
         print(
             "Плагин не привязан к боту. Возьми ключ командой /link в боте "
-            "и выполни: link <ключ>."
+            "{} и выполни: link <ключ>.".format(BOT_URL)
         )
         return 1
     if not data.get("pending_sync"):
@@ -2027,8 +2105,8 @@ def _cmd_sync(args, state_path, content_root, quests_root):
     sent, dropped, remaining, status = sync.flush(state_path)
     if status == "unknown_key":
         print(
-            "Бот не узнал ключ. Возьми свежий командой /link в боте (после "
-            "/newkey старый умирает) и привяжи заново: link <ключ>."
+            "Бот не узнал ключ. Возьми свежий командой /link в боте {} (после "
+            "/newkey старый умирает) и привяжи заново: link <ключ>.".format(BOT_URL)
         )
         return 1
     if status == "ok":
@@ -2097,7 +2175,10 @@ def _cmd_reset(args, state_path, content_root, quests_root):
     print("Сохранение убрано в архив: {}".format(archive))
     print("Вернуть, если передумал: mv {} {}".format(archive, path))
     if data.get("link_key"):
-        print("Ключ привязки уехал вместе с ним: новое сохранение привяжи заново — link <ключ>.")
+        print(
+            "Ключ привязки уехал вместе с ним: новое сохранение привяжи заново — "
+            "ключ выдаёт бот {} командой /link, записывает link <ключ>.".format(BOT_URL)
+        )
     if data.get("pending_sync"):
         print("Неотправленные боту события пропали вместе с архивом — их было {}.".format(
             len(data["pending_sync"])))
@@ -2144,7 +2225,7 @@ def _cmd_book(args, state_path, content_root, quests_root):
     if BOOK_ANSWERS[choice]:
         print("Книгу буду открывать на входе в каждую главу.")
     else:
-        print("Не буду открывать — ссылку на разворот всё равно напечатаю.")
+        print("Не буду открывать — ссылку на Книгу всё равно напечатаю.")
     return 0
 
 

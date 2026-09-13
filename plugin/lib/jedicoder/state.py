@@ -251,6 +251,12 @@ def default_state(padawan_id=None):
         "acts": {},
         "artifacts": [],
         "lexicon_unlocked": [],
+        # Слова, найденные хуком лута сверх одной карточки за ход: не больше
+        # двух ждут своего хода по одному (lexicon_loot.pick_cards,
+        # MAX_QUEUE). Ключ плоский —
+        # старое сохранение получит пустой список на первом же load через
+        # merged.update(data), без NESTED_DEFAULTS и без бампа SCHEMA_VERSION.
+        "lexicon_queue": [],
         "project": {},
         "pending_sync": [],
         "notices": [],

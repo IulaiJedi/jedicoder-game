@@ -347,9 +347,9 @@ def test_hutt_filter_aliases_stay_clear_of_vertical_slice():
 # «Голокрон» с 2026-09-10 — имя десктопного приложения, как в словаре сайта
 # (CONTEXT.md); браузерная книга зовётся Книгой, и глосса теперь у неё.
 GLOSSES = (
-    ("Книга", "plugin/lib/jedicoder/cli.py", "книга твоего пути"),
+    ("Книга", "plugin/lib/jedicoder/cli.py", "страницами в браузере"),
     ("Магистр", "plugin/hooks/_shared.py", "наставник"),
-    ("Тёмная сторона", "plugin/skills/core/SKILL.md", "Печатаешь этот счётчик впервые"),
+    ("Штрафы", "plugin/skills/core/SKILL.md", "Печатаешь этот счётчик впервые"),
     ("падаван", "plugin/commands/start.md", "значит «ученик»"),
 )
 
@@ -372,20 +372,19 @@ def test_retained_myth_words_are_glossed(word, relpath, marker):
 
 
 def test_myth_words_are_not_renamed():
-    """Ни одно из четырёх слов не переименовано (D-07).
+    """Голокрон и Магистр не переименованы (D-07), а «Тёмная сторона» — да.
 
-    Переименование Голокрона потребовало бы правки второго репозитория
-    (`Kniga.tsx`, `ChapterCover.tsx`), Тёмной стороны — 12+ файлов, обоих
-    хуков и агента. Здесь они остаются, поэтому глоссы выше — не косметика,
-    а единственное, чем закрывается LANG-03 по этим словам.
+    ADR-0014 заменил три имени обычными словами: Тёмная сторона → штрафы,
+    артефакт → приём, Свиток → памятка. Хук на пятом очке говорит «штрафы»,
+    а ключ состояния не трогается никогда (D-06): переименование означало бы
+    миграцию ~/.jedicoder/state.json у всех, кто уже играет.
     """
     cli_text = (ROOT / "plugin/lib/jedicoder/cli.py").read_text(encoding="utf-8")
     shared = (ROOT / "plugin/hooks/_shared.py").read_text(encoding="utf-8")
     assert "Голокрон" in cli_text
     assert "Магистр" in shared
-    assert "Тёмная сторона" in shared
-    # Ключ состояния не трогается никогда (D-06): переименование означало бы
-    # миграцию ~/.jedicoder/state.json у всех, кто уже играет.
+    assert "Тёмная сторона" not in shared
+    assert "штраф" in shared.lower()
     state_text = (ROOT / "plugin/lib/jedicoder/state.py").read_text(encoding="utf-8")
     assert "dark_side" in state_text
 

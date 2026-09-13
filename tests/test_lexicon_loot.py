@@ -19,11 +19,11 @@ from jedicoder import content  # noqa: E402
 from jedicoder import ranks, state as st  # noqa: E402
 
 
-def term(name, aliases, act=1, xp=5, title=None, body=""):
+def term(name, aliases, act=1, xp=5, title=None, body="", example=""):
     return content.Term(
         term=name, title=title or name.upper(), aliases=tuple(aliases),
         act=act, category="product", xp=xp, body=body,
-        path=Path("/dev/null"), rank="seeker", related=(),
+        path=Path("/dev/null"), rank="seeker", related=(), example=example,
     )
 
 
@@ -225,8 +225,45 @@ def test_priority_act_then_xp_then_term():
     assert [t.term for t in got] == ["a-rich", "b-cheap", "c-late"]
 
 
-def test_max_cards_is_two():
-    assert lexicon_loot.MAX_CARDS == 2
+def test_max_cards_is_one():
+    """Одна карточка за ход: под ответом не стена текста (спека #64, US5)."""
+    assert lexicon_loot.MAX_CARDS == 1
+
+
+def test_queue_holds_at_most_two_words():
+    """Пять слов в ответе: одна карточка, два ждут, остальные не копятся.
+
+    Прогон новичком 2026-09-13: очередь из восьми слов раздавала карточки о
+    словах, прозвучавших восемь ходов назад. Слово сверх двух откроется
+    при следующем упоминании.
+    """
+    words = [term(name, [name]) for name in ("aa", "bb", "cc", "dd", "ee")]
+    cards, queue = lexicon_loot.pick_cards("aa bb cc dd ee", words, fresh_state())
+    assert [t.term for t in cards] == ["aa"]
+    assert queue == ["bb", "cc"]
+
+
+def test_long_queue_of_an_old_save_is_cut_to_two():
+    """Сохранение прошлой версии несёт очередь длиннее двух: она обрезается."""
+    words = [term(name, [name]) for name in ("aa", "bb", "cc", "dd")]
+    state = fresh_state()
+    state["lexicon_queue"] = ["aa", "bb", "cc", "dd"]
+    cards, queue = lexicon_loot.pick_cards("", words, state)
+    assert [t.term for t in cards] == ["aa"]
+    assert queue == ["bb", "cc"]
+
+
+def test_word_beyond_the_queue_opens_on_next_mention():
+    """Не попавшее в очередь слово не потеряно: упомянули снова — ждёт своей очереди."""
+    words = [term(name, [name]) for name in ("aa", "bb", "cc", "dd")]
+    state = fresh_state()
+    cards, queue = lexicon_loot.pick_cards("aa bb cc dd", words, state)
+    assert "dd" not in queue
+    state["lexicon_unlocked"] = [t.term for t in cards]
+    state["lexicon_queue"] = queue
+    cards, queue = lexicon_loot.pick_cards("снова dd", words, state)
+    assert [t.term for t in cards] == ["bb"]
+    assert queue == ["cc", "dd"]
 
 
 BODY = (
@@ -236,16 +273,54 @@ BODY = (
     "**Как выглядит:** одна кнопка.\n\n"
     "**Проверь, что понял:** что ты выкинешь из идеи?\n"
 )
+EXAMPLE = "Калькулятор с одной кнопкой «посчитать», без истории и тем."
 
 
-def test_render_card_shape():
+def card_lines(card):
+    return [line for line in card.split("\n") if line.strip()]
+
+
+def test_render_card_is_header_and_two_lines():
+    """Заголовок с названием и XP, потом ровно две строки: что это и пример."""
+    card = lexicon_loot.render_card(
+        term("mvp", ["mvp"], xp=5, title="MVP", body=BODY, example=EXAMPLE)
+    )
+    lines = card_lines(card)
+    assert lines[0] == "✦ Новое слово: MVP (+5 XP)"
+    assert len(lines) == 3
+    assert lines[1].startswith("Самая маленькая версия продукта")
+    assert lines[2] == "Пример: " + EXAMPLE
+    assert "**" not in card  # разметка снята
+    assert "Зачем нужно" not in card  # остаётся Полке и Книге
+    assert "Проверь" not in card
+
+
+def test_render_card_lines_fit_fifteen_words(content_root):
+    """Обе строки короче 15 слов — тот же предел, что у фразы (language.md)."""
+    terms = {t.term: t for t in content.load_terms(content_root)}
+    for name in ACT1_AND_FIRST_SCREEN:
+        lines = card_lines(lexicon_loot.render_card(terms[name]))
+        assert len(lines) == 3, name
+        for line in lines[1:]:
+            words = [w for w in line.split() if any(ch.isalnum() for ch in w)]
+            assert len(words) <= 15, (name, line)
+
+
+ACT1_AND_FIRST_SCREEN = (
+    "model-effort", "usage", "pain", "tool", "vertical-slice", "estimate",
+    "crystal", "hutt-filter", "terminal", "permission-mode", "api", "ca",
+)
+
+
+def test_render_card_without_example_keeps_old_sections():
+    """Термин без example ещё не переписан (#72): печатается как раньше,
+    и линтер видит длинную карточку — по ней и снимают LEGACY."""
     card = lexicon_loot.render_card(term("mvp", ["mvp"], xp=5, title="MVP", body=BODY))
     assert "Новое слово: MVP (+5 XP)" in card
     assert "самая маленькая версия продукта" in card
     assert "Зачем нужно: проверить идею" in card
     assert "Проверь себя: что ты выкинешь" in card
-    assert "**" not in card  # разметка снята
-    assert "Как выглядит" not in card  # лишние секции не тащим
+    assert "Как выглядит" not in card
 
 
 def test_render_card_survives_unparsed_body():
@@ -270,10 +345,26 @@ def test_render_card_joins_wrapped_sections():
     assert "\nа не" not in card  # секция склеена в одну строку
 
 
+def test_render_card_joins_wrapped_definition():
+    """Определение в файле перенесено по 80 колонок — в терминале одна строка."""
+    card = lexicon_loot.render_card(term(
+        "pain", ["боль"], xp=10, title="Боль",
+        body="**Боль** — место, где человеку\nсейчас плохо и дорого.\n",
+        example="Каждый вечер час ищу нужный кусок записи.",
+    ))
+    assert card_lines(card)[1] == "Место, где человеку сейчас плохо и дорого."
+
+
 def test_render_card_full_sections_on_real_content(content_root):
     terms = {t.term: t for t in content.load_terms(content_root)}
     card = lexicon_loot.render_card(terms["mvp"])
-    assert "за вечер, а не за три месяца" in card
+    # Карточка поставки — две строки после заголовка: что это и пример.
+    # «Зачем нужно» остаётся на Полке (language.md), в терминал не идёт.
+    lines = card.split("\n")
+    assert len(lines) == 3
+    assert lines[1].startswith("Самая маленькая версия продукта")
+    assert lines[2].startswith(lexicon_loot.EXAMPLE_PREFIX)
+    assert "Зачем" not in card
 
 
 HOOK = ROOT / "plugin" / "hooks" / "lexicon_loot.py"
@@ -319,24 +410,65 @@ def test_e2e_card_awarded_and_persisted(tmp_path):
     assert st.load(state_path)["xp"] == 5
 
 
-def test_e2e_two_cards_max_one_write(tmp_path):
+def test_e2e_second_term_waits_in_queue(tmp_path):
+    """Два слова в одном ответе: одна карточка сейчас, вторая — следующим ходом.
+
+    Очередь, а не тихое начисление: слово без карточки падаван не заметит,
+    а XP без объяснения — цифра ни о чём. Засчитывается термин в тот ход,
+    когда напечатан, поэтому событие term_unlocked одно на ход и xp в нём —
+    итог на момент именно этого начисления.
+    """
     state_path = seeded_state_file(tmp_path)
-    text = "Сравним MVP, PMF и ICP на живом примере."
+    text = "Сравним MVP и PMF на живом примере."
     done = run_hook({"last_assistant_message": text}, state_path)
     out = json.loads(done.stdout)
-    assert out["systemMessage"].count("Новое слово:") == 2
+    assert out["systemMessage"].count("Новое слово:") == 1
+    assert "Новое слово: PMF" in out["systemMessage"]  # xp 10 против 5 — раньше
     data = st.load(state_path)
-    assert len(data["lexicon_unlocked"]) == 2
-    # Два термина за один ход — два события term_unlocked, и xp в каждом —
-    # накопленный итог на момент начисления именно этого термина: второе
-    # событие обязано нести xp строго больше первого, иначе бот увидел бы
-    # одинаковый (или убывающий) итог там, где на самом деле два начисления.
+    assert data["lexicon_unlocked"] == ["pmf"]
+    assert data["lexicon_queue"] == ["mvp"]
     events = [e for e in data["pending_sync"] if e["type"] == "term_unlocked"]
-    assert len(events) == 2
-    assert events[0]["payload"]["term"] == data["lexicon_unlocked"][0]
-    assert events[1]["payload"]["term"] == data["lexicon_unlocked"][1]
+    assert [e["payload"]["term"] for e in events] == ["pmf"]
+    assert events[0]["payload"]["xp"] == data["xp"]
+
+    # Следующий ход про другое: очередь выдаёт MVP без нового упоминания.
+    later = run_hook({"last_assistant_message": "Идём дальше."}, state_path)
+    out = json.loads(later.stdout)
+    assert out["systemMessage"].count("Новое слово:") == 1
+    assert "Новое слово: MVP" in out["systemMessage"]
+    data = st.load(state_path)
+    assert data["lexicon_unlocked"] == ["pmf", "mvp"]
+    assert data["lexicon_queue"] == []
+    events = [e for e in data["pending_sync"] if e["type"] == "term_unlocked"]
+    assert [e["payload"]["term"] for e in events] == ["pmf", "mvp"]
     assert events[1]["payload"]["xp"] > events[0]["payload"]["xp"]
     assert events[1]["payload"]["xp"] == data["xp"]
+
+
+def test_e2e_queue_goes_before_new_words(tmp_path):
+    """Слово из очереди печатается раньше нового: оно ждёт дольше.
+
+    ICP дороже MVP (10 против 5), но MVP уже ждал ход — и идёт первым.
+    """
+    state_path = seeded_state_file(tmp_path)
+    run_hook({"last_assistant_message": "MVP и PMF."}, state_path)
+    done = run_hook({"last_assistant_message": "Теперь ICP."}, state_path)
+    assert "Новое слово: MVP" in json.loads(done.stdout)["systemMessage"]
+    data = st.load(state_path)
+    assert data["lexicon_unlocked"] == ["pmf", "mvp"]
+    assert data["lexicon_queue"] == ["icp"]
+
+
+def test_e2e_queue_skips_term_unlocked_meanwhile(tmp_path):
+    """Термин, открытый пока ждал, из очереди выпадает без карточки."""
+    state_path = seeded_state_file(tmp_path)
+    run_hook({"last_assistant_message": "MVP и PMF."}, state_path)
+    with st.update_state(state_path) as data:
+        data["lexicon_unlocked"].append("mvp")
+    done = run_hook({"last_assistant_message": "Идём дальше."}, state_path)
+    assert done.returncode == 0
+    assert done.stdout.strip() == ""
+    assert st.load(state_path)["lexicon_queue"] == []
 
 
 def test_e2e_act_gate(tmp_path):

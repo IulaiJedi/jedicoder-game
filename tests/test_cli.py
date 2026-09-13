@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,15 @@ def paths(tmp_path, content_root, quests_root):
         "content_root": content_root,
         "quests_root": quests_root,
     }
+
+
+def _seeker_state():
+    """Сохранение того, кто закрыл Акт 1: ранг Искатель, трек выбран."""
+    data = st.default_state("local-test")
+    data["passport"] = {"track": "craftsman"}
+    ranks.enter_act(data, 1)
+    ranks.close_act(data, 1)
+    return data
 
 
 def run(argv, paths, capsys):
@@ -105,7 +115,7 @@ def test_status_shows_rank_and_counters_after_progress(paths, capsys):
     assert code == 0
     assert "Искатель" in out
     assert "55" in out
-    assert "Тёмная сторона: 2" in out
+    assert "Штрафы: 2" in out
     assert "plan" in out
 
 
@@ -309,7 +319,7 @@ def test_enter_act_persists(paths, capsys):
 
 def _book_line(out):
     for line in out.splitlines():
-        if line.startswith("Разворот этой главы: "):
+        if line.startswith("Книга — "):
             return line
     return None
 
@@ -330,26 +340,27 @@ def test_enter_prints_cutscene_without_link_key(paths, capsys):
     code, out = run(["enter", "1"], paths, capsys)
     assert code == 0
     assert st.load(paths["state_path"])["link_key"] is None
-    assert "амысел" in out
+    assert "болит" in out
 
 
 def test_enter_prints_book_link_without_key(paths, capsys, monkeypatch):
+    """Ссылка на Книгу — после первого ранга (ADR-0014), поэтому Акт 2."""
     monkeypatch.setenv("JEDICODER_SITE_URL", "https://example.test")
-    run(["track", "craftsman"], paths, capsys)
-    code, out = run(["enter", "1"], paths, capsys)
+    st.save(_seeker_state(), paths["state_path"])
+    code, out = run(["enter", "2"], paths, capsys)
     assert code == 0
-    assert _book_line(out) == "Разворот этой главы: https://example.test/kniga"
+    assert _book_line(out) == "Книга — те же акты страницами в браузере: https://example.test/kniga"
 
 
 def test_enter_prints_book_link_with_key(paths, capsys, monkeypatch):
     """Ключ уходит сегментом пути: explorer.exe не открывает URL с '?'."""
     monkeypatch.setenv("JEDICODER_SITE_URL", "https://example.test")
     monkeypatch.setenv("JEDICODER_SYNC_URL", "http://127.0.0.1:1/x")
-    run(["track", "craftsman"], paths, capsys)
+    st.save(_seeker_state(), paths["state_path"])
     assert run(["link", "testkey1"], paths, capsys)[0] == 0
-    code, out = run(["enter", "1"], paths, capsys)
+    code, out = run(["enter", "2"], paths, capsys)
     assert code == 0
-    assert _book_line(out) == "Разворот этой главы: https://example.test/kniga/testkey1/1"
+    assert _book_line(out) == "Книга — те же акты страницами в браузере: https://example.test/kniga/testkey1/2"
 
 
 def test_book_url_names_the_act(monkeypatch):
@@ -391,7 +402,7 @@ def test_inside_golokron_book_is_not_offered(paths, capsys, monkeypatch):
     assert code == 0
     assert "Акт 1." in out
     assert "book yes" not in out
-    assert "Разворот этой главы" not in out
+    assert "Книга" not in out
     assert "браузер" not in out
     assert "book_asked" not in st.load(paths["state_path"]) or \
         st.load(paths["state_path"])["book_asked"] is not True
@@ -531,12 +542,12 @@ def test_reset_inside_golokron_says_to_restart(paths, capsys, monkeypatch):
 
 
 def test_book_question_asked_once(paths, capsys):
-    run(["track", "craftsman"], paths, capsys)
-    code, first = run(["enter", "1"], paths, capsys)
+    st.save(_seeker_state(), paths["state_path"])
+    code, first = run(["enter", "2"], paths, capsys)
     assert code == 0
     assert "book yes" in first and "Книга" in first
     assert st.load(paths["state_path"])["book_asked"] is True
-    code, again = run(["enter", "1"], paths, capsys)
+    code, again = run(["enter", "2"], paths, capsys)
     assert code == 0
     assert "book yes" not in again
 
@@ -630,7 +641,7 @@ def test_broken_act_content_does_not_break_enter(paths, capsys, tmp_path):
     code, out = run(["enter", "1"], local, capsys)
     assert code == 0
     assert "Поиск боли" in out
-    assert _book_line(out) is not None
+    assert "Квесты акта" in out
     assert st.load(paths["state_path"])["acts"]["1"]["status"] == "in_progress"
 
 
@@ -957,6 +968,125 @@ def test_status_says_it_once(paths, capsys):
     assert st.load(paths["state_path"])["notices"] == []
 
 
+# --- Прогон новичком Актов 2–3, #73 «Перед выпуском» ----------------------
+
+def _act_line(out, number):
+    return next(l for l in out.splitlines() if "Акт {}.".format(number) in l)
+
+
+def test_map_keeps_quiet_about_deploy_until_act3_is_closed(paths, capsys):
+    """Строка пути деплоя у Акта 4 новичку ни о чём: до Акта 4 два акта, а
+    слова «хостинг» и «сервер» он ещё не слышал. До закрытия Акта 3 у Акта 4
+    только название."""
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert _act_line(out, 4) == "  [ ] Акт 4. Щит"
+    assert "project deploy" not in out
+    st.save(_seeker_state(), paths["state_path"])
+    _, out = run(["status"], paths, capsys)
+    assert _act_line(out, 4) == "  [ ] Акт 4. Щит"
+
+
+def test_map_asks_for_deploy_once_the_act_is_current():
+    """Второе условие строки: текущий акт дошёл до развилки, даже если запись
+    о закрытом Акте 3 потеряна (сохранение правили руками)."""
+    data = st.default_state("local-test")
+    data["current_act"] = 4
+    out = cli.render_status(data, None, None)
+    assert "где будет жить продукт" in _act_line(out, 4)
+    data["current_act"] = 3
+    assert _act_line(cli.render_status(data, None, None), 4) == "  [ ] Акт 4. Щит"
+
+
+def test_map_names_the_recipes_deploy_path(paths, capsys):
+    """Тип продукта выбран — строка называет путь рецепта, как `project`."""
+    _close_acts(paths, 3)
+    assert run(["project", "type", "telegram-bot"], paths, capsys)[0] == 0
+    _, out = run(["status"], paths, capsys)
+    line = _act_line(out, 4)
+    assert "где будет жить продукт" in line
+    assert "Телеграм-бот" in line
+    assert "project deploy managed" in line
+    assert "project deploy vps" not in line
+
+
+BOT_URL = "https://t.me/Jedicoderstore_bot"
+
+
+def test_enter_names_the_bot_by_link(paths, capsys):
+    """«Ключ выдаёт бот командой /link» — какой бот, новичок не знает."""
+    st.save(_seeker_state(), paths["state_path"])
+    code, out = run(["enter", "2"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if "/link" in l)
+    assert BOT_URL in line
+    assert "разворот" not in out
+
+
+def test_link_and_sync_name_the_bot_by_link(paths, capsys):
+    code, out = run(["link"], paths, capsys)
+    assert code == 1
+    assert BOT_URL in out
+    code, out = run(["sync"], paths, capsys)
+    assert code == 1
+    assert BOT_URL in out
+
+
+def test_reset_names_the_bot_by_link(paths, capsys):
+    """Ключ уехал в архив — где взять новый, строка говорит тем же адресом."""
+    data = st.default_state("local-test")
+    data["link_key"] = "abcd1234"
+    st.save(data, paths["state_path"])
+    code, out = run(["reset", "confirm"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if "link <ключ>" in l)
+    assert BOT_URL in line
+
+
+@pytest.mark.parametrize("doc", ["plugin/commands/start.md", "plugin/skills/core/SKILL.md"])
+def test_markdown_names_the_same_bot_as_cli(doc):
+    """Описание ручки link для модели — тем же адресом, что печатает CLI:
+    копия в markdown иначе разошлась бы с движком молча."""
+    text = (ROOT / doc).read_text(encoding="utf-8")
+    assert "/link" in text
+    assert cli.BOT_URL in text
+
+
+def test_book_no_does_not_say_spread(paths, capsys):
+    code, out = run(["book", "no"], paths, capsys)
+    assert code == 0
+    assert "разворот" not in out
+
+
+@pytest.mark.parametrize("state", [
+    lambda: st.default_state("local-test"),
+    _seeker_state,
+])
+def test_status_names_rank_without_slug(paths, capsys, state):
+    """«Ранг: Искатель (seeker)» — слаг ушёл на экран падавана."""
+    data = state()
+    st.save(data, paths["state_path"])
+    _, out = run(["status"], paths, capsys)
+    title = ranks.RANK_TITLES[data["rank"]]
+    assert out.splitlines()[0] == "Ранг: {}".format(title)
+    assert "({})".format(data["rank"]) not in out
+
+
+def test_enter_marks_ack_quests_in_words(paths, capsys):
+    """Квест без проверки помечен прямо в списке: иначе падаван будет гонять
+    check там, где нужен ack (в прогоне так и было с 04m-guard).
+
+    Помечен словами, а не ручкой: « (без проверки: ack 2 06-pipeline)»
+    новичок читал как команду себе. Ручку `ack` модель знает из скилла."""
+    st.save(_seeker_state(), paths["state_path"])
+    _, out = run(["enter", "2"], paths, capsys)
+    line = next(l for l in out.splitlines() if "06-pipeline" in l)
+    assert line.endswith(" — подтверждается словами")
+    assert "ack" not in line
+    script = next(l for l in out.splitlines() if "01-recipe" in l)
+    assert "подтверждается" not in script
+
+
 def test_status_survives_broken_notices_entry(paths, capsys):
     """Битый элемент в notices не должен ронять самую частую команду игры.
 
@@ -1117,7 +1247,7 @@ def test_artifact_unknown_name_is_a_bug_not_a_lock(tmp_path, capsys):
     state_path = tmp_path / "state.json"
     st.save(st.default_state(), state_path)
     assert cli.main(["artifact", "lightsaber"], state_path=state_path) == 1
-    assert "нет такого артефакта" in capsys.readouterr().out.lower()
+    assert "нет такого приёма" in capsys.readouterr().out.lower()
 
 
 def test_artifact_without_name(tmp_path):
@@ -1335,12 +1465,16 @@ def test_enter_act4_with_deploy_starts_and_grants_cso(paths, capsys):
 
 
 def test_status_map_asks_for_deploy_on_act4(paths, capsys):
+    """Строка звучит с закрытым Актом 3 (#73) и уходит, когда путь назван."""
+    _close_acts(paths, 3)
     code, out = run(["status"], paths, capsys)
     assert code == 0
-    assert "путь деплоя не назван" in out
+    line = next(l for l in out.splitlines() if "Акт 4." in l)
+    assert "где будет жить продукт" in line
+    assert "project deploy managed" in line and "project deploy vps" in line
     run(["project", "deploy", "vps"], paths, capsys)
     code, out = run(["status"], paths, capsys)
-    assert "путь деплоя не назван" not in out
+    assert "где будет жить продукт" not in out
     assert "0/5" in out
 
 
@@ -1472,16 +1606,6 @@ def test_finale_card_survives_missing_url_and_dates(paths, capsys):
 
 # --- Первый экран: жаргон, до которого линтер контента не дотягивается. ---
 
-# Дословные имена ручек CLI. Падаван их копирует, а не усваивает: строка
-# «трек не выбран: track craftsman или track founder» — это команда, а не
-# введение слова. Список — явная константа, а не регулярка «пропускай всё
-# похожее на команду»: широкое исключение через полгода проглотит настоящее
-# слово и никто не заметит.
-FIRST_SCREEN_LITERAL_COMMANDS = (
-    "track craftsman или track founder",
-    "project deploy managed|vps",
-)
-
 
 def _loot_hook():
     """Матчер хука лута — тот же, которым слова подсвечиваются падавану."""
@@ -1504,10 +1628,6 @@ def test_first_screen_has_no_late_terms(paths, capsys, content_root):
     loot = _loot_hook()
     code, out = run(["status"], paths, capsys)
     assert code == 0
-
-    for literal in FIRST_SCREEN_LITERAL_COMMANDS:
-        assert literal in out, "константа исключений разошлась с экраном"
-        out = out.replace(literal, " ")
 
     late = []
     for term in content.load_terms(content_root):
@@ -1547,7 +1667,7 @@ def test_first_screen_hides_zero_counters(paths, capsys):
     """
     code, out = run(["status"], paths, capsys)
     assert code == 0
-    assert "Тёмная сторона" not in out
+    assert "Штрафы" not in out
     assert "Серия сохранений" not in out
     # Ранг при этом на месте: он не счётчик, он ответ на «кто я сейчас».
     assert "Юнлинг" in out
@@ -1560,7 +1680,7 @@ def test_first_screen_shows_dark_side_once_earned(paths, capsys):
     st.save(data, paths["state_path"])
     code, out = run(["status"], paths, capsys)
     assert code == 0
-    assert "Тёмная сторона: 1" in out
+    assert "Штрафы: 1" in out
 
 
 def test_first_screen_names_current_dir_when_no_path(paths, capsys):
@@ -1574,10 +1694,9 @@ def test_first_screen_names_current_dir_when_no_path(paths, capsys):
     assert code == 0
     assert "Папка проекта не установлена" in out
     assert "текущей папки" in out
-    # Оба следствия, а не одно: commit_pulse выходит и на пустом пути
-    # (`if not project_dir`), поэтому серия стоит на нуле ровно по той же
-    # причине — а нуль напечатан строкой выше и без объяснения врёт.
-    assert "серия сохранений не растёт" in out
+    # Про серию здесь ни слова: счётчик на нуле молчит, а слово «серия» без
+    # объяснения на первом экране читалось как поломка (прогон 2026-09-12).
+    assert "серия" not in out.lower()
     assert "project path <путь>" in out
 
 
@@ -1630,12 +1749,12 @@ def test_render_status_takes_the_folder_fact_as_a_parameter():
     data = st.default_state("local-test")
     data["project"] = {"path": ghost}
 
-    assert "Папка проекта: {}".format(ghost) in cli.render_status(data, True)
+    assert "Папка проекта: {}".format(ghost) in cli.render_status(data, True, None)
     assert "Папка проекта не найдена: {}".format(ghost) in cli.render_status(
-        data, False
+        data, False, None
     )
     assert "Папка проекта не установлена" in cli.render_status(
-        st.default_state("local-test"), None
+        st.default_state("local-test"), None, None
     )
 
     # Факт обязателен: умолчание вернуло бы в сигнатуру то самое молчание,
@@ -1643,6 +1762,10 @@ def test_render_status_takes_the_folder_fact_as_a_parameter():
     # успокаивающее «Папка проекта: X».
     with pytest.raises(TypeError):
         cli.render_status(data)
+    # Рецепт — второй факт мимо сохранения (его читает _cmd_status), и он
+    # обязателен по той же причине: забытый рецепт молча дал бы общую строку.
+    with pytest.raises(TypeError):
+        cli.render_status(data, True)
 
 
 @pytest.mark.parametrize("project", [{"path": ["/tmp"]}, {"path": ""}, []])
@@ -1698,21 +1821,7 @@ def test_enter_lists_the_quests_of_the_branch(paths, capsys):
     assert "03c-who" in out
     assert "03f-market" not in out
     # Список стоит до катсцены: сначала карта пути, потом слово.
-    assert out.index("01-idea") < out.index("амысел")
-
-
-def test_enter_marks_ack_quests(paths, capsys):
-    """Квест без проверки помечен прямо в списке: иначе падаван будет гонять
-    check там, где нужен ack (в прогоне так и было с 04m-guard)."""
-    run(["track", "craftsman"], paths, capsys)
-    data = st.load(paths["state_path"])
-    data["acts"] = {"1": {"status": "done", "quests": {}}}
-    st.save(data, paths["state_path"])
-    code, out = run(["enter", "2"], paths, capsys)
-    assert code == 0
-    assert "06-pipeline" in out
-    line = next(l for l in out.splitlines() if "06-pipeline" in l)
-    assert "ack" in line
+    assert out.index("01-idea") < out.index("болит у людей")
 
 
 def test_project_names_the_recipes_deploy_path_until_chosen(paths, capsys):
@@ -1729,3 +1838,163 @@ def test_project_names_the_recipes_deploy_path_until_chosen(paths, capsys):
     _, out = run(["project"], paths, capsys)
     line = next(l for l in out.splitlines() if "Путь деплоя" in l)
     assert line.strip() == "Путь деплоя: vps"
+
+
+# --- Простой язык до первого ранга (#67, ADR-0014) ------------------------
+
+# Слова, которым рано звучать до ранга Искатель: заменённые имена и то, что
+# объясняется одним предложением после первого ранга (language.md). По
+# границе слова, как в линтере: подстрока «бот» ловила бы «работа».
+EARLY_FORBIDDEN = tuple(
+    re.compile(pattern) for pattern in (
+        r"\b[Кк]ниг\w*", r"\b[Пп]ривязк\w*", r"\b[Кк]луб\w*",
+        r"\bcraftsman\b", r"\bfounder\b", r"\b[Тт][её]мн\w*\s+сторон\w*",
+        r"\b[Аа]ртефакт\w*", r"\b[Сс]вит(?:ок|к[а-я]+)\b", r"\b[Бб]от\w*",
+    )
+)
+
+
+def test_youngling_status_and_enter_have_no_late_words(paths, capsys):
+    """Первый экран и вход в Акт 1 обходятся без Книги, привязки, клуба,
+    внутренних имён треков и заменённых имён (live-прогон 2026-09-12)."""
+    code, status = run(["status"], paths, capsys)
+    assert code == 0
+    assert run(["track", "craftsman"], paths, capsys)[0] == 0
+    code, entered = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    for out in (status, entered):
+        for word in EARLY_FORBIDDEN:
+            assert not word.search(out), (word.pattern, out)
+
+
+def test_youngling_map_asks_for_track_in_plain_words(paths, capsys):
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if "Акт 1" in l)
+    assert "для себя" in line and "для людей" in line
+
+
+def test_muted_act_on_map_does_not_name_the_club(paths, capsys):
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if "Акт 5" in l)
+    assert "готовится" in line and "клуб" not in line
+
+
+def test_status_names_penalties_and_moves(paths, capsys):
+    data = _seeker_state()
+    data["dark_side"] = 1
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Штрафы: 1" in out
+    assert "Приёмы: brainstorm" in out
+    assert "Тёмная сторона" not in out and "Артефакт" not in out
+
+
+def test_status_explains_the_streak_in_the_same_line(paths, capsys):
+    data = st.default_state("local-test")
+    data["streak"] = {"current": 2, "best": 3}
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if l.startswith("Серия сохранений:"))
+    assert "2" in line and "3" in line
+    assert "дней подряд" in line
+
+
+def test_status_hides_zero_words_and_explains_nonzero(paths, capsys):
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "Открыто слов" not in out
+    data = st.default_state("local-test")
+    data["lexicon_unlocked"] = ["terminal", "pain"]
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    line = next(l for l in out.splitlines() if l.startswith("Открыто слов:"))
+    assert "2" in line and "Новое слово" in line
+
+
+def test_missing_project_folder_does_not_mention_the_streak(paths, capsys):
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert "серия" not in out.lower()
+    assert "Папка проекта не установлена" in out
+
+
+def test_enter_1_does_not_ask_about_the_book(paths, capsys):
+    assert run(["track", "craftsman"], paths, capsys)[0] == 0
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    assert "book yes" not in out
+    assert _book_line(out) is None
+    assert st.load(paths["state_path"]).get("book_asked") is not True
+
+
+def test_enter_2_at_seeker_says_the_book_sentence_and_asks_once(paths, capsys, monkeypatch):
+    monkeypatch.setenv("JEDICODER_SITE_URL", "https://example.test")
+    st.save(_seeker_state(), paths["state_path"])
+    code, first = run(["enter", "2"], paths, capsys)
+    assert code == 0
+    assert "Книга" in first and "book yes" in first and "book no" in first
+    assert _book_line(first) == "Книга — те же акты страницами в браузере: https://example.test/kniga"
+    assert "link <ключ>" in first
+    assert "потока" not in first
+    assert st.load(paths["state_path"])["book_asked"] is True
+    code, again = run(["enter", "2"], paths, capsys)
+    assert code == 0
+    assert "book yes" not in again
+
+
+def test_enter_names_the_move_not_the_artifact(paths, capsys):
+    assert run(["track", "craftsman"], paths, capsys)[0] == 0
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    assert "Приём этого акта: brainstorm" in out
+
+
+def test_enter_without_track_asks_in_plain_words(paths, capsys):
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 1
+    assert "для себя" in out and "для людей" in out
+    assert "track craftsman" in out and "track founder" in out
+
+
+def test_enter_muted_act_does_not_name_the_club(paths, capsys):
+    code, out = run(["enter", "5"], paths, capsys)
+    assert code == 1
+    assert "клуб" not in out and "finale" in out
+
+
+def test_artifact_lock_speaks_of_moves(paths, capsys):
+    code, out = run(["artifact", "brainstorm"], paths, capsys)
+    assert code == 1
+    assert "Приём" in out and "ртефакт" not in out
+    code, out = run(["artifact", "nope"], paths, capsys)
+    assert code == 1
+    assert "приёма" in out.lower() and "ртефакт" not in out
+
+
+# --- Прогон новичком 2026-09-13: слова, которые ушли на экран -------------
+
+def test_track_speaks_human_words_not_internal_names(paths, capsys):
+    """«Трек: craftsman» — внутреннее имя, которое модель не произносит, а CLI
+    печатал его падавану. Теперь — «для себя» / «для людей»."""
+    code, out = run(["track", "craftsman"], paths, capsys)
+    assert code == 0
+    assert "для себя" in out and "craftsman" not in out
+    _, out = run(["track"], paths, capsys)
+    assert "для себя" in out and "craftsman" not in out
+    run(["track", "founder"], paths, capsys)
+    _, out = run(["track"], paths, capsys)
+    assert "для людей" in out and "founder" not in out
+
+
+def test_status_explains_xp_in_the_same_line(paths, capsys):
+    data = st.load(paths["state_path"])
+    data["xp"] = 60
+    st.save(data, paths["state_path"])
+    _, out = run(["status"], paths, capsys)
+    line = next(l for l in out.splitlines() if l.startswith("XP:"))
+    assert "на ранг не влияют" in line

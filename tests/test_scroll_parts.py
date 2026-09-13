@@ -51,7 +51,9 @@ def test_debrief_prints_the_facts_the_engine_counted(paths, capsys):
     code, out = run(["debrief"], paths, capsys)
     assert code == 0
     assert out.startswith("# Разбор")
-    assert "Ранг: Юнлинг (youngling)" in out
+    # Без слага: эта же страница ложится Разбором в проект падавана (#73).
+    assert "- Ранг: Юнлинг\n" in out
+    assert "(youngling)" not in out
     assert "- XP: 0" in out
 
 
@@ -157,7 +159,7 @@ def test_text_lands_under_the_facts_in_the_file(paths, capsys, project):
         encoding="utf-8"
     )
     assert RAZBOR in page
-    assert page.index(scroll.DEBRIEF_HEADING) > page.index("## Тёмная сторона")
+    assert page.index(scroll.DEBRIEF_HEADING) > page.index("## Штрафы")
 
 
 def test_facts_in_the_file_are_word_for_word_what_the_model_read(

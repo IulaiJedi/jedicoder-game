@@ -81,7 +81,7 @@ def test_master_card_names_the_rank_and_every_number():
     assert "Коммитов: 42" in card
     assert "Слов открыто: 30" in card
     assert "XP: 620" in card
-    assert "Тёмная сторона: 3" in card
+    assert "Штрафы: 3" in card
 
 
 def test_master_card_carries_the_finale_page():
@@ -192,7 +192,7 @@ def test_finale_draws_the_card_and_invites_to_take_the_scroll(
     assert "Продукт: https://myapp.example" in out
     assert "Коммитов: 3" in out
     assert cli._finale_url() in out
-    assert "Свиток" in out
+    assert "памятк" in out.lower() and "Свиток" not in out
     assert "scroll" in out
 
 
@@ -210,8 +210,8 @@ def test_finale_below_master_names_what_is_missing_and_offers_the_scroll(
     assert code == 1
     assert ranks.RANK_TITLES[ranks.ACTS[last - 1]["rank"]] in out
     assert "Акт {}".format(last) in out and ranks.ACTS[last]["title"] in out
-    # Свиток предлагается уже сейчас — он выдаётся на любом ранге.
-    assert "Свиток" in out
+    # Памятка предлагается уже сейчас — она выдаётся на любом ранге.
+    assert "памятк" in out.lower() and "Свиток" not in out
     assert "scroll" in out
     # Но не финал: карточки Мастера у него ещё нет, и страницы финала тоже.
     assert "=== Карточка" not in out
@@ -308,7 +308,7 @@ def test_the_finale_prints_a_card_it_did_not_count_itself(
     assert code == 0
     assert "Слов открыто: 2" in out
     assert "XP: 620" in out
-    assert "Тёмная сторона: 2" in out
+    assert "Штрафы: 2" in out
     assert "Коммитов" not in out
 
     expected = cli.render_rank_card(debrief.facts(st.load(paths["state_path"])))

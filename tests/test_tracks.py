@@ -99,7 +99,8 @@ def test_track_command_shows_current(tmp_path, capsys):
     cli.main(["track", "founder"], state_path=state_path)
     capsys.readouterr()
     assert cli.main(["track"], state_path=state_path) == 0
-    assert "founder" in capsys.readouterr().out
+    # Падаван видит слова, а не имя ручки: «для людей», не «founder».
+    assert "для людей" in capsys.readouterr().out
 
 
 def test_track_is_in_subcommands():

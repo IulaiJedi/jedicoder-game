@@ -6,6 +6,7 @@
 поставки, битый файл должен ловиться линтером в CI, а не на машине
 падавана посреди акта.
 """
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,7 +22,7 @@ DEPLOY_PATHS = ("managed", "vps")
 # разметка, по которой узел можно опознать без разбора дерева.
 ONBOARDING_SECTIONS = ("install", "check", "trouble", "first-session", "link")
 
-TERM_REQUIRED = ("term", "title", "aliases", "act", "category", "xp")
+TERM_REQUIRED = ("term", "title", "aliases", "act", "category", "xp", "example")
 RULE_REQUIRED = ("rule", "title", "act", "severity", "xp")
 RECIPE_REQUIRED = ("recipe", "title", "stack", "deploy_path")
 ACT_REQUIRED = (
@@ -100,6 +101,17 @@ BRANCHES_BY_AXIS = {
 MIN_ACT = 0
 MAX_ACT = 5
 
+# Пример из жизни в карточке термина — одна фраза не длиннее, чем фраза по
+# правилам языка (language.md, «Размеры»; в линтере — SENTENCE_MAX).
+EXAMPLE_WORDS_MAX = 15
+_WORD = re.compile(r"\w")
+# Команды в обратных кавычках словами не считаются (language.md, правило 2)
+# — тот же счёт, что у линтера: два прибора на одно число разойдутся молча.
+_CODE_SPAN = re.compile(r"`[^`\n]+`")
+# Конец фразы, за которым идёт следующая: «. Слово». Многоточие внутри
+# фразы — тоже конец: пример на две фразы не помещается во вторую строку.
+_NEXT_PHRASE = re.compile(r'[.!?…]+[»”")\]]*\s+\S')
+
 
 class ContentError(ValueError):
     """Файл контента не проходит валидацию схемы."""
@@ -122,6 +134,12 @@ class Term:
     # В TERM_REQUIRED не входит: Акты 4-5 в охват аудита языка не включены,
     # обязательность заставила бы проставить поле всем 55 терминам.
     quest: str = ""
+    # Пример из жизни для карточки в терминале — вторая из двух строк
+    # (language.md, «Размеры»). Одна фраза до EXAMPLE_WORDS_MAX слов.
+    # В TERM_REQUIRED с тикета #72: все термины поставки его несут, и термин
+    # без примера не доедет до карточки. Значение по умолчанию — для тестов,
+    # которые собирают Term руками.
+    example: str = ""
 
 
 @dataclass(frozen=True)
@@ -378,12 +396,46 @@ def _require_act(meta, path):
         )
 
 
+def _require_example(meta, path):
+    """Поле example — одна непустая фраза до EXAMPLE_WORDS_MAX слов.
+
+    Наличие поля держит _require по TERM_REQUIRED; здесь — форма.
+    """
+    example = meta["example"]
+    if not isinstance(example, str):
+        raise ContentError(
+            "{}: example должен быть строкой — одной фразой, примером из "
+            "жизни; получено {!r}".format(path, example)
+        )
+    if not example.strip():
+        raise ContentError(
+            "{}: example пуст — вторая строка карточки в терминале, пример "
+            "из жизни; убери поле или напиши фразу".format(path)
+        )
+    words = sum(
+        1 for token in _CODE_SPAN.sub(" ", example).split() if _WORD.search(token)
+    )
+    if words > EXAMPLE_WORDS_MAX:
+        raise ContentError(
+            "{}: example из {} слов при пределе {} — это одна строка "
+            "карточки в терминале, режь до одной фразы".format(
+                path, words, EXAMPLE_WORDS_MAX
+            )
+        )
+    if _NEXT_PHRASE.search(example.strip()):
+        raise ContentError(
+            "{}: example — одна фраза, а не несколько: вторая строка "
+            "карточки в терминале".format(path)
+        )
+
+
 def _build_term(meta, body, path):
     _require(meta, TERM_REQUIRED, path)
     _require_body(body, path)
     _require_list(meta, "aliases", path)
     _require_choice(meta, "category", CATEGORIES, path)
     _require_act(meta, path)
+    _require_example(meta, path)
     return Term(
         term=meta["term"],
         title=meta["title"],
@@ -396,6 +448,7 @@ def _build_term(meta, body, path):
         rank=meta.get("rank") or "",
         related=tuple(meta.get("related") or ()),
         quest=meta.get("quest") or "",
+        example=meta.get("example") or "",
     )
 
 

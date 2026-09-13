@@ -288,7 +288,7 @@ def test_facts_agree_with_what_status_prints(tmp_path, content_root, quests_root
     assert facts["dark_side"]["points"] == 5
     assert facts["rank_title"] in out.splitlines()[0]
     assert _printed(out, "XP:") == [facts["xp"]]
-    assert _printed(out, "Тёмная сторона:") == [facts["dark_side"]["points"]]
+    assert _printed(out, "Штрафы:") == [facts["dark_side"]["points"]]
     assert _printed(out, "Серия сохранений:") == [
         facts["streak"]["current"], facts["streak"]["best"],
     ]
@@ -313,7 +313,7 @@ def test_facts_agree_with_what_finale_prints(tmp_path, content_root, quests_root
     assert _printed(out, "Дней в пути:") == [facts["days_in_path"]]
     assert _printed(out, "Слов открыто:") == [facts["terms_unlocked"]]
     assert _printed(out, "XP:") == [facts["xp"]]
-    assert _printed(out, "Тёмная сторона:") == [facts["dark_side"]["points"]]
+    assert _printed(out, "Штрафы:") == [facts["dark_side"]["points"]]
 
 
 def test_rank_and_closed_acts_come_from_the_registry():
