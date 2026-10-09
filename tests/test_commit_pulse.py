@@ -239,3 +239,120 @@ def test_failed_commit_does_not_count(project, hook_state):
     path = hook_state(project={"path": str(proj)})
     assert commit_pulse.react(payload("git commit -m 'пусто'", proj)) is None
     assert st.load(path)["streak"]["current"] == 0
+
+
+# --- Долг №6: коммит опознаётся по сдвигу HEAD, а не по чистоте дерева -----
+
+
+def test_partial_commit_grows_the_streak(project, hook_state):
+    # Обычный день: один файл готов и сохранён, второй ещё правится.
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    assert commit_pulse.react(payload("ls", proj)) is None
+    (proj / "done.txt").write_text("готово", encoding="utf-8")
+    (proj / "draft.txt").write_text("в работе", encoding="utf-8")
+    _git(proj, "add", "done.txt")
+    _git(proj, "commit", "-q", "-m", "готовая часть")
+    out = commit_pulse.react(
+        payload("git add done.txt && git commit -m 'готовая часть'", proj)
+    )
+    assert out is not None and "Серия" in out["systemMessage"]
+    assert st.load(path)["streak"]["current"] == 1
+    assert commit_pulse.dirty_count(proj) == 1, "черновик остался несохранённым"
+
+
+def test_first_ever_commit_counts_with_work_left_over(project, hook_state):
+    # Первый коммит новичка: папка только что стала репозиторием, один
+    # файл сохранён, второй нет. «Было» здесь — «коммитов ещё нет».
+    proj = project(git=True, commits=0)
+    path = hook_state(project={"path": str(proj)})
+    assert commit_pulse.react(payload("ls", proj)) is None
+    (proj / "done.txt").write_text("готово", encoding="utf-8")
+    (proj / "draft.txt").write_text("в работе", encoding="utf-8")
+    _git(proj, "add", "done.txt")
+    _git(proj, "commit", "-q", "-m", "первый")
+    out = commit_pulse.react(payload("git commit -m 'первый'", proj))
+    assert out is not None
+    assert st.load(path)["streak"]["current"] == 1
+
+
+def test_first_commit_counts_when_the_repo_is_born_in_the_same_command(
+        tmp_path, hook_state):
+    proj = tmp_path / "newborn"
+    proj.mkdir()
+    path = hook_state(project={"path": str(proj)})
+    assert commit_pulse.react(payload("ls", proj)) is None
+    _git(proj, "init", "-q")
+    _git(proj, "config", "user.email", "padawan@example.test")
+    _git(proj, "config", "user.name", "Padawan")
+    (proj / "a.txt").write_text("x", encoding="utf-8")
+    (proj / "b.txt").write_text("y", encoding="utf-8")
+    _git(proj, "add", "a.txt")
+    _git(proj, "commit", "-q", "-m", "первый")
+    out = commit_pulse.react(payload(
+        "git init && git add a.txt && git commit -m 'первый'", proj
+    ))
+    assert out is not None
+    assert st.load(path)["streak"]["current"] == 1
+
+
+def test_commit_that_changed_nothing_does_not_count(project, hook_state):
+    # «nothing to commit» на чистом дереве с сегодняшним HEAD: прежняя
+    # проверка (дерево чистое, дата сегодняшняя) засчитывала и это.
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    commit_pulse.react(payload("ls", proj))
+    assert commit_pulse.react(payload("git commit -m 'пусто'", proj)) is None
+    assert st.load(path)["streak"]["current"] == 0
+
+
+def test_rejected_commit_on_a_dirty_tree_does_not_count(project, hook_state):
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    commit_pulse.react(payload("ls", proj))
+    (proj / "draft.txt").write_text("в работе", encoding="utf-8")
+    assert commit_pulse.react(payload("git commit -m 'мимо'", proj)) is None
+    assert st.load(path)["streak"]["current"] == 0
+
+
+def test_every_real_commit_is_seen_one_after_another(project, hook_state):
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    commit_pulse.react(payload("ls", proj))
+    for name in ("a.txt", "b.txt"):
+        (proj / name).write_text("x", encoding="utf-8")
+        _git(proj, "add", name)
+        _git(proj, "commit", "-q", "-m", name)
+        assert commit_pulse.react(payload("git commit -m x", proj)) is not None
+        # Тот же текст команды без нового коммита — уже не коммит.
+        assert commit_pulse.react(payload("git commit -m x", proj)) is None
+
+
+def test_commit_in_another_repo_does_not_count(project, hook_state):
+    proj = project(git=True, commits=1)
+    other = project(git=True, commits=0)
+    path = hook_state(project={"path": str(proj)})
+    commit_pulse.react(payload("ls", proj))
+    (other / "a.txt").write_text("x", encoding="utf-8")
+    _git(other, "add", "a.txt")
+    _git(other, "commit", "-q", "-m", "чужой")
+    out = commit_pulse.react(
+        payload("git -C {} commit -m 'чужой'".format(other), proj)
+    )
+    assert out is None
+    assert st.load(path)["streak"]["current"] == 0
+
+
+def test_head_of_another_project_is_not_a_starting_point(project, hook_state):
+    # Падаван сменил папку проекта: HEAD прежней — не «было» для новой.
+    # Иначе любой текст `git commit` в новой папке читался бы сдвигом.
+    old = project(git=True, commits=1)
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(old)})
+    commit_pulse.react(payload("ls", old))
+    saved = st.load(path)
+    saved["project"] = {"path": str(proj)}
+    st.save(saved, path)
+    (proj / "draft.txt").write_text("в работе", encoding="utf-8")
+    assert commit_pulse.react(payload("git commit -m 'мимо'", proj)) is None
+    assert st.load(path)["streak"]["current"] == 0

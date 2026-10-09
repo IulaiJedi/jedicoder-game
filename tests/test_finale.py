@@ -84,12 +84,12 @@ def test_master_card_names_the_rank_and_every_number():
     assert "Штрафы: 3" in card
 
 
-def test_master_card_carries_the_finale_page():
+def test_master_card_carries_the_finale_page(all_acts_open):
     card = cli.render_rank_card(facts(), commits=1)
     assert cli._finale_url() in card
 
 
-def test_card_is_given_at_any_rank_not_only_to_the_master():
+def test_card_is_given_at_any_rank_not_only_to_the_master(old_acts_open):
     """Свиток выдаётся на любом ранге — карточка в нём тоже."""
     card = cli.render_rank_card(midway(), commits=12)
     # Имя ранга — из реестра, а не строкой: с выключенным Актом 5 серединой
@@ -106,7 +106,7 @@ def test_card_is_given_at_any_rank_not_only_to_the_master():
     assert "Акт 5. Выход в свет" not in card
 
 
-def test_midway_card_promises_nothing_and_never_says_almost():
+def test_midway_card_promises_nothing_and_never_says_almost(old_acts_open):
     """Ни утешения, ни аванса: карточка говорит про сделанное.
 
     Дверь в финал — тоже обещание. Тому, кто до финала не дошёл, она не
@@ -180,9 +180,7 @@ def seeded(paths, closed=(1, 2, 3, 4, 5), **over):
     return data
 
 
-def test_finale_draws_the_card_and_invites_to_take_the_scroll(
-    paths, capsys, project
-):
+def test_finale_draws_the_card_and_invites_to_take_the_scroll(paths, capsys, project, all_acts_open):
     folder = project(git=True, commits=3)
     seeded(paths, project={"path": str(folder), "url": "https://myapp.example"},
            xp=620, lexicon_unlocked=["deploy", "dns"])
@@ -196,9 +194,7 @@ def test_finale_draws_the_card_and_invites_to_take_the_scroll(
     assert "scroll" in out
 
 
-def test_finale_below_master_names_what_is_missing_and_offers_the_scroll(
-    paths, capsys
-):
+def test_finale_below_master_names_what_is_missing_and_offers_the_scroll(paths, capsys, old_acts_open):
     """Финал заперт тому, кто не закрыл последний играбельный акт.
 
     Номера взяты у реестра, а не вписаны: вернётся Акт 5 — тест поедет за ним
@@ -222,10 +218,10 @@ def test_finale_on_an_untouched_save_points_at_the_first_act(paths, capsys):
     code, out = run(["finale"], paths, capsys)
     assert code == 1
     assert "Юнлинг" in out
-    assert "Акт 1" in out and "Поиск боли" in out
+    assert "Акт 1" in out and "Знакомство" in out
 
 
-def test_page_address_is_assembled_from_one_constant(paths, capsys, monkeypatch):
+def test_page_address_is_assembled_from_one_constant(paths, capsys, monkeypatch, all_acts_open):
     """Адрес страницы собран из корня сайта, а не набран руками.
 
     Проверяется подменой корня: если бы адрес был вписан в текст литералом,
@@ -248,9 +244,7 @@ def scroll_card(folder):
     )
 
 
-def test_the_card_in_the_scroll_is_the_one_the_finale_prints(
-    paths, capsys, project
-):
+def test_the_card_in_the_scroll_is_the_one_the_finale_prints(paths, capsys, project, all_acts_open):
     """Один текст на два места: терминал и файл не имеют права разойтись."""
     folder = project(git=True, commits=3)
     seeded(paths, project={"path": str(folder), "url": "https://myapp.example"},
@@ -287,9 +281,7 @@ def test_the_scroll_names_the_card_in_its_table_of_contents(
 # --- Инварианты движка ------------------------------------------------------
 
 
-def test_the_finale_prints_a_card_it_did_not_count_itself(
-    paths, capsys, tmp_path
-):
+def test_the_finale_prints_a_card_it_did_not_count_itself(paths, capsys, tmp_path, all_acts_open):
     """Второй счёт запрещён: команда печатает готовое, а не считает своё.
 
     Что доказывает этот тест: `finale` отдаёт ровно то, что собрал
@@ -315,7 +307,7 @@ def test_the_finale_prints_a_card_it_did_not_count_itself(
     assert expected in out
 
 
-def test_the_finale_event_reaches_the_queue_once(paths, capsys, tmp_path):
+def test_the_finale_event_reaches_the_queue_once(paths, capsys, tmp_path, all_acts_open):
     """Событие финала — одно на прохождение, сколько бы раз ни звали."""
     folder = tmp_path / "bez-gita"
     folder.mkdir()

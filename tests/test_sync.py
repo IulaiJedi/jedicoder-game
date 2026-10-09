@@ -269,6 +269,105 @@ def test_unlinked_game_never_touches_network(paths, capsys, stub_bot):
     assert stub_bot.requests == []
 
 
+# --- Один ключ вместо двух кодов (#84) ----------------------------------
+#
+# Сквозной путь со стороны игры: приложение назвало Ключ Голокрона запуску →
+# хук старта сессии записал его как связь с ботом → события игры уходят боту
+# с этим ключом. Хук гоняется отдельным процессом, как его запускает Claude
+# Code; дальше — та же дверь, что у человека, команды CLI.
+
+GOLOKRON_KEY = "GK-3333-3333-333T"
+
+
+def _session_from_the_app(paths, tmp_path, key=GOLOKRON_KEY):
+    import os
+    import subprocess
+
+    from conftest import ROOT
+
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    result = subprocess.run(
+        ["python3", str(ROOT / "plugin" / "hooks" / "session_start.py")],
+        input=json.dumps({"hook_event_name": "SessionStart", "source": "startup"}),
+        capture_output=True, text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(home),
+            "JEDICODER_STATE_PATH": str(paths["state_path"]),
+            "JEDICODER_PLUGIN_ROOT_FILE": str(home / "plugin_root"),
+            "CLAUDE_PLUGIN_ROOT": str(ROOT / "plugin"),
+            "JEDICODER_GOLOKRON_KEY": key,
+            # Хук в сеть не ходит; адрес подставного бота — на случай, если начнёт.
+            "JEDICODER_SYNC_URL": os.environ.get("JEDICODER_SYNC_URL", "http://127.0.0.1:1/x"),
+        },
+    )
+    assert result.returncode == 0 and result.stdout == "" and result.stderr == ""
+
+
+def test_golokron_key_carries_the_game_events_to_the_bot(paths, capsys, stub_bot, tmp_path):
+    _session_from_the_app(paths, tmp_path)
+    assert stub_bot.requests == [], "старт сессии сеть не трогает"
+
+    code, _ = run(["project", "db", "yes"], paths, capsys)
+    assert code == 0
+    run(["enter", "1"], paths, capsys)
+
+    assert stub_bot.requests, "с ключом Голокрона события обязаны уйти боту"
+    assert {request["link_key"] for request in stub_bot.requests} == {GOLOKRON_KEY}
+    sent_types = [e["type"] for r in stub_bot.requests for e in r["events"]]
+    assert "linked" in sent_types
+    assert "act_started" in sent_types
+    assert st.load(paths["state_path"])["pending_sync"] == []
+
+
+def test_what_goes_to_the_bot_with_the_golokron_key(paths, capsys, stub_bot, tmp_path, project):
+    """Экран ключа в приложении обещает: бот видит путь, команды и файлы
+    проекта ему не уходят. Здесь это обещание меряется по настоящей пачке."""
+    folder = project(files={"IDEA.md": "секретная идея\n"})
+    _session_from_the_app(paths, tmp_path)
+    run(["project", "path", str(folder)], paths, capsys)
+    run(["enter", "1"], paths, capsys)
+    run(["check", "1", "01-folder"], paths, capsys)
+
+    assert stub_bot.requests
+    for request in stub_bot.requests:
+        assert set(request) == {"link_key", "events"}
+        for event in request["events"]:
+            assert set(event) == {"client_id", "type", "act", "quest", "at", "payload"}
+    wire = json.dumps(stub_bot.requests, ensure_ascii=False)
+    assert str(folder) not in wire
+    assert folder.name not in wire
+    assert "секретная идея" not in wire
+
+
+def test_golokron_key_the_bot_does_not_know_leaves_the_game_alone(paths, capsys, stub_bot, tmp_path):
+    # Ключ без владельца у бота (выдан вручную, из прежней продажи): бот
+    # отвечает отказом, а игра идёт как шла — события ждут в очереди.
+    stub_bot.unknown_key = True
+    _session_from_the_app(paths, tmp_path)
+
+    code, out = run(["project", "db", "yes"], paths, capsys)
+    assert code == 0
+    code, out = run(["enter", "1"], paths, capsys)
+    assert code == 0
+    assert "Акт 1" in out
+    assert len(st.load(paths["state_path"])["pending_sync"]) >= 2
+
+
+def test_link_with_the_old_code_still_wins_over_the_golokron_key(paths, capsys, stub_bot, tmp_path):
+    # Игра в терминале и прежний код: `link <код>` работает как работал и
+    # ключу из запуска не уступает.
+    run(["link", "testkey1"], paths, capsys)
+    _session_from_the_app(paths, tmp_path)
+    stub_bot.requests = []
+
+    run(["enter", "1"], paths, capsys)
+
+    assert st.load(paths["state_path"])["link_key"] == "testkey1"
+    assert {request["link_key"] for request in stub_bot.requests} == {"testkey1"}
+
+
 def test_project_url_enqueues_product_deployed(paths, capsys, monkeypatch):
     monkeypatch.setenv("JEDICODER_SYNC_URL", "http://127.0.0.1:1/x")
     run(["project", "url", "https://example.com"], paths, capsys)

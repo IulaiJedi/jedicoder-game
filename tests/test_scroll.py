@@ -14,7 +14,7 @@ from collections import namedtuple
 from pathlib import Path
 
 import pytest
-from test_act1_walkthrough import CRAFT_FILES, CRAFT_QUESTS
+from test_act1_walkthrough import ACT1_FILES, ACT1_PROJECT, SCRIPTED, WORDS_FIRST
 
 from jedicoder import cli, content, ranks, scroll
 from jedicoder import state as st
@@ -489,7 +489,7 @@ def run(argv, paths, capsys):
 def test_command_without_a_project_writes_nothing(paths, capsys, tmp_path):
     code, out = run(["scroll"], paths, capsys)
     assert code == 1
-    assert "Папка проекта не установлена" in out
+    assert "Папка проекта ещё не названа" in out
     assert not list(tmp_path.glob("**/docs"))
 
 
@@ -515,7 +515,9 @@ def test_command_lays_the_scroll_into_the_project(paths, capsys, project):
     assert (target / scroll.INDEX_NAME).exists()
     assert (target / scroll.DEBRIEF_NAME).exists()
     assert "goal.md" in out
-    assert str(target) in out
+    # Где лежит памятка — от имени папки проекта, без дороги до неё (#87).
+    assert "{}/docs/jedicoder".format(folder.name) in out
+    assert str(folder.parent) not in out
     data = st.load(paths["state_path"])
     assert set(data["scroll"]["files"]) >= {scroll.INDEX_NAME, scroll.DEBRIEF_NAME}
 
@@ -584,12 +586,13 @@ def test_only_the_command_writes_into_the_project(paths, capsys, project):
     """ADR-0009: ни проверка, ни вход в акт, ни первый экран файлов не
     создают. Запрет «проверка не мутирует проект падавана» этой веткой не
     задет — проверяем это дверью падавана, а не чтением кода."""
-    folder = project(files=CRAFT_FILES)
+    folder = project(files=ACT1_FILES, **ACT1_PROJECT)
     run(["project", "path", str(folder)], paths, capsys)
-    run(["track", "craftsman"], paths, capsys)
     run(["enter", "1"], paths, capsys)
-    for quest_id in CRAFT_QUESTS:
-        run(["check", "1", quest_id], paths, capsys)
+    for quest_id in SCRIPTED:
+        if quest_id == WORDS_FIRST:
+            assert run(["seen", "1", quest_id], paths, capsys)[0] == 0
+        assert run(["check", "1", quest_id], paths, capsys)[0] == 0, quest_id
     run(["status"], paths, capsys)
     assert not (folder / "docs").exists()
 

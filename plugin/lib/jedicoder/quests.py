@@ -170,6 +170,34 @@ def record_attempt(state, act, quest_id, result):
     return state
 
 
+def mark_seen(state, act, quest_id):
+    """Записать: человек открыл результат и рассказал, что увидел.
+
+    Не попытка и не закрытие: ни счётчика, ни очков, ни события. Квест
+    закроет проверка — слова только пускают к ней (acts.WORDS_FIRST).
+    """
+    quest = _quest_entry(state, act, quest_id, create=True)
+    quest["seen"] = True
+    return state
+
+
+def forget_seen(state, act, quest_id):
+    """Проверка не сошлась: результат переделают, и смотреть его надо заново."""
+    quest = _quest_entry(state, act, quest_id)
+    if quest:
+        quest.pop("seen", None)
+    return state
+
+
+def seen(state, act, quest_id):
+    try:
+        quest = _quest_entry(state, act, quest_id)
+        return bool((quest or {}).get("seen"))
+    except (AttributeError, TypeError):
+        # Сохранение правили руками: запись квеста не словарь. Рассказа нет.
+        return False
+
+
 def acknowledge(state, act, quest_id):
     """Закрыть квест, у которого нет check.sh (обучающий или самоотчётный).
 

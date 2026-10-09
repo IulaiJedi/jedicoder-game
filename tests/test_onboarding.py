@@ -132,7 +132,9 @@ def test_shipped_onboarding_is_clean(content_root):
 #
 # Вход в игру один — приложение под свою систему (ADR-0015). Акт 0 — пять
 # шагов, одинаковых для Windows, macOS и Linux, без единой развилки: скачай
-# → открой → приложение поставит остальное → войди в Claude → код от бота.
+# → открой и введи ключ → приложение поставит остальное → войди в Claude →
+# конец пути. Отдельного кода от бота в конце больше нет (#84): ключ, который
+# приложение спрашивает при запуске, он же и связывает игру с ботом.
 # Прежнего дерева с вопросами «где играть» и веткой для macOS без приложения
 # больше нет, и его стражи сняты вместе с ним.
 
@@ -160,6 +162,9 @@ SMARTSCREEN_STEPS = ("«Подробнее»", "«Выполнить в любо
 # golokron/src/renderer/src/preparation/text.ts: узел называет то, что
 # человек увидит на экране, а не пересказывает.
 PREPARATION_BUTTONS = ("«Поставить", "«Сделаю сам")
+# Кнопки экрана ключа — первого экрана приложения — дословно те, что стоят в
+# golokron/src/renderer/src/key/text.ts (action.buy, action.check).
+KEY_SCREEN_BUTTONS = ("«Получить ключ бесплатно»", "«Проверить»")
 FIRST_COMMAND = "/jedicoder:start"
 # Символы разметки Telegram: непарный `_` или `*` роняет sendMessage целиком,
 # и человек не видит вообще ничего. Тот же запрет держит тест бота — здесь
@@ -174,7 +179,10 @@ def shipped_nodes(content_root):
 
 
 def the_link_node(by_node):
-    """Единственный узел раздела link — конец пути, по которому бот выдаёт ключ.
+    """Единственный узел раздела link — конец пути.
+
+    До #84 бот выдавал по нему код привязки; теперь не выдаёт ничего, но
+    конец обязан остаться один.
 
     Уникальность утверждается здесь, а не распаковкой кортежа: второй узел
     раздела обязан упасть с именами обоих, а не с голым ValueError.
@@ -222,9 +230,11 @@ def test_reading_order_matches_the_walk(content_root):
 def test_link_node_is_unique_and_terminal(content_root):
     """Ограничение бота, продиктовавшее место конца пути.
 
-    Бот выдаёт ключ по разделу узла: второй узел раздела link завёл бы
-    строку падавана дважды за проход, а кнопка у конца пути — узел после
-    ключа. До сих пор это знал только тест бота в другом репозитории —
+    Бот узнаёт конец пути по разделу узла, и узел после конца человек уже
+    не увидит. До #84 по этому разделу выдавался код привязки, и второй узел
+    раздела завёл бы строку падавана дважды за проход; код больше не
+    выдаётся, а правило «конец один и без кнопок» осталось. Раньше это знал
+    только тест бота в другом репозитории —
     коммит c9c3f9e этого репозитория так и записал: «дефект нашли тесты
     бота, а не свои». Здесь то же правило стоит у источника, чтобы
     следующий узел «после ключа» краснел до генератора, а не после выкатки.
@@ -269,6 +279,64 @@ def test_login_carries_the_first_command_as_the_probe(content_root):
     копирования; текстом узла команду не заменить.
     """
     assert shipped_nodes(content_root)[LOGIN_NODE].probe == FIRST_COMMAND
+
+
+def test_prepare_names_the_folder_step_as_the_screen_does(content_root):
+    """Шаг Подготовки зовётся «Папка проекта» — тем же словом, что в игре и
+    на карточке словаря (#82)."""
+    text = lint_content.visible_text(shipped_nodes(content_root)[PREPARE_NODE].body)
+    assert "«Папка проекта»" in text
+
+
+def test_login_names_the_mode_and_the_english_warning(content_root):
+    """Кнопка Подготовки открывает Claude Code в режиме без вопросов (#79), и
+    при первом запуске он по-английски спрашивает согласия. Человек, которого
+    об этом не предупредили, видит красное английское окно и закрывает его.
+
+    Дословных подписей кнопок узел не называет: они не подтверждены.
+    """
+    text = lint_content.visible_text(shipped_nodes(content_root)[LOGIN_NODE].body)
+    assert "режиме без вопросов" in text
+    assert "по-английски" in text
+    assert "согласи" in text
+    assert "папке проекта" in text
+
+
+def test_open_asks_for_the_key_right_after_the_window(content_root):
+    """Ключ Голокрона приложение спрашивает сразу при запуске (#84): шаг про
+    ключ стоит в том же узле, что «открой приложение», а не после Подготовки.
+    Кнопки названы теми словами, что на экране ключа приложения
+    (golokron/src/renderer/src/key/text.ts)."""
+    text = lint_content.visible_text(shipped_nodes(content_root)[OPEN_NODE].body)
+    for label in KEY_SCREEN_BUTTONS:
+        assert label in text, "в шаге «открой» нет кнопки {}".format(label)
+    assert "подписаться на канал" in text
+    # Порядок на экране: сначала ключ, потом Подготовка.
+    assert text.index("экраном ключа") < text.index("экран Подготовки")
+
+
+def test_no_node_promises_the_first_act_without_a_key(content_root):
+    """«Первый акт открыт без ключа» и «ключ спросят во втором акте» —
+    прежний порядок (ADR-0012), его больше нет."""
+    for item in shipped_nodes(content_root).values():
+        text = lint_content.visible_text(item.body)
+        assert not re.search(r"втор[а-яё]* акт|без ключа", text), item.node
+
+
+def test_link_node_asks_for_no_second_code(content_root):
+    """Отдельного кода от бота у новичка приложения нет (#84): ключ он уже
+    ввёл при запуске, и бот видит его путь по этому ключу. Конец пути это и
+    говорит — и честно называет, что бот видит, а что нет. Слово «привязка»
+    до первого ранга не звучит (ADR-0014)."""
+    text = lint_content.visible_text(the_link_node(shipped_nodes(content_root)).body)
+    assert "Игра уже идёт" in text
+    assert "Отдельный код от бота не нужен" in text
+    assert "бот игры видит твой путь" in text
+    assert "Команды и файлы проекта ему не уходят" in text
+    assert "Дальше говорит игра" in text
+    # Узел ничего не обещает прислать следом: бот по нему больше не шлёт код.
+    assert not re.search(r"следующим сообщением|придёт|команд[аоу]й? для него", text)
+    assert not re.search(r"[Пп]ривяз", text)
 
 
 def test_every_node_fits_in_five_paragraphs(content_root):

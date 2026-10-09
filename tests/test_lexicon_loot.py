@@ -57,38 +57,25 @@ def test_whole_word_aliases_fire_any_case(text):
     assert lexicon_loot.find_terms(text, [TRAP_TERM], fresh_state()) == [TRAP_TERM]
 
 
-# Живые фразы Акта 1 из прогона (транскрипт 2026-08-01, разбор 2026-08-02).
-# Слова взяты в тех формах, которыми акт говорил на самом деле, а не в
-# словарных: «болит», «в терминале», «не лежит в индексе».
+# Фразы Акта 1 «Знакомство» (спека #75). Шесть первых — те, что скилл акта
+# велит произнести: они стоят во врезках `SKILL.md` буква в букву, и если
+# словарь их не слышит, карточка не выпадет ровно там, где слово объясняют.
+# Живого транскрипта нового акта ещё нет: первый прогон новичком заменит
+# их настоящей речью.
 #
-# Три фразы обновлены переименованием 01.2-02: транскрипт снят ДО правки, и
-# «Фильтр Хатта» с «работой Хатта» в нём стоят там, где акт теперь говорит
-# «правило одного вечера», а «кристалл» — там, где стоит «замысел». Дословно
-# эти три строки уже не воспроизводятся — на их месте формы, которыми акт
-# говорит после замены.
+# Две последние — из прогона прежнего Акта 1 (транскрипт 2026-08-01): их
+# слова в игре остались. Остальные фразы того прогона ушли вместе со своими
+# словами на полку, `shelf/act1-poisk-boli/`.
 #
 # Четыре фразы уехали отсюда в RELOCATED_LIVE_SPEECH планом 01.2-05: их
 # слова теперь живут в Акте 2, и в Акте 1 карточка по ним не выпадает.
 # Фразы не выброшены — они проверяются ниже, на своём акте.
 ACT1_LIVE_SPEECH = [
-    ("Мы ищем то, что у кого-то болит.", "pain"),
-    ("Поэтому первым тебе дают не меч, а замысел.", "crystal"),
-    ("Квест 02 — «Правило одного вечера».", "hutt-filter"),
-    (
-        "Смысл правила одного вечера не в том чтобы успеть за вечер, "
-        "а в том чтобы понять, чего ты на самом деле хотел.",
-        "hutt-filter",
-    ),
-    (
-        "`## Отрезано` — всё остальное. Раздел обязателен и пустым быть "
-        "не может.",
-        "vertical-slice",
-    ),
-    (
-        "Заодно там всплывёт твоя оценка в 30 минут — сравним её с "
-        "настоящим объёмом работ.",
-        "estimate",
-    ),
+    ("Так делают только в папке проекта.", "project-folder"),
+    ("Ты работаешь в режиме без вопросов.", "permission-mode"),
+    ("Хороший запрос отвечает на три вопроса.", "prompt"),
+    ("Коммит — точка сохранения.", "commit"),
+    ("Меню отката возвращает правки этого разговора.", "rollback"),
     (
         "скармливаю агенту часовое видео одной командой в терминале, "
         "без всякого интерфейса",
@@ -286,7 +273,7 @@ def test_render_card_is_header_and_two_lines():
         term("mvp", ["mvp"], xp=5, title="MVP", body=BODY, example=EXAMPLE)
     )
     lines = card_lines(card)
-    assert lines[0] == "✦ Новое слово: MVP (+5 XP)"
+    assert lines[0] == "✦ Новое слово: MVP (очки: +5)"
     assert len(lines) == 3
     assert lines[1].startswith("Самая маленькая версия продукта")
     assert lines[2] == "Пример: " + EXAMPLE
@@ -307,8 +294,9 @@ def test_render_card_lines_fit_fifteen_words(content_root):
 
 
 ACT1_AND_FIRST_SCREEN = (
-    "model-effort", "usage", "pain", "tool", "vertical-slice", "estimate",
-    "crystal", "hutt-filter", "terminal", "permission-mode", "api", "ca",
+    "model-effort", "usage", "terminal",
+    "project-folder", "permission-mode", "tool", "prompt", "api",
+    "commit", "repository", "env", "rollback",
 )
 
 
@@ -316,7 +304,7 @@ def test_render_card_without_example_keeps_old_sections():
     """Термин без example ещё не переписан (#72): печатается как раньше,
     и линтер видит длинную карточку — по ней и снимают LEGACY."""
     card = lexicon_loot.render_card(term("mvp", ["mvp"], xp=5, title="MVP", body=BODY))
-    assert "Новое слово: MVP (+5 XP)" in card
+    assert "Новое слово: MVP (очки: +5)" in card
     assert "самая маленькая версия продукта" in card
     assert "Зачем нужно: проверить идею" in card
     assert "Проверь себя: что ты выкинешь" in card
@@ -325,7 +313,7 @@ def test_render_card_without_example_keeps_old_sections():
 
 def test_render_card_survives_unparsed_body():
     card = lexicon_loot.render_card(term("x", ["x"], xp=5, title="X", body="просто текст"))
-    assert "Новое слово: X (+5 XP)" in card
+    assert "Новое слово: X (очки: +5)" in card
 
 
 WRAPPED_BODY = (
@@ -357,12 +345,12 @@ def test_render_card_joins_wrapped_definition():
 
 def test_render_card_full_sections_on_real_content(content_root):
     terms = {t.term: t for t in content.load_terms(content_root)}
-    card = lexicon_loot.render_card(terms["mvp"])
+    card = lexicon_loot.render_card(terms["commit"])
     # Карточка поставки — две строки после заголовка: что это и пример.
     # «Зачем нужно» остаётся на Полке (language.md), в терминал не идёт.
     lines = card.split("\n")
     assert len(lines) == 3
-    assert lines[1].startswith("Самая маленькая версия продукта")
+    assert lines[1].startswith("Точка сохранения")
     assert lines[2].startswith(lexicon_loot.EXAMPLE_PREFIX)
     assert "Зачем" not in card
 
@@ -394,14 +382,14 @@ def seeded_state_file(tmp_path, current_act=1):
 
 def test_e2e_card_awarded_and_persisted(tmp_path):
     state_path = seeded_state_file(tmp_path)
-    payload = {"last_assistant_message": "Начнём с MVP: одна кнопка."}
+    payload = {"last_assistant_message": "Начнём с API: одна кнопка."}
     done = run_hook(payload, state_path)
     assert done.returncode == 0
     out = json.loads(done.stdout)
-    assert "Новое слово: MVP" in out["systemMessage"]
+    assert "Новое слово: API" in out["systemMessage"]
     data = st.load(state_path)
-    assert "mvp" in data["lexicon_unlocked"]
-    assert data["xp"] == 5  # xp термина mvp
+    assert "api" in data["lexicon_unlocked"]
+    assert data["xp"] == 5  # xp термина api
 
     # повторный ход с тем же словом молчит: термин уже открыт
     again = run_hook(payload, state_path)
@@ -419,28 +407,29 @@ def test_e2e_second_term_waits_in_queue(tmp_path):
     итог на момент именно этого начисления.
     """
     state_path = seeded_state_file(tmp_path)
-    text = "Сравним MVP и PMF на живом примере."
+    text = "Сравним API и режим разрешений на живом примере."
     done = run_hook({"last_assistant_message": text}, state_path)
     out = json.loads(done.stdout)
     assert out["systemMessage"].count("Новое слово:") == 1
-    assert "Новое слово: PMF" in out["systemMessage"]  # xp 10 против 5 — раньше
+    # xp 10 против 5 — раньше
+    assert "Новое слово: Режим разрешений" in out["systemMessage"]
     data = st.load(state_path)
-    assert data["lexicon_unlocked"] == ["pmf"]
-    assert data["lexicon_queue"] == ["mvp"]
+    assert data["lexicon_unlocked"] == ["permission-mode"]
+    assert data["lexicon_queue"] == ["api"]
     events = [e for e in data["pending_sync"] if e["type"] == "term_unlocked"]
-    assert [e["payload"]["term"] for e in events] == ["pmf"]
+    assert [e["payload"]["term"] for e in events] == ["permission-mode"]
     assert events[0]["payload"]["xp"] == data["xp"]
 
-    # Следующий ход про другое: очередь выдаёт MVP без нового упоминания.
+    # Следующий ход про другое: очередь выдаёт API без нового упоминания.
     later = run_hook({"last_assistant_message": "Идём дальше."}, state_path)
     out = json.loads(later.stdout)
     assert out["systemMessage"].count("Новое слово:") == 1
-    assert "Новое слово: MVP" in out["systemMessage"]
+    assert "Новое слово: API" in out["systemMessage"]
     data = st.load(state_path)
-    assert data["lexicon_unlocked"] == ["pmf", "mvp"]
+    assert data["lexicon_unlocked"] == ["permission-mode", "api"]
     assert data["lexicon_queue"] == []
     events = [e for e in data["pending_sync"] if e["type"] == "term_unlocked"]
-    assert [e["payload"]["term"] for e in events] == ["pmf", "mvp"]
+    assert [e["payload"]["term"] for e in events] == ["permission-mode", "api"]
     assert events[1]["payload"]["xp"] > events[0]["payload"]["xp"]
     assert events[1]["payload"]["xp"] == data["xp"]
 
@@ -448,23 +437,39 @@ def test_e2e_second_term_waits_in_queue(tmp_path):
 def test_e2e_queue_goes_before_new_words(tmp_path):
     """Слово из очереди печатается раньше нового: оно ждёт дольше.
 
-    ICP дороже MVP (10 против 5), но MVP уже ждал ход — и идёт первым.
+    Режим разрешений дороже коммита (10 против 5), но коммит уже ждал ход —
+    и идёт первым.
     """
     state_path = seeded_state_file(tmp_path)
-    run_hook({"last_assistant_message": "MVP и PMF."}, state_path)
-    done = run_hook({"last_assistant_message": "Теперь ICP."}, state_path)
-    assert "Новое слово: MVP" in json.loads(done.stdout)["systemMessage"]
+    run_hook({"last_assistant_message": "API и коммит."}, state_path)
+    done = run_hook(
+        {"last_assistant_message": "Теперь режим разрешений."}, state_path
+    )
+    assert "Новое слово: Коммит" in json.loads(done.stdout)["systemMessage"]
     data = st.load(state_path)
-    assert data["lexicon_unlocked"] == ["pmf", "mvp"]
-    assert data["lexicon_queue"] == ["icp"]
+    assert data["lexicon_unlocked"] == ["api", "commit"]
+    assert data["lexicon_queue"] == ["permission-mode"]
+
+
+def test_e2e_password_file_has_no_card_on_the_first_evening(tmp_path):
+    """Паролей в первый вечер нет (#87): слово `.env` в Акте 1 карточки не
+    даёт, даже если модель его произнесла. Карточка ждёт Акта 2."""
+    state_path = seeded_state_file(tmp_path)
+    done = run_hook(
+        {"last_assistant_message": "Файл `.env` хранит пароли и ключи."},
+        state_path,
+    )
+    assert done.returncode == 0 and done.stdout.strip() == ""
+    data = st.load(state_path)
+    assert data["lexicon_unlocked"] == [] and data["lexicon_queue"] == []
 
 
 def test_e2e_queue_skips_term_unlocked_meanwhile(tmp_path):
     """Термин, открытый пока ждал, из очереди выпадает без карточки."""
     state_path = seeded_state_file(tmp_path)
-    run_hook({"last_assistant_message": "MVP и PMF."}, state_path)
+    run_hook({"last_assistant_message": "API и режим разрешений."}, state_path)
     with st.update_state(state_path) as data:
-        data["lexicon_unlocked"].append("mvp")
+        data["lexicon_unlocked"].append("api")
     done = run_hook({"last_assistant_message": "Идём дальше."}, state_path)
     assert done.returncode == 0
     assert done.stdout.strip() == ""
@@ -486,7 +491,7 @@ def test_e2e_transcript_fallback(tmp_path):
             {"type": "tool_use", "id": "x", "name": "Bash", "input": {}},
         ]}},
         {"type": "assistant", "message": {"content": [
-            {"type": "text", "text": "Это твой MVP."},
+            {"type": "text", "text": "Это чужой API."},
         ]}},
     ]
     transcript.write_text(
@@ -496,7 +501,7 @@ def test_e2e_transcript_fallback(tmp_path):
         {"transcript_path": str(transcript)}, state_path
     )
     out = json.loads(done.stdout)
-    assert "Новое слово: MVP" in out["systemMessage"]
+    assert "Новое слово: API" in out["systemMessage"]
 
 
 def test_e2e_tool_output_not_scanned(tmp_path):
@@ -505,7 +510,7 @@ def test_e2e_tool_output_not_scanned(tmp_path):
     transcript = tmp_path / "t.jsonl"
     lines = [
         {"type": "user", "message": {"content": [
-            {"type": "tool_result", "content": "тут mvp в логе"},
+            {"type": "tool_result", "content": "тут api в логе"},
         ]}},
         {"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Готово, смотри лог."},
@@ -533,7 +538,7 @@ def test_e2e_broken_payload_silent_success(tmp_path, payload):
 
 def test_unlocked_term_enqueues_event(tmp_path):
     state_path = seeded_state_file(tmp_path)
-    payload = {"last_assistant_message": "Начнём с MVP: одна кнопка."}
+    payload = {"last_assistant_message": "Начнём с API: одна кнопка."}
     run_hook(payload, state_path)
     state = st.load(state_path)
     assert state["lexicon_unlocked"]  # термин выдан
@@ -546,7 +551,7 @@ def test_e2e_status_shows_loot(tmp_path, content_root, quests_root, capsys):
     from jedicoder import cli
 
     state_path = seeded_state_file(tmp_path)
-    run_hook({"last_assistant_message": "делаем MVP"}, state_path)
+    run_hook({"last_assistant_message": "зовём чужой API"}, state_path)
     code = cli.main(
         ["status"], state_path=state_path,
         content_root=content_root, quests_root=quests_root,
@@ -554,4 +559,4 @@ def test_e2e_status_shows_loot(tmp_path, content_root, quests_root, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "Открыто слов: 1" in out
-    assert "XP: 5" in out
+    assert "Очки: 5 " in out

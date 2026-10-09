@@ -4,12 +4,22 @@
 вход в акт выдаёт артефакт, проверки закрывают квесты, закрытие акта
 поднимает ранг.
 """
-from test_act1_walkthrough import CRAFT_FILES, CRAFT_QUESTS
+import pytest
+from test_act1_walkthrough import ACT1_FILES, close_act1
 
 from jedicoder import acts, quests, ranks, state as st
 
 ACT = 2
 SLUG = "act2-chertezh"
+
+# Акт 2 выключен (ranks.MUTED_ACTS, спека #75): войти в него нельзя, значит
+# и пройти его дверью падавана нельзя тоже. Сквозные тесты не удалены и не
+# переписаны под обход: они оживут сами в тот день, когда номер уйдёт из
+# списка. Проверки самого акта гоняются как прежде — tests/test_act2_checks.py.
+muted = pytest.mark.skipif(
+    ranks.is_muted(2),
+    reason="Акт 2 выключен (ranks.MUTED_ACTS): войти в него нельзя, пройти — тем более",
+)
 
 ARCH = "# Архитектура\n\n## Стек\n\n" + ("Python, aiogram, SQLite. " * 40)
 CLAUDE = "# Проект\n\n" + ("Бот присылает цитату по команде /цитата. " * 20)
@@ -32,15 +42,13 @@ def test_quest_order_declared():
 
 
 def test_act1_has_declared_quests():
-    """Состав Акта 1 зависит от трека, поэтому без трека список не отдаётся."""
-    assert acts.quest_ids(1, acts.TRACK_CRAFTSMAN) == (
-        "01-idea", "02-one-evening", "03c-who",
+    """У Акта 1 «Знакомство» развилки нет: состав отдаётся без трека."""
+    assert acts.quest_ids(1) == (
+        "01-folder", "02-idea", "03-first-request", "04-save", "05-stop-undo",
     )
-    assert acts.quest_ids(1, acts.TRACK_FOUNDER) == (
-        "01-idea", "02-one-evening", "03f-market", "04f-competitors",
-        "05f-icp", "06f-unit", "07f-channel",
-    )
-    assert acts.quest_kind(1, "01-idea") == acts.KIND_SCRIPT
+    assert acts.quest_ids(1, acts.TRACK_FOUNDER) == acts.quest_ids(1)
+    assert acts.quest_kind(1, "01-folder") == acts.KIND_SCRIPT
+    assert acts.quest_kind(1, "05-stop-undo") == acts.KIND_ACK
 
 
 def test_next_quest_walks_in_order():
@@ -100,6 +108,7 @@ def test_act_not_closed_while_quest_open(tmp_path, quests_root, project):
     assert acts.next_quest(data, ACT) == "01-recipe"
 
 
+@muted
 def test_full_walkthrough_via_cli(tmp_path, quests_root, project):
     """Пройти Акт 2 исключительно через CLI, как реальный падаван.
 
@@ -114,7 +123,7 @@ def test_full_walkthrough_via_cli(tmp_path, quests_root, project):
 
     proj = project(
         files=dict(
-            CRAFT_FILES,
+            ACT1_FILES,
             **{"ARCHITECTURE.md": ARCH, "CLAUDE.md": CLAUDE, "DB-SCHEMA.md": DB}
         ),
         gitignore=".env\n.venv\n",
@@ -126,11 +135,9 @@ def test_full_walkthrough_via_cli(tmp_path, quests_root, project):
     # Предпосылка — тоже через CLI: Акт 1 проходится по-настоящему.
     assert cli.main(["project", "path", str(proj)],
                     state_path=state_path) == 0
-    assert cli.main(["track", "craftsman"], state_path=state_path) == 0
-    assert cli.main(["enter", "1"], state_path=state_path) == 0
-    for quest_id in CRAFT_QUESTS:
-        assert cli.main(["check", "1", quest_id], state_path=state_path,
-                        quests_root=quests_root) == 0
+    close_act1(lambda *argv: cli.main(
+        list(argv), state_path=state_path, quests_root=quests_root
+    ))
     assert cli.main(["project", "db", "yes"], state_path=state_path) == 0
 
     # Enter Act 2
@@ -151,12 +158,13 @@ def test_full_walkthrough_via_cli(tmp_path, quests_root, project):
     reloaded = st.load(state_path)
     assert reloaded["rank"] == "padawan", "ранг должен быть padawan после закрытия акта"
     assert reloaded["acts"]["2"]["status"] == "done", "акт 2 должен быть done"
-    # Восемь скриптовых квестов: три Ремесленника в Акте 1 плюс пять в Акте 2.
-    # Шестой квест Акта 2 подтверждается через ack и в счёт не идёт.
-    assert reloaded["first_try"] == {"passed": 8, "attempted": 8}
+    # Девять скриптовых квестов: четыре в Акте 1 плюс пять в Акте 2. Квесты,
+    # которые подтверждаются через ack, в счёт не идут.
+    assert reloaded["first_try"] == {"passed": 9, "attempted": 9}
     assert ranks.can_enter_act(reloaded, 3)[0] is True, "должна быть возможность войти в акт 3"
 
 
+@muted
 def test_fresh_install_reaches_padawan_via_cli_only(tmp_path, quests_root, project):
     """Путь живого падавана целиком: от чистого состояния до ранга Падаван.
 
@@ -170,7 +178,7 @@ def test_fresh_install_reaches_padawan_via_cli_only(tmp_path, quests_root, proje
 
     proj = project(
         files=dict(
-            CRAFT_FILES,
+            ACT1_FILES,
             **{"ARCHITECTURE.md": ARCH, "CLAUDE.md": CLAUDE, "DB-SCHEMA.md": DB}
         ),
         gitignore=".env\n.venv\n",
@@ -188,12 +196,7 @@ def test_fresh_install_reaches_padawan_via_cli_only(tmp_path, quests_root, proje
     assert jc("project", "path", str(proj)) == 0
     assert jc("project", "db", "yes") == 0
 
-    assert jc("track", "craftsman") == 0
-    assert jc("enter", "1") == 0
-    for quest_id in CRAFT_QUESTS:
-        assert jc("check", "1", quest_id) == 0, (
-            "квест Акта 1 {} не закрылся через CLI".format(quest_id)
-        )
+    close_act1(jc)
 
     assert jc("enter", "2") == 0
     for quest_id in ("01-recipe", "02-claude-md", "03-db-schema",

@@ -21,6 +21,16 @@ DECISIONS = (
 SKILL = "# Проверка\n\n" + ("Открой страницу, обнови, посмотри консоль. " * 10)
 
 
+# Акт 3 выключен (ranks.MUTED_ACTS, спека #75): войти в него нельзя, значит
+# и пройти его дверью падавана нельзя тоже. Сквозные тесты не удалены и не
+# переписаны под обход: они оживут сами в тот день, когда номер уйдёт из
+# списка. Проверки самого акта гоняются как прежде — tests/test_act3_checks.py.
+muted = pytest.mark.skipif(
+    ranks.is_muted(3),
+    reason="Акт 3 выключен (ranks.MUTED_ACTS): войти в него нельзя, пройти — тем более",
+)
+
+
 def test_quest_order_declared():
     assert acts.quest_ids(ACT) == (
         "01-launch", "02-feature", "03-break", "04-fix", "05-decisions",
@@ -58,6 +68,7 @@ def seeded_state(proj):
     return data
 
 
+@muted
 def test_full_walkthrough_through_cli(
     tmp_path, paths, capsys, project, live_server
 ):

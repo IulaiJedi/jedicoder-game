@@ -115,7 +115,7 @@ def test_long_phrase_in_cutscene_detected(tmp_path):
     )
     problems = lint_synth(tmp_path, legacy={})
     assert any(
-        "катсцена act1-poisk-boli" in p and "16 слов" in p for p in problems
+        "катсцена act1-znakomstvo" in p and "16 слов" in p for p in problems
     )
 
 
@@ -196,7 +196,7 @@ def test_image_in_cutscene_detected(tmp_path):
     )
     problems = lint_synth(tmp_path, legacy={})
     assert any(
-        "катсцена act1-poisk-boli" in p and "образ" in p and "меч" in p
+        "катсцена act1-znakomstvo" in p and "образ" in p and "меч" in p
         for p in problems
     )
 
@@ -308,7 +308,7 @@ def test_cutscene_of_two_sentences_is_clean(tmp_path):
         act_files=fixed,
     )
     problems = lint_synth(tmp_path, legacy={})
-    assert not any("фраз" in p and "act1-poisk-boli" in p for p in problems)
+    assert not any("фраз" in p and "act1-znakomstvo" in p for p in problems)
 
 
 def test_cutscene_of_three_sentences_detected(tmp_path):
@@ -324,7 +324,7 @@ def test_cutscene_of_three_sentences_detected(tmp_path):
     )
     problems = lint_synth(tmp_path, legacy={})
     assert any(
-        "катсцена act1-poisk-boli" in p and "4 фраз" in p for p in problems
+        "катсцена act1-znakomstvo" in p and "4 фраз" in p for p in problems
     )
 
 

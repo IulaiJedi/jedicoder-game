@@ -113,10 +113,12 @@ def test_all_quest_ids_gives_both_sides_in_declaration_order():
     Разбору нужен именно он — у сменившего трек в сохранении лежат квесты
     обоих треков, и попытки на них он всё-таки потратил.
     """
-    assert acts.all_quest_ids(1) == (
-        "01-idea", "02-one-evening", "03c-who", "03f-market",
-        "04f-competitors", "05f-icp", "06f-unit", "07f-channel",
+    # Развилка по треку осталась у Акта 5; у Акта 1 «Знакомство» её нет.
+    assert acts.all_quest_ids(5) == (
+        "01-deploy", "02-domain", "03-ssl", "04-health", "05-goal",
+        "06c-use", "06f-publish",
     )
+    assert acts.all_quest_ids(1) == acts.quest_ids(1)
     assert acts.all_quest_ids(2) == acts.quest_ids(2)
 
 

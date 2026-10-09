@@ -80,15 +80,31 @@ jc_escape() {
 # пропускается наружу: по контракту диагностика идёт в stderr, и без неё
 # отсутствие бинарника неотличимо от невыполненного условия.
 jc_check() {
-  local id=$1 label=$2 hint=$3
-  shift 3
+  _jc_row "" "$@"
+}
+
+# jc_check_quiet <id> <label> <hint> <команда...>
+#
+# Строка-сторож: судит так же, как jc_check, и квест без неё не закроется, но
+# пока она сошлась, человеку её не показывают (поле "quiet" в JSON). Нужна
+# проверкам, которые стерегут то, о чём человеку рано слышать: квест
+# «Сохранение» Акта 1 следит за `.env` и ключами в первый же вечер, когда
+# паролей у новичка ещё нет (#87). Не сошлась — печатается, как любая другая.
+jc_check_quiet() {
+  _jc_row ',"quiet":true' "$@"
+}
+
+_jc_row() {
+  local extra=$1 id=$2 label=$3 hint=$4
+  shift 4
   local ok="true"
   if ! "$@" >/dev/null; then
     ok="false"
     JC_OK=0
   fi
-  JC_ROWS+=("$(printf '{"id":"%s","ok":%s,"label":"%s","hint":"%s"}' \
-    "$(jc_escape "$id")" "$ok" "$(jc_escape "$label")" "$(jc_escape "$hint")")")
+  JC_ROWS+=("$(printf '{"id":"%s","ok":%s,"label":"%s","hint":"%s"%s}' \
+    "$(jc_escape "$id")" "$ok" "$(jc_escape "$label")" "$(jc_escape "$hint")" \
+    "$extra")")
 }
 
 jc_finish() {

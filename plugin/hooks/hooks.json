@@ -1,5 +1,5 @@
 {
-  "description": "Jedicoder: корень плагина (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit) и серия коммитов (PostToolUse)",
+  "description": "Jedicoder: корень плагина и папка проекта из запуска (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit) и серия коммитов (PostToolUse)",
   "hooks": {
     "SessionStart": [
       {

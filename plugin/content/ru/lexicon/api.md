@@ -3,7 +3,7 @@ term: api
 title: API
 aliases: [api, апи, апишка]
 act: 1
-quest: 06f-unit
+quest: 03-first-request
 rank: seeker
 category: web
 xp: 5

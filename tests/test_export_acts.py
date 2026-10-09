@@ -59,7 +59,7 @@ def test_every_quest_id_is_in_output():
     ]
     # Число прибито намеренно: молча пропавший квест — ровно тот дефект,
     # который тест обязан ловить, а «все, что есть в реестре» его пропустит.
-    assert len(expected) == 38
+    assert len(expected) == 35
     for quest_id in expected:
         assert json.dumps(quest_id) in out, "нет квеста {}".format(quest_id)
 
@@ -137,9 +137,9 @@ def test_diverged_quest_list_fails_and_prints_nothing(tmp_path):
 
 def test_broken_frontmatter_fails_and_prints_nothing(tmp_path):
     root = _copy_content(tmp_path)
-    path = root / "acts" / "act1-poisk-boli.md"
+    path = root / "acts" / "act1-znakomstvo.md"
     path.write_text(
-        path.read_text(encoding="utf-8").replace("title: Поиск боли", ""),
+        path.read_text(encoding="utf-8").replace("title: Знакомство", ""),
         encoding="utf-8",
     )
     result = run(root)

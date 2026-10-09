@@ -70,8 +70,10 @@ ACT = (
     "rank_title: {rank_title}\n"
     "artifact: {artifact}\n"
     "axis: {axis}\n"
+    "muted: {muted}\n"
     "quests: [{quests}]\n"
     "quest_titles: [{quest_titles}]\n"
+    "{quest_tasks_line}"
     "quest_branches: [{quest_branches}]\n"
     "---\n"
     "{body}\n"
@@ -179,9 +181,17 @@ def act_text(number, **overrides):
         "rank_title": ranks.RANK_TITLES[info["rank"]],
         "artifact": info["artifact"],
         "axis": lint_content.act_axis(number),
+        "muted": "true" if ranks.is_muted(number) else "false",
         "quests": ", ".join(quests),
         "quest_titles": ", ".join('"К{}"'.format(i) for i in range(len(quests))),
         "quest_branches": ", ".join(branches),
+        # Задание — у каждого квеста играбельного акта; выключенным их ещё
+        # не написали.
+        "quest_tasks_line": "" if ranks.is_muted(number) else (
+            "quest_tasks: [{}]\n".format(
+                ", ".join('"Задание {}."'.format(i) for i in range(len(quests)))
+            )
+        ),
         "body": ACT_BODY,
     }
     fields.update(overrides)
@@ -347,6 +357,29 @@ def test_default_acts_are_clean(tmp_path):
     assert lint_synth(tmp_path) == []
 
 
+def test_playable_act_without_quest_tasks_detected(tmp_path):
+    """Играбельный акт обязан назвать задание каждого квеста (#83)."""
+    acts_ = default_acts()
+    acts_[0] = (acts_[0][0], act_text(1, quest_tasks_line=""))
+    _minimal(tmp_path, act_files=acts_)
+    problems = lint_synth(tmp_path)
+    assert any("quest_tasks" in p and "act1" in p for p in problems)
+
+
+def test_quest_tasks_obey_the_language_rules(tmp_path):
+    """Задание печатается человеку до первого ранга — и меряется как текст."""
+    acts_ = default_acts()
+    tasks = ['"Открой Книгу и вступи в клуб."'] + [
+        '"Задание {}."'.format(i) for i in range(1, 5)
+    ]
+    acts_[0] = (acts_[0][0], act_text(
+        1, quest_tasks_line="quest_tasks: [{}]\n".format(", ".join(tasks))
+    ))
+    _minimal(tmp_path, act_files=acts_)
+    problems = lint_synth(tmp_path)
+    assert any("задания квестов" in p and "Книг" in p for p in problems), problems
+
+
 def test_missing_act_file_detected(tmp_path):
     """Проверка 1: множество актов совпадает с ключами ranks.ACTS."""
     _minimal(tmp_path, act_files=default_acts()[:-1])
@@ -395,7 +428,7 @@ def test_act_quests_diverging_from_registry_detected(tmp_path):
     broken = list(default_acts())
     broken[0] = (
         broken[0][0],
-        act_text(1).replace("02-one-evening", "02-one-evenng"),
+        act_text(1).replace("02-idea", "02-ideya"),
     )
     _minimal(tmp_path, act_files=broken)
     problems = lint_synth(tmp_path)
@@ -441,15 +474,52 @@ def test_wiki_link_from_act_body_is_checked(tmp_path):
 # acts.py или ranks.py — доска, обещающая падавану чужие квесты или чужой
 # ранг при зелёном суите; линтер сверяет их так же, как quests и rank.
 
-@pytest.mark.parametrize("key", ["rank_title", "axis", "quest_branches"])
+@pytest.mark.parametrize("key", ["rank_title", "axis", "quest_branches", "muted"])
 def test_act_without_self_description_detected(tmp_path, key):
-    """Акт без любого из трёх полей — ошибка схемы, и линтер её показывает."""
+    """Акт без любого из полей самоописания — ошибка схемы, и линтер её показывает."""
     text = act_text(1)
     line = next(line for line in text.splitlines() if line.startswith(key + ":"))
     broken = list(default_acts())
     broken[0] = (broken[0][0], text.replace(line + "\n", ""))
     _minimal(tmp_path, act_files=broken)
     assert any(key in p for p in lint_synth(tmp_path))
+
+
+# Признак «акт выключен» (#82). Истина — ranks.MUTED_ACTS: по нему движок не
+# пускает в акт. Во фронтматтере он продублирован для Голокрона, который
+# движка не запускает и раньше выуживал список регуляркой из ranks.py.
+# Расхождение — церемония, объявляющая открытым акт, в который игра не пустит.
+
+def test_act_muted_diverging_from_registry_detected(tmp_path, monkeypatch):
+    """Акт выключен в движке, а описание называет его играбельным."""
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (2,))
+    broken = list(default_acts())
+    broken[1] = (broken[1][0], act_text(2, muted="false"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "act2-chertezh.md" in p and "muted" in p and "MUTED_ACTS" in p
+        for p in problems
+    ), problems
+
+
+def test_act_marked_muted_but_playable_in_registry_detected(tmp_path, monkeypatch):
+    """Обратное расхождение: описание выключает акт, в который движок пускает."""
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (2,))
+    broken = list(default_acts())
+    broken[0] = (broken[0][0], act_text(1, muted="true"))
+    _minimal(tmp_path, act_files=broken)
+    problems = lint_synth(tmp_path)
+    assert any(
+        "act1-znakomstvo.md" in p and "muted" in p and "MUTED_ACTS" in p
+        for p in problems
+    ), problems
+
+
+def test_act_muted_matching_registry_is_clean(tmp_path, monkeypatch):
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (2,))
+    _minimal(tmp_path)
+    assert not [p for p in lint_synth(tmp_path) if "muted" in p]
 
 
 def test_act_quest_branches_count_mismatch_detected(tmp_path):
@@ -464,11 +534,12 @@ def test_act_quest_branches_count_mismatch_detected(tmp_path):
 def test_act_branch_diverging_from_registry_detected(tmp_path):
     """Метка одного квеста не та, что в реестре: доска показала бы квест
     Ремесленника Основателю, а движок его бы не засчитал."""
-    branches = [entry[2] for entry in acts_registry.QUESTS_BY_ACT[1]]
+    # Развилка по треку осталась у Акта 5: у Акта 1 «Знакомство» её нет.
+    branches = [entry[2] for entry in acts_registry.QUESTS_BY_ACT[5]]
     index = branches.index(acts_registry.TRACK_CRAFTSMAN)
     branches[index] = acts_registry.TRACK_FOUNDER
     broken = list(default_acts())
-    broken[0] = (broken[0][0], act_text(1, quest_branches=", ".join(branches)))
+    broken[4] = (broken[4][0], act_text(5, quest_branches=", ".join(branches)))
     _minimal(tmp_path, act_files=broken)
     problems = lint_synth(tmp_path)
     assert any("quest_branches" in p and "QUESTS_BY_ACT" in p for p in problems)
@@ -756,7 +827,7 @@ def test_long_act_body_detected(tmp_path):
     broken[0] = (broken[0][0], act_text(1, body="я" * 1200))
     _minimal(tmp_path, act_files=broken)
     problems = lint_synth(tmp_path)
-    assert any("катсцена act1-poisk-boli" in p and "1200" in p for p in problems)
+    assert any("катсцена act1-znakomstvo" in p and "1200" in p for p in problems)
 
 
 def test_long_rule_body_detected(tmp_path):

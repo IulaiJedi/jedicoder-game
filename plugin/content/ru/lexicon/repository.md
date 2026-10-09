@@ -2,9 +2,9 @@
 term: repository
 title: Репозиторий
 aliases: [репозиторий, репозитория, репозитории, репа, репу, репы, repo, repository]
-act: 2
-quest: 04-git-init
-rank: padawan
+act: 1
+quest: 04-save
+rank: seeker
 category: git
 xp: 5
 related: [commit]

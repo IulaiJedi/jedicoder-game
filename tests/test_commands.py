@@ -125,36 +125,77 @@ def test_every_cli_path_in_markdown_resolves():
     assert missing == [], missing
 
 
-def test_act1_skill_exists_and_names_track_command():
-    """Скилл обязан называть команду выбора трека.
-
-    Без записанного трека вход в акт откажет, а состояние разрешено менять
-    только через CLI — если скилл не назовёт команду, ассистент полезет в
-    state.json руками, как это было с project db.
-    """
-    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    assert "track craftsman" in text
-    assert "track founder" in text
+ACT1_SKILL = PLUGIN / "skills" / "act1-znakomstvo" / "SKILL.md"
 
 
-def test_act1_skill_lists_quests_of_both_tracks():
-    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    for quest_id in ("01-idea", "02-one-evening", "03c-who", "03f-market",
-                     "04f-competitors", "05f-icp", "06f-unit", "07f-channel"):
+def test_act1_skill_records_the_folder_before_any_work_in_the_project():
+    """Запись папки — действие первого квеста и первое дело в проекте: без
+    неё защитный хук не стережёт `.env` (замер 2026-10-08, спека #75). До
+    #83 она шла шагом до входа в акт, и квесту «Папка» нечего было
+    засчитывать. Состояние меняется только через CLI — если скилл не назовёт
+    команду, ассистент полезет в state.json руками, как это было с
+    project db."""
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    assert "project path" in text
+    assert text.index("cli.py\" enter 1") < text.index("project path")
+    assert text.index("project path") < text.index("cli.py\" check 1 01-folder")
+    assert "До записи в папке не работай" in text
+
+
+def test_act1_skill_does_not_ask_for_track():
+    """У акта нет развилки: команды выбора трека в скилле нет вовсе."""
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    assert "track craftsman" not in text
+    assert "track founder" not in text
+
+
+def test_act1_skill_lists_all_five_quests_from_the_registry():
+    from jedicoder import acts
+
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    for quest_id in acts.quest_ids(1):
         assert quest_id in text, "квест {} не описан в скилле".format(quest_id)
+    assert "ack 1 05-stop-undo" in text
 
 
-def test_act1_skill_names_research_paths():
-    """Падаван должен знать, куда класть файлы: проверки читают research/."""
-    text = (PLUGIN / "skills" / "act1-poisk-boli" / "SKILL.md").read_text(
+def test_act1_skill_names_the_idea_file_and_its_sections():
+    """Падаван должен знать, что и куда класть: проверка читает IDEA.md в
+    корне папки и ищет эти два раздела."""
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    assert "`IDEA.md`" in text
+    assert "research/" not in text
+    assert "## Делаю сегодня" in text
+    assert "## Не сегодня" in text
+
+
+def test_act1_skill_names_the_mode_honestly():
+    """Решение 3 спеки #75: первый квест называет режим без вопросов и
+    команду запуска для играющих в терминале без приложения. Английскую
+    строку режима человек не ищет (#87): режим называет игра."""
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    assert "режиме без вопросов" in text
+    assert "bypass permissions on" not in text
+    assert "`claude --dangerously-skip-permissions`" in text
+    # Три режима и их переключение — материал следующего акта (#83).
+    assert "`Shift+Tab`" not in text
+    assert "только в папке проекта" in text
+
+
+def test_act1_skill_teaches_stop_and_both_ways_back():
+    text = ACT1_SKILL.read_text(encoding="utf-8")
+    assert "`Esc`" in text
+    assert "`/rewind`" in text
+    assert "к последнему\nсохранению" in text or "к последнему сохранению" in text
+
+
+def test_act4_skill_no_longer_forbids_naming_the_mode():
+    """Запрет «как включить режим без проверок, не рассказывай» снят
+    решением 3 спеки #75: Акт 1 называет режим сам."""
+    text = (PLUGIN / "skills" / "act4-shchit" / "SKILL.md").read_text(
         encoding="utf-8"
     )
-    assert "research/IDEA.md" in text
-    assert "research/SLICE.md" in text
+    assert "не рассказывай" not in text
+    assert "Акт 1" in text or "Акта 1" in text
 
 
 def test_hub_skill_names_every_act_skill():

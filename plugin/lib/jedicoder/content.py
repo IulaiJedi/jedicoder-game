@@ -26,7 +26,7 @@ TERM_REQUIRED = ("term", "title", "aliases", "act", "category", "xp", "example")
 RULE_REQUIRED = ("rule", "title", "act", "severity", "xp")
 RECIPE_REQUIRED = ("recipe", "title", "stack", "deploy_path")
 ACT_REQUIRED = (
-    "act", "slug", "title", "rank", "rank_title", "artifact", "axis",
+    "act", "slug", "title", "rank", "rank_title", "artifact", "axis", "muted",
     "quests", "quest_titles", "quest_branches",
 )
 # options и option_titles в обязательные НЕ входят: терминальный узел — узел
@@ -174,6 +174,10 @@ class Act:
     rank_title: str
     artifact: str
     axis: str
+    # Акт выключен: в игру не пускает, человеку о нём говорят «готовится».
+    # Истина — ranks.MUTED_ACTS, здесь её копия для читателей без движка
+    # (Голокрон); совпадение держит линтер.
+    muted: bool
     quests: tuple
     quest_titles: tuple
     # Ветка каждого квеста, по одной на позицию quests: both — в обеих
@@ -181,6 +185,10 @@ class Act:
     quest_branches: tuple
     body: str
     path: Path
+    # Задание каждого квеста — одна фраза простыми словами, по одной на
+    # позицию quests. Пусто у акта, которому заданий ещё не написали:
+    # выключенные акты перестраиваются. Наличие у играбельного держит линтер.
+    quest_tasks: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -429,6 +437,45 @@ def _require_example(meta, path):
         )
 
 
+def _quest_tasks(meta, path):
+    """Задания квестов: по одной фразе на квест, либо поля нет вовсе.
+
+    Счёт слов и «одна фраза» — те же, что у example термина: задание
+    печатается одной строкой списка квестов.
+    """
+    if "quest_tasks" not in meta:
+        return ()
+    _require_list(meta, "quest_tasks", path)
+    tasks = meta["quest_tasks"]
+    if len(tasks) != len(meta["quests"]):
+        raise ContentError(
+            "{}: заданий quest_tasks {}, а квестов {}. В задании не может "
+            "быть запятой: парсер режет список по запятым раньше, чем "
+            "снимает кавычки".format(path, len(tasks), len(meta["quests"]))
+        )
+    for task in tasks:
+        if not isinstance(task, str) or not task.strip():
+            raise ContentError(
+                "{}: quest_tasks — пустое задание или не строка: {!r}".format(
+                    path, task
+                )
+            )
+        words = sum(
+            1 for token in _CODE_SPAN.sub(" ", task).split() if _WORD.search(token)
+        )
+        if words > EXAMPLE_WORDS_MAX:
+            raise ContentError(
+                "{}: quest_tasks — задание из {} слов при пределе {}: "
+                "{!r}".format(path, words, EXAMPLE_WORDS_MAX, task)
+            )
+        if _NEXT_PHRASE.search(task.strip()):
+            raise ContentError(
+                "{}: quest_tasks — задание это одна фраза, а не несколько: "
+                "{!r}".format(path, task)
+            )
+    return tuple(tasks)
+
+
 def _build_term(meta, body, path):
     _require(meta, TERM_REQUIRED, path)
     _require_body(body, path)
@@ -475,6 +522,13 @@ def _build_act(meta, body, path):
     _require_act(meta, path)
     _require_choice(meta, "rank", ACT_RANKS, path)
     _require_choice(meta, "axis", AXES, path)
+    # Строго булево: «yes» парсер прочёл бы непустой строкой, то есть истиной.
+    if not isinstance(meta["muted"], bool):
+        raise ContentError(
+            "{}: muted должен быть true или false, получено {!r}".format(
+                path, meta["muted"]
+            )
+        )
     _require_list(meta, "quests", path)
     _require_list(meta, "quest_titles", path)
     _require_list(meta, "quest_branches", path)
@@ -499,11 +553,13 @@ def _build_act(meta, body, path):
         rank_title=meta["rank_title"],
         artifact=meta["artifact"],
         axis=meta["axis"],
+        muted=meta["muted"],
         quests=tuple(meta["quests"]),
         quest_titles=tuple(meta["quest_titles"]),
         quest_branches=tuple(meta["quest_branches"]),
         body=body,
         path=path,
+        quest_tasks=_quest_tasks(meta, path),
     )
 
 

@@ -2,9 +2,9 @@
 term: commit
 title: Коммит
 aliases: [коммит, коммита, коммите, коммитом, коммиты, коммитов, коммитам, закоммитить, закоммитил, коммитить, commit, commits]
-act: 2
-quest: 04-git-init
-rank: padawan
+act: 1
+quest: 04-save
+rank: seeker
 category: git
 xp: 5
 related: [repository]

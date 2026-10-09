@@ -51,6 +51,47 @@ def quests_root():
     return QUESTS_ROOT
 
 
+@pytest.fixture
+def old_acts_open(monkeypatch):
+    """Акты 2–4 открыты, как до 2026-10-08: выключен один Акт 5.
+
+    Игра сегодня кончается Актом 1 (`ranks.MUTED_ACTS`, спека #75), но
+    механика поздних актов — порядок входа, развилка по пути деплоя, Книга на
+    входе, хэш `CLAUDE.md` для босса — живёт в движке и вернётся с актами.
+    Юнит-тесты этой механики открывают дверь сами, чтобы она не сгнила молча
+    к тому дню, когда номер уйдёт из списка.
+
+    Сквозных тестов это не касается: они ходят дверью падавана, а дверь
+    закрыта — у них `skipif` по тому же списку.
+
+    Вместе со списком подменяются обе производные: `FINAL_ACT` и
+    `FINAL_RANK` посчитаны при импорте и сами за списком не пойдут.
+    """
+    from jedicoder import ranks
+
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (5,))
+    monkeypatch.setattr(ranks, "FINAL_ACT", 4)
+    monkeypatch.setattr(ranks, "FINAL_RANK", ranks.ACTS[4]["rank"])
+
+
+@pytest.fixture
+def all_acts_open(monkeypatch):
+    """Ни один акт не выключен: игра идёт до последнего акта реестра.
+
+    Так выглядит день, когда `ranks.MUTED_ACTS` опустеет. Финал — карточка,
+    адрес страницы финала, событие боту — существует только в этом мире:
+    пока после последнего играемого акта есть выключенные, игра не кончилась
+    (решение оператора 2026-10-08). Тесты самого финала открывают дверь
+    этой фикстурой, чтобы он не сгнил к тому дню.
+    """
+    from jedicoder import ranks
+
+    last = max(ranks.ACTS)
+    monkeypatch.setattr(ranks, "MUTED_ACTS", ())
+    monkeypatch.setattr(ranks, "FINAL_ACT", last)
+    monkeypatch.setattr(ranks, "FINAL_RANK", ranks.ACTS[last]["rank"])
+
+
 def _git(cwd, *args):
     subprocess.run(
         ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True

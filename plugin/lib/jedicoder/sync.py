@@ -20,6 +20,37 @@ def endpoint():
     return os.environ.get("JEDICODER_SYNC_URL") or DEFAULT_ENDPOINT
 
 
+def passport_snapshot(data):
+    """Снимок паспорта для бота — без путей и имён проектов.
+
+    Приватность: это единственное, что уходит по сети про падавана, и в
+    нём нет ничего, что раскрывало бы, над каким проектом он работает.
+
+    Едет полезной нагрузкой события `linked` из двух мест: команды `link`
+    и хука старта сессии, который записывает Ключ Голокрона из окружения
+    запуска (`hooks/session_start.py`). Состав один — поэтому и функция одна.
+    """
+    streak = data.get("streak") or {}
+    first_try = data.get("first_try") or {}
+    return {
+        "padawan_id": data.get("padawan_id"),
+        "track": (data.get("passport") or {}).get("track"),
+        "rank": data.get("rank", st.RANK_YOUNGLING),
+        "xp": int(data.get("xp", 0)),
+        "dark_side": int(data.get("dark_side", 0)),
+        "streak_current": int(streak.get("current", 0)),
+        "streak_best": int(streak.get("best", 0)),
+        "first_try_passed": int(first_try.get("passed", 0)),
+        "first_try_attempted": int(first_try.get("attempted", 0)),
+        "current_act": int(data.get("current_act", 1)),
+        # Ось развилки Акта 4 — деплой, а не трек: без этого поля книга не
+        # знает, какую из двух веток рисовать, и покажет чужой список
+        # квестов. Значение managed|vps не раскрывает ничего о проекте
+        # падавана, поэтому приватность снимка не страдает.
+        "deploy_path": (data.get("project") or {}).get("deploy_path"),
+    }
+
+
 def _int(value):
     try:
         return int(value)

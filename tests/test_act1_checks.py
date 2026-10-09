@@ -1,582 +1,433 @@
-"""Проверки Акта 1 на фикстурах.
+"""Проверки Акта 1 «Знакомство» на фикстурах.
 
 Гоняются через quests.run_check — тем же путём, каким их запускает CLI.
-На каждый квест: проход, провал и граница. Границы здесь не формальность:
-промах на единицу в «не меньше трёх» — дефект ровно того сорта, который
-178 тестов A1 не поймали.
+На каждый квест три исхода: прошёл, не прошёл, не смог проверить. Третий
+здесь не формальность: «не смог» не тратит попытку, и перепутать его с
+провалом значит включить новичку протокол «ходит по кругу» за чужую вину.
 """
+import os
+import shutil
+
 import pytest
+
+from conftest import _git
 from jedicoder import quests
 
-SLUG = "act1-poisk-boli"
+SLUG = "act1-znakomstvo"
 
 IDEA_OK = """# Идея
 
-## Боль
-Каждый вечер вручную свожу расходы семьи из трёх банковских приложений
-в одну таблицу, и это занимает почти час времени.
+## Делаю сегодня
+Страницу с расписанием кружка для родителей нашей группы.
 
-## Для кого
-Я и жена, плюс двое друзей просили сделать им такое же решение.
-
-## Почему сейчас
-Два банка открыли публичное API в этом году, раньше это было невозможно.
-"""
-
-IDEA_STUBS = """# Идея
-
-## Боль
-TODO
-
-## Для кого
-TODO
-
-## Почему сейчас
-TODO
-"""
-
-IDEA_PROSE = """# Идея
-
-Каждый вечер свожу расходы семьи из трёх банков в таблицу. Нужно мне и жене,
-друзья тоже просили. Банки только в этом году открыли API, раньше было нельзя.
-"""
-
-SLICE_OK = """# Срез
-
-## Войдёт
-Одна кнопка «загрузить выписку» и таблица с суммами по категориям за месяц.
-
-## Отрезано
-Графики, бюджеты, напоминания, мобильное приложение, вход через госуслуги.
-
-## Оценка
-Один вечер, часа три работы.
-"""
-
-WHO_OK = "Я сам. Критерий простой: открываю каждый день вечером после ужина.\n"
-MARKET_OK = "TAM 50000 семей, SAM 5000 в моём городе, SOM 500 за первый год. " * 3
-COMPETITORS_OK = """# Конкуренты
-
-- Дзен-мани — https://zenmoney.example
-- Кошелёк — https://koshelek.example
-- Таблица в Google — https://sheets.example
-"""
-ICP_OK = " ".join(["Семья с двумя детьми и тремя картами разных банков."] * 12)
-UNIT_OK = """# Юнитка
-
-## CAC
-Привести одного пользователя — примерно 300 рублей на рекламу.
-
-## LTV
-Пользователь приносит 1200 рублей за полтора года подписки.
-
-## Стоимость токенов
-Разбор одной выписки — 4 рубля на API, плюс 500 рублей в месяц за VPS.
-"""
-CHANNEL_OK = """# Канал
-
-## Канал
-Телеграм-канал про семейные финансы
-
-## Почему он
-Там уже сидит моя аудитория, и я в нём пишу третий год подряд.
+## Не сегодня
+Запись на занятия, оплата, личный кабинет.
 """
 
 
-def run(quests_root, project, quest_id, files):
-    """Файлы кладутся в research/ — именно там их ищут проверки."""
-    proj = project(files={"research/" + name: text for name, text in files.items()})
-    return quests.run_check(quests_root, SLUG, quest_id, proj)
+def check(quests_root, quest, project_dir, env=None, recorded=True):
+    """Запустить проверку так, как её запускает CLI после `project path`.
+
+    `recorded=False` — папка не названа: движок переменную не ставит вовсе.
+    """
+    extra = {}
+    if recorded:
+        # Папку назвал сам человек — так движок сообщает об этом проверке.
+        extra = {"JEDICODER_PROJECT_PATH": str(project_dir),
+                 "JEDICODER_PROJECT_NAMED": "yes"}
+    extra.update(env or {})
+    return quests.run_check(quests_root, SLUG, quest, project_dir, env_extra=extra)
 
 
-# --- 01-idea ---
+def failed(result):
+    return [item["id"] for item in quests.failed_checks(result)]
+
+
+def saved_project(project, files=None, gitignore=".env\n"):
+    return project(files=files or {"index.html": "<h1>Расписание</h1>\n"},
+                   gitignore=gitignore, git=True, commits=1)
+
+
+# --- 01-folder ---
+
+def test_folder_passes_on_own_folder(quests_root, project):
+    result = check(quests_root, "01-folder", project())
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_folder_fails_when_path_not_recorded(quests_root, project):
+    result = check(quests_root, "01-folder", project(), recorded=False)
+    assert result.exit_code == quests.EXIT_FAIL
+    assert "path_recorded" in failed(result)
+
+
+def test_folder_fails_when_only_the_app_recorded_it(quests_root, project):
+    """Папку записало приложение на старте сессии — человек её не называл."""
+    proj = project()
+    result = quests.run_check(
+        quests_root, SLUG, "01-folder", proj,
+        env_extra={"JEDICODER_PROJECT_PATH": str(proj)},
+    )
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == ["path_named"]
+
+
+def test_folder_fails_when_folder_is_gone(quests_root, project, tmp_path):
+    result = check(
+        quests_root, "01-folder", project(),
+        env={"JEDICODER_PROJECT_PATH": str(tmp_path / "нет-такой")},
+    )
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == ["folder_exists"]
+
+
+def test_folder_rejects_disk_root(quests_root, project):
+    result = check(
+        quests_root, "01-folder", project(), env={"JEDICODER_PROJECT_PATH": "/"}
+    )
+    assert result.exit_code == quests.EXIT_FAIL
+    assert "not_root" in failed(result)
+
+
+def test_folder_rejects_home(quests_root, project):
+    proj = project()
+    result = check(quests_root, "01-folder", proj, env={"HOME": str(proj)})
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == ["not_home"]
+
+
+def test_folder_rejects_home_behind_a_symlink(quests_root, project, tmp_path):
+    """Домашняя папка, названная обходным путём, остаётся домашней."""
+    proj = project()
+    link = tmp_path / "ярлык"
+    link.symlink_to(proj, target_is_directory=True)
+    result = check(
+        quests_root, "01-folder", proj,
+        env={"HOME": str(proj), "JEDICODER_PROJECT_PATH": str(link)},
+    )
+    assert failed(result) == ["not_home"]
+
+
+def test_folder_rejects_parent_of_home(quests_root, project):
+    """Папка, внутри которой лежит домашняя, — та же свалка, только шире."""
+    proj = project()
+    home = proj / "user"
+    home.mkdir()
+    result = check(quests_root, "01-folder", proj, env={"HOME": str(home)})
+    assert failed(result) == ["not_home"]
+
+
+def test_folder_accepts_folder_inside_home(quests_root, project):
+    proj = project()
+    result = check(quests_root, "01-folder", proj, env={"HOME": str(proj.parent)})
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_folder_bails_without_home(quests_root, project):
+    result = check(quests_root, "01-folder", project(), env={"HOME": ""})
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+    assert result.stderr
+
+
+# --- 02-idea ---
 
 def test_idea_passes(quests_root, project):
-    result = run(quests_root, project, "01-idea", {"IDEA.md": IDEA_OK})
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": IDEA_OK}))
     assert result.ok is True, quests.failed_checks(result)
 
 
 def test_idea_fails_without_file(quests_root, project):
-    result = run(quests_root, project, "01-idea", {})
-    assert result.ok is False
-    assert result.exit_code == 1
+    result = check(quests_root, "02-idea", project())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert "idea_exists" in failed(result)
 
 
-def test_idea_fails_on_stub_sections(quests_root, project):
-    """Три заголовка на месте, под каждым TODO — самый частый способ соврать."""
-    result = run(quests_root, project, "01-idea", {"IDEA.md": IDEA_STUBS})
-    assert result.ok is False
-    failed = {c["id"] for c in quests.failed_checks(result)}
-    assert {"idea_pain", "idea_who", "idea_why_now"} <= failed
+def test_idea_fails_when_nothing_is_cut(quests_root, project):
+    """«Не сегодня» с пустым телом: человек ничего не отложил."""
+    text = "## Делаю сегодня\nСтраницу с расписанием кружка.\n\n## Не сегодня\n\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
+    assert failed(result) == ["idea_not_today"]
 
 
-def test_idea_fails_on_good_prose_without_headings(quests_root, project):
-    """Осознанный ложный провал: формат диктует скилл, подсказка его называет."""
-    result = run(quests_root, project, "01-idea", {"IDEA.md": IDEA_PROSE})
-    assert result.ok is False
+def test_idea_stub_in_not_today_is_empty(quests_root, project):
+    text = "## Делаю сегодня\nСтраницу с расписанием кружка.\n\n## Не сегодня\nTODO\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
+    assert failed(result) == ["idea_not_today"]
 
 
-def test_idea_missing_one_section(quests_root, project):
-    text = IDEA_OK.split("## Почему сейчас")[0]
-    result = run(quests_root, project, "01-idea", {"IDEA.md": text})
-    assert result.ok is False
-    failed = {c["id"] for c in quests.failed_checks(result)}
-    assert failed == {"idea_why_now"}
-
-
-# --- 02-one-evening ---
-
-def test_one_evening_passes(quests_root, project):
-    result = run(quests_root, project, "02-one-evening", {"SLICE.md": SLICE_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_one_evening_fails_with_empty_cut_list(quests_root, project):
-    """Фильтр, который ничего не отрезал, не сработал."""
-    text = SLICE_OK.replace(
-        "Графики, бюджеты, напоминания, мобильное приложение, вход через госуслуги.",
-        "",
+@pytest.mark.parametrize("marker", ["*", "+", "-"])
+def test_idea_bare_list_marker_is_empty(quests_root, project, marker):
+    """Пустой пункт списка — не отложенное дело."""
+    text = "## Делаю сегодня\nСтраницу с расписанием кружка.\n\n## Не сегодня\n{}\n"
+    result = check(
+        quests_root, "02-idea", project(files={"IDEA.md": text.format(marker)})
     )
-    result = run(quests_root, project, "02-one-evening", {"SLICE.md": text})
-    assert result.ok is False
-    assert "slice_cut" in {c["id"] for c in quests.failed_checks(result)}
+    assert failed(result) == ["idea_not_today"]
 
 
-def test_one_evening_fails_without_estimate(quests_root, project):
-    text = SLICE_OK.replace("Один вечер, часа три работы.", "когда-нибудь потом")
-    result = run(quests_root, project, "02-one-evening", {"SLICE.md": text})
-    assert result.ok is False
-    assert "slice_estimate" in {c["id"] for c in quests.failed_checks(result)}
-
-
-# --- 03c-who ---
-
-# Квест называется «назван измеримый критерий», и до 2026-09-10 число в нём
-# НЕ засчитывалось: список принимал только слова. «3–4 раза в неделю»
-# проваливало квест, «постоянно» проходило. Найдено прогоном падаваном.
-MEASURABLE = [
-    "Пользуюсь 3–4 раза в неделю.",
-    "Пользуюсь 3-4 раза в неделю.",
-    "Открываю 2 раза в день.",
-    "Захожу 1 раз в месяц.",
-    "Дважды в неделю.",
-    "Каждый день, утром.",
-    "Раз в неделю по выходным.",
-    "Пользуюсь постоянно.",
-]
-
-VAGUE = [
-    "Иногда захожу.",
-    "Когда вспомню.",
-    "Часто пользуюсь.",
-]
-
-
-@pytest.mark.parametrize("line", MEASURABLE)
-def test_who_accepts_measurable_frequency(quests_root, project, line):
-    body = "# Для кого\n\nДля себя. " + line + "\n"
-    assert run(quests_root, project, "03c-who", {"WHO.md": body}).ok is True
-
-
-@pytest.mark.parametrize("line", VAGUE)
-def test_who_rejects_vague_frequency(quests_root, project, line):
-    body = "# Для кого\n\nДля себя. " + line + "\n"
-    result = run(quests_root, project, "03c-who", {"WHO.md": body})
-    assert "who_frequency" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_who_passes(quests_root, project):
-    result = run(quests_root, project, "03c-who", {"WHO.md": WHO_OK})
+def test_idea_one_cut_item_is_enough(quests_root, project):
+    text = "## Делаю сегодня\nСтраницу с расписанием кружка.\n\n## Не сегодня\nОплата\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
     assert result.ok is True, quests.failed_checks(result)
 
 
-def test_who_fails_without_frequency(quests_root, project):
-    result = run(
-        quests_root, project, "03c-who",
-        {"WHO.md": "Я сам и, наверное, кто-то ещё из знакомых.\n"},
+def test_idea_fails_without_today_section(quests_root, project):
+    text = "# Идея\n\nСтраница с расписанием.\n\n## Не сегодня\nОплата и запись.\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
+    assert failed(result) == ["idea_today"]
+
+
+def test_idea_today_section_does_not_borrow_from_not_today(quests_root, project):
+    """«Не сегодня» не засчитывается за «Делаю сегодня» по хвосту заголовка."""
+    text = "## Не сегодня\nОплата, запись и личный кабинет.\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
+    assert failed(result) == ["idea_today"]
+
+
+def test_idea_accepts_lowercase_headings(quests_root, project):
+    text = "## делаю сегодня\nСтраницу с расписанием кружка.\n\n## не сегодня\nОплата\n"
+    result = check(quests_root, "02-idea", project(files={"IDEA.md": text}))
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_idea_in_subfolder_does_not_count(quests_root, project):
+    result = check(
+        quests_root, "02-idea", project(files={"research/IDEA.md": IDEA_OK})
     )
-    assert result.ok is False
-    assert "who_frequency" in {c["id"] for c in quests.failed_checks(result)}
+    assert "idea_exists" in failed(result)
 
 
-def test_who_accepts_weekly(quests_root, project):
-    result = run(
-        quests_root, project, "03c-who",
-        {"WHO.md": "Только я. Открываю раз в неделю, по воскресеньям.\n"},
+def test_idea_bails_when_folder_not_recorded(quests_root, project):
+    result = check(
+        quests_root, "02-idea", project(files={"IDEA.md": IDEA_OK}), recorded=False
     )
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+    # Квест назван так, как его зовёт человек: эту строку игра печатает ему.
+    assert "квест «Папка»" in result.stderr and "01-folder" not in result.stderr
+
+
+# --- 03-first-request ---
+
+def test_first_request_passes_with_a_code_file(quests_root, project):
+    proj = project(files={"IDEA.md": IDEA_OK, "index.html": "<h1>Привет</h1>\n"})
+    result = check(quests_root, "03-first-request", proj)
     assert result.ok is True, quests.failed_checks(result)
 
 
-# --- 03f-market ---
+def test_first_request_passes_with_code_in_subfolder(quests_root, project):
+    proj = project(files={"src/app.py": "print('привет')\n"})
+    assert check(quests_root, "03-first-request", proj).ok is True
 
-def test_market_passes(quests_root, project):
-    result = run(quests_root, project, "03f-market", {"MARKET.md": MARKET_OK})
+
+def test_first_request_fails_on_empty_folder(quests_root, project):
+    result = check(quests_root, "03-first-request", project())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == ["has_code"]
+
+
+@pytest.mark.parametrize("files", [
+    {"IDEA.md": IDEA_OK, "notes.txt": "мысли вслух\n"},
+    {"IDEA.md": IDEA_OK, "docs/jedicoder/README.md": "памятка\n"},
+    {".gitignore": ".env\n", ".env": "TOKEN=1\n"},
+    {".claude/settings.json": "{}\n", "CLAUDE.md": "# Проект\n"},
+    {"README.MD": "# Проект\n", "LICENSE": "MIT\n"},
+    # Windows кладёт их в папку сама, а картинка — не код (ревью 2026-10-08).
+    {"IDEA.md": IDEA_OK, "desktop.ini": "[.ShellClassInfo]\n", "Thumbs.db": "x"},
+    {"IDEA.md": IDEA_OK, "photo.PNG": "x", "scan.pdf": "x", "logo.jpeg": "x"},
+    {"index.html": ""},
+])
+def test_first_request_notes_and_service_files_are_not_code(
+        quests_root, project, files):
+    result = check(quests_root, "03-first-request", project(files=files))
+    assert failed(result) == ["has_code"]
+
+
+def test_first_request_ignores_git_internals(quests_root, project):
+    """Служебная папка git полна файлов без расширения — это не код падавана."""
+    proj = project(files={"IDEA.md": IDEA_OK}, git=True, commits=0)
+    assert failed(check(quests_root, "03-first-request", proj)) == ["has_code"]
+
+
+def test_first_request_bails_when_folder_not_recorded(quests_root, project):
+    proj = project(files={"index.html": "<h1>Привет</h1>\n"})
+    result = check(quests_root, "03-first-request", proj, recorded=False)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+
+
+# --- 04-save ---
+
+def test_save_passes(quests_root, project):
+    result = check(quests_root, "04-save", saved_project(project))
     assert result.ok is True, quests.failed_checks(result)
 
 
-def test_market_fails_on_two_numbers(quests_root, project):
-    """Граница: два числа — мало, три — достаточно."""
-    text = "TAM 50000 семей, SAM 5000 в городе. " * 6
-    result = run(quests_root, project, "03f-market", {"MARKET.md": text})
-    assert result.ok is True, "шесть повторов дают двенадцать чисел"
-
-    result = run(quests_root, project, "03f-market",
-                 {"MARKET.md": "Рынок примерно 50000 семей, из них 5000 рядом. "
-                               "Оценка грубая, но порядок понятен и этого хватит "
-                               "чтобы понять, стоит ли вообще браться за это дело."})
-    assert result.ok is False
-    assert "market_numbers" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_market_fails_when_only_a_date(quests_root, project):
-    """Дата даёт три числа — но не даёт объёма мысли."""
-    result = run(quests_root, project, "03f-market", {"MARKET.md": "2026-07-26\n"})
-    assert result.ok is False
-
-
-# --- 04f-competitors ---
-
-def test_competitors_passes_on_three_urls(quests_root, project):
-    result = run(quests_root, project, "04f-competitors",
-                 {"COMPETITORS.md": COMPETITORS_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_competitors_fails_on_two_urls(quests_root, project):
-    text = COMPETITORS_OK.replace("- Таблица в Google — https://sheets.example\n", "")
-    result = run(quests_root, project, "04f-competitors", {"COMPETITORS.md": text})
-    assert result.ok is False
-
-
-def test_competitors_fails_on_same_url_three_times(quests_root, project):
-    result = run(
-        quests_root, project, "04f-competitors",
-        {"COMPETITORS.md": "https://a.example\nhttps://a.example\nhttps://a.example\n"},
-    )
-    assert result.ok is False
-
-
-# --- 05f-icp ---
-
-def test_icp_passes(quests_root, project):
-    result = run(quests_root, project, "05f-icp", {"ICP.md": ICP_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_icp_boundary_at_sixty_words(quests_root, project):
-    assert run(quests_root, project, "05f-icp",
-               {"ICP.md": " ".join(["слово"] * 60)}).ok is True
-    assert run(quests_root, project, "05f-icp",
-               {"ICP.md": " ".join(["слово"] * 59)}).ok is False
-
-
-# --- 06f-unit ---
-
-def test_unit_passes(quests_root, project):
-    result = run(quests_root, project, "06f-unit", {"UNIT.md": UNIT_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_unit_fails_without_token_cost(quests_root, project):
-    """Пункт, который вайбкодеры пропускают всегда."""
-    text = UNIT_OK.split("## Стоимость токенов")[0]
-    result = run(quests_root, project, "06f-unit", {"UNIT.md": text})
-    assert result.ok is False
-    assert "unit_tokens" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_unit_fails_when_section_has_no_number(quests_root, project):
-    text = UNIT_OK.replace(
-        "Привести одного пользователя — примерно 300 рублей на рекламу.",
-        "Пока не считал, но вроде недорого.",
-    )
-    result = run(quests_root, project, "06f-unit", {"UNIT.md": text})
-    assert result.ok is False
-    assert "unit_cac" in {c["id"] for c in quests.failed_checks(result)}
-
-
-# --- 07f-channel ---
-
-def test_channel_passes(quests_root, project):
-    result = run(quests_root, project, "07f-channel", {"CHANNEL.md": CHANNEL_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_channel_fails_on_three_channels(quests_root, project):
-    """Распыление на пять каналов — самая частая ошибка этого шага."""
-    text = CHANNEL_OK.replace(
-        "Телеграм-канал про семейные финансы",
-        "- телеграм\n- ютуб\n- хабр",
-    )
-    result = run(quests_root, project, "07f-channel", {"CHANNEL.md": text})
-    assert result.ok is False
-    assert "channel_one" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_channel_fails_without_reason(quests_root, project):
-    text = CHANNEL_OK.split("## Почему он")[0]
-    result = run(quests_root, project, "07f-channel", {"CHANNEL.md": text})
-    assert result.ok is False
-    assert "channel_why" in {c["id"] for c in quests.failed_checks(result)}
-
-
-# --- заголовок документа в тон квесту ---
-#
-# Падаван почти всегда называет файл словом из квеста, и заголовок документа
-# оказывается написан теми же словами, что искомая секция. jc_section искал
-# первое совпадение на любом уровне решёток — им оказывался заголовок
-# документа, под которым пусто, и проверка валила написанное, а подсказка
-# звала добавить раздел, который уже есть. Тупик: правило, по которому судят,
-# невидимо тому, кого судят.
-
-IDEA_TITLED_LIKE_SECTION = "# Боль\n\n" + IDEA_OK
-SLICE_TITLED_LIKE_SECTION = SLICE_OK.replace("# Срез", "# Оценка среза", 1)
-UNIT_TITLED_LIKE_SECTION = UNIT_OK.replace(
-    "# Юнитка", "# CAC, LTV и стоимость токенов", 1
-)
-# У CHANNEL_OK заголовок документа совпадает с секцией с самого начала —
-# 07f-channel жил с локальным лекарством (лишняя решётка в паттерне). Оно
-# снято, паттерн общий, и держит фикстуру теперь само правило jc_section.
-
-
-def test_idea_passes_when_document_titled_like_section(quests_root, project):
-    result = run(quests_root, project, "01-idea",
-                 {"IDEA.md": IDEA_TITLED_LIKE_SECTION})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_one_evening_passes_when_document_titled_like_section(quests_root, project):
-    result = run(quests_root, project, "02-one-evening",
-                 {"SLICE.md": SLICE_TITLED_LIKE_SECTION})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_unit_passes_when_document_titled_like_section(quests_root, project):
-    result = run(quests_root, project, "06f-unit",
-                 {"UNIT.md": UNIT_TITLED_LIKE_SECTION})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_channel_passes_when_document_titled_like_section(quests_root, project):
-    result = run(quests_root, project, "07f-channel", {"CHANNEL.md": CHANNEL_OK})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_channel_still_fails_on_three_channels_under_titled_document(
-        quests_root, project):
-    """Снятое лекарство не должно ослабить сам квест: три канала — провал,
-    даже когда заголовок документа называется так же, как секция."""
-    text = CHANNEL_OK.replace(
-        "Телеграм-канал про семейные финансы",
-        "- телеграм\n- ютуб\n- хабр",
-    )
-    result = run(quests_root, project, "07f-channel", {"CHANNEL.md": text})
-    assert result.ok is False
-    assert "channel_one" in {c["id"] for c in quests.failed_checks(result)}
-
-
-# --- заголовок документа С ТЕКСТОМ под ним ---
-#
-# Фикстуры выше оставляли под заголовком документа пусто — и в этом дыра:
-# при пустом теле «первое непустое совпадение» ведёт себя правильно, и
-# сторож пропускает подмену раздела вступлением. Здесь под заголовком
-# документа обязательно есть текст, и обе стороны прибиты гвоздями: с
-# верным разделом квест закрывается, с неверным — нет. Судят раздел «##»,
-# ровно тот, который называет подсказка.
-
-IDEA_TITLE_FILLED = (
-    "# Боль\n"
-    "Пока формулирую: каждый вечер вручную свожу расходы семьи из трёх банков.\n"
-    "\n" + IDEA_OK
-)
-IDEA_TITLE_FILLED_THIN_SECTION = IDEA_TITLE_FILLED.replace(
-    "Каждый вечер вручную свожу расходы семьи из трёх банковских приложений\n"
-    "в одну таблицу, и это занимает почти час времени.",
-    "непонятно",
-)
-
-SLICE_TITLE_FILLED = SLICE_OK.replace(
-    "# Срез",
-    "# Оценка среза\nПрикидываю: скорее всего это займёт один вечер, максимум два.",
-    1,
-)
-SLICE_TITLE_FILLED_NO_ESTIMATE = SLICE_TITLE_FILLED.replace(
-    "Один вечер, часа три работы.", "когда-нибудь потом"
-)
-
-UNIT_TITLE_FILLED = UNIT_OK.replace(
-    "# Юнитка",
-    "# CAC, LTV и стоимость токенов\nСчитал грубо: 300 рублей привести, 1200 отдаёт.",
-    1,
-)
-UNIT_TITLE_FILLED_NO_NUMBER = UNIT_TITLE_FILLED.replace(
-    "Привести одного пользователя — примерно 300 рублей на рекламу.",
-    "Пока не считал, но вроде недорого.",
-)
-
-# Дословно тот файл падавана, на котором квест засчитывал три канала.
-CHANNEL_TITLE_FILLED_THREE = (
-    "# Канал\n"
-    "Пока не решил окончательно.\n"
-    "\n"
-    "## Канал\n"
-    "- телеграм\n"
-    "- ютуб\n"
-    "- хабр\n"
-    "\n"
-    "## Почему он\n"
-    "Там уже сидит моя аудитория, и я в нём пишу третий год подряд.\n"
-)
-CHANNEL_TITLE_FILLED_ONE = (
-    "# Канал\n"
-    "Долго выбирал между вариантами.\n"
-    "В итоге остановился на одном.\n"
-    "\n"
-    "## Канал\n"
-    "Телеграм-канал про семейные финансы\n"
-    "\n"
-    "## Почему он\n"
-    "Там уже сидит моя аудитория, и я в нём пишу третий год подряд.\n"
-)
-
-
-def test_idea_passes_under_filled_document_title(quests_root, project):
-    result = run(quests_root, project, "01-idea", {"IDEA.md": IDEA_TITLE_FILLED})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_idea_fails_when_section_thin_under_filled_document_title(
-        quests_root, project):
-    """Вступление под «# Боль» не должно закрывать пустоту в «## Боль»."""
-    result = run(quests_root, project, "01-idea",
-                 {"IDEA.md": IDEA_TITLE_FILLED_THIN_SECTION})
-    assert result.ok is False
-    assert "idea_pain" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_one_evening_passes_under_filled_document_title(quests_root, project):
-    result = run(quests_root, project, "02-one-evening",
-                 {"SLICE.md": SLICE_TITLE_FILLED})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_one_evening_fails_when_estimate_only_in_document_title(
-        quests_root, project):
-    """Срок назван во вступлении, а в «## Оценка» его нет — это не зачёт."""
-    result = run(quests_root, project, "02-one-evening",
-                 {"SLICE.md": SLICE_TITLE_FILLED_NO_ESTIMATE})
-    assert result.ok is False
-    assert "slice_estimate" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_unit_passes_under_filled_document_title(quests_root, project):
-    result = run(quests_root, project, "06f-unit", {"UNIT.md": UNIT_TITLE_FILLED})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_unit_fails_when_number_only_in_document_title(quests_root, project):
-    """Числа во вступлении не считаются за число в разделе «## CAC»."""
-    result = run(quests_root, project, "06f-unit",
-                 {"UNIT.md": UNIT_TITLE_FILLED_NO_NUMBER})
-    assert result.ok is False
-    assert "unit_cac" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_channel_fails_on_three_channels_under_filled_document_title(
-        quests_root, project):
-    """Несущее: квест существует ради правила «пять каналов — это ноль
-    каналов». Одна строка вступления под «# Канал» не имеет права выиграть
-    у настоящего раздела с тремя каналами."""
-    result = run(quests_root, project, "07f-channel",
-                 {"CHANNEL.md": CHANNEL_TITLE_FILLED_THREE})
-    assert result.ok is False
-    assert "channel_one" in {c["id"] for c in quests.failed_checks(result)}
-
-
-def test_channel_passes_on_one_channel_under_wordy_document_title(
-        quests_root, project):
-    """Обратная сторона: раздел оформлен верно — значит зачёт, сколько бы
-    строк ни было во вступлении. Иначе падаван проваливается, уже выполнив
-    ровно то, что велела подсказка."""
-    result = run(quests_root, project, "07f-channel",
-                 {"CHANNEL.md": CHANNEL_TITLE_FILLED_ONE})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_idea_passes_when_sections_use_one_hash(quests_root, project):
-    """Разделы одной решёткой — рабочий путь, и правило его не отбирает."""
-    text = (
-        "# Боль\nКаждый вечер свожу расходы семьи из трёх банков в таблицу вручную.\n\n"
-        "# Для кого\nЯ и жена, ещё двое друзей просили сделать им такое же.\n\n"
-        "# Почему сейчас\nДва банка открыли публичное API, раньше это было нельзя.\n"
-    )
-    result = run(quests_root, project, "01-idea", {"IDEA.md": text})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_idea_passes_on_section_larger_than_pipe_buffer(quests_root, project):
-    """Полностью написанный раздел не имеет права считаться пустым.
-
-    Разбор секции шёл через конвейер с ранним выходом под `set -o pipefail`:
-    писатель получал EPIPE, конвейер отдавал 141, и большая секция читалась
-    как пустая. 200 КБ — с запасом от 64 КБ буфера трубы, чтобы поймать не
-    гонку, а факт.
-    """
-    line = "Каждый вечер вручную свожу расходы семьи из трёх банков в таблицу.\n"
-    fat = line * (200 * 1024 // len(line.encode("utf-8")) + 1)
-    text = IDEA_OK.replace(
-        "Каждый вечер вручную свожу расходы семьи из трёх банковских приложений\n"
-        "в одну таблицу, и это занимает почти час времени.",
-        fat,
-    )
-    assert len(text.encode("utf-8")) > 200 * 1024
-    result = run(quests_root, project, "01-idea", {"IDEA.md": text})
-    assert result.ok is True, quests.failed_checks(result)
-
-
-def test_idea_still_fails_when_titled_section_is_empty(quests_root, project):
-    """Пусто и в заголовке документа, и в секции — значит пусто."""
-    text = (
-        "# Боль\n\n## Боль\n\n"
-        "## Для кого\nЯ и жена, плюс двое друзей просили сделать такое же.\n\n"
-        "## Почему сейчас\nДва банка открыли API в этом году, раньше было нельзя.\n"
-    )
-    result = run(quests_root, project, "01-idea", {"IDEA.md": text})
-    assert result.ok is False
-    assert "idea_pain" in {c["id"] for c in quests.failed_checks(result)}
+def test_save_fails_without_repository(quests_root, project):
+    proj = project(files={"index.html": "<h1>Привет</h1>\n"}, gitignore=".env\n")
+    result = check(quests_root, "04-save", proj)
+    assert result.exit_code == quests.EXIT_FAIL
+    assert "repo_exists" in failed(result)
+    assert "has_commit" in failed(result)
+
+
+def test_save_fails_without_commit(quests_root, project):
+    proj = project(files={"index.html": "<h1>Привет</h1>\n"}, gitignore=".env\n",
+                   git=True, commits=0)
+    assert failed(check(quests_root, "04-save", proj)) == ["has_commit"]
+
+
+def test_save_fails_when_env_not_ignored(quests_root, project):
+    proj = saved_project(project, gitignore="node_modules\n")
+    assert failed(check(quests_root, "04-save", proj)) == ["env_ignored"]
+
+
+def test_save_fails_when_env_is_in_a_save(quests_root, project):
+    proj = project(files={"index.html": "<h1>Привет</h1>\n"}, gitignore=".env\n",
+                   git=True, commits=1, commit_env=True)
+    assert "env_not_tracked" in failed(check(quests_root, "04-save", proj))
+
+
+def test_save_fails_on_key_in_history(quests_root, project):
+    proj = project(files={"index.html": "<h1>Привет</h1>\n"}, gitignore=".env\n",
+                   git=True, commits=1, leak_token=True)
+    assert failed(check(quests_root, "04-save", proj)) == ["no_secrets_in_history"]
+
+
+def test_save_does_not_judge_an_outer_repository(quests_root, project):
+    """Папка проекта внутри чужого репозитория: своего `.git` нет, и чужая
+    история с чужим ключом — не «твой ключ попал в сохранение»."""
+    outer = project(files={"index.html": "<h1>Привет</h1>\n"}, gitignore=".env\n",
+                    git=True, commits=1, leak_token=True)
+    inner = outer / "zateya"
+    inner.mkdir()
+    (inner / "app.py").write_text("print(1)\n", encoding="utf-8")
+    result = check(quests_root, "04-save", inner)
+    # Строки-сторожа без своего репозитория молчат все три: сохранять
+    # некуда — и настраивать нечего (#87).
+    assert failed(result) == ["repo_exists", "has_commit"]
+
+
+def test_save_guards_are_quiet_and_the_persons_steps_are_not(quests_root, project):
+    """Сторожа `.env` и ключей судят молча: человеку их показывают, только
+    когда они не сошлись."""
+    result = check(quests_root, "04-save", saved_project(project))
+    quiet = {row["id"] for row in result.checks if row.get("quiet") is True}
+    assert quiet == {"env_ignored", "env_not_tracked", "no_secrets_in_history"}
+    loud = [row["id"] for row in result.checks if "quiet" not in row]
+    assert loud == ["repo_exists", "has_commit"]
+
+
+def test_save_bails_without_git(quests_root, project, tmp_path):
+    """Нет git на машине — это не провал падавана, попытка не тратится."""
+    proj = saved_project(project)
+    bin_dir = tmp_path / "nogit"
+    bin_dir.mkdir()
+    for tool in ("bash", "locale", "grep", "head", "dirname", "env"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    result = check(quests_root, "04-save", proj, env={"PATH": str(bin_dir)})
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert "git" in result.stderr
+
+
+def test_save_bails_when_folder_not_recorded(quests_root, project):
+    result = check(quests_root, "04-save", saved_project(project), recorded=False)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
 
 
 # --- общий контракт ---
 
+def _passing_project(project):
+    proj = project(
+        files={"IDEA.md": IDEA_OK, "index.html": "<h1>Расписание</h1>\n"},
+        gitignore=".env\n", git=True, commits=1,
+    )
+    return proj
+
+
+SCRIPTED = ("01-folder", "02-idea", "03-first-request", "04-save")
+
+
 def test_act1_checks_survive_hostile_locale(quests_root, project):
-    """Регрессия на переезд подбора локали из md.sh в emit.sh.
+    """Заголовки IDEA.md кириллицей обязаны находиться и при LC_ALL=C."""
+    proj = _passing_project(project)
+    for quest_id in SCRIPTED:
+        result = check(quests_root, quest_id, proj, env={"LC_ALL": "C"})
+        assert result.ok is True, (quest_id, quests.failed_checks(result))
 
-    Акт 1 переживал LC_ALL=C и до переезда — локаль чинил md.sh. Проверки
-    сорсят оба файла, и после переезда защита обязана остаться на месте.
-    """
-    proj = project(files={"research/IDEA.md": IDEA_OK, "research/UNIT.md": UNIT_OK})
-    hostile = {"LC_ALL": "C"}
-    idea = quests.run_check(quests_root, SLUG, "01-idea", proj, env_extra=hostile)
-    assert idea.ok is True, quests.failed_checks(idea)
-    unit = quests.run_check(quests_root, SLUG, "06f-unit", proj, env_extra=hostile)
-    assert unit.ok is True, quests.failed_checks(unit)
 
+def test_act1_checks_survive_mawk(quests_root, project):
+    """mawk — awk по умолчанию в WSL Ubuntu; суит на gawk его болезней не видит."""
+    if shutil.which("mawk") is None:
+        pytest.skip("mawk недоступен")
+    proj = _passing_project(project)
+    bin_dir = proj.parent / "mawkbin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "awk"
+    stub.write_text('#!/bin/sh\nexec mawk "$@"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {"PATH": "{}:{}".format(bin_dir, os.environ["PATH"]), "LC_ALL": "C"}
+    for quest_id in SCRIPTED:
+        result = check(quests_root, quest_id, proj, env=env)
+        assert result.ok is True, (quest_id, quests.failed_checks(result))
+    stubs = "## Делаю сегодня\nTODO\n\n## Не сегодня\n\n"
+    (proj / "IDEA.md").write_text(stubs, encoding="utf-8")
+    assert failed(check(quests_root, "02-idea", proj, env=env)) == [
+        "idea_today", "idea_not_today",
+    ]
+
+
+def _snapshot(root):
+    seen = {}
+    for folder, _, names in os.walk(str(root)):
+        for name in names:
+            path = os.path.join(folder, name)
+            with open(path, "rb") as handle:
+                seen[os.path.relpath(path, str(root))] = handle.read()
+    return seen
 
 
 def test_every_check_is_read_only(quests_root, project):
-    """check.sh никогда не мутирует проект падавана."""
-    import os
+    """check.sh никогда не мутирует проект падавана — ни файлы, ни git."""
+    proj = _passing_project(project)
+    (proj / "черновик.txt").write_text("не сохранён\n", encoding="utf-8")
+    before = _snapshot(proj)
+    for quest_id in SCRIPTED:
+        check(quests_root, quest_id, proj)
+    assert _snapshot(proj) == before
 
-    proj = project(files={
-        "research/IDEA.md": IDEA_OK, "research/SLICE.md": SLICE_OK,
-        "research/WHO.md": WHO_OK, "research/MARKET.md": MARKET_OK,
-        "research/COMPETITORS.md": COMPETITORS_OK, "research/ICP.md": ICP_OK,
-        "research/UNIT.md": UNIT_OK, "research/CHANNEL.md": CHANNEL_OK,
-    })
-    before = sorted(os.listdir(str(proj / "research")))
-    before_root = sorted(os.listdir(str(proj)))
-    for quest_id in ("01-idea", "02-one-evening", "03c-who", "03f-market",
-                     "04f-competitors", "05f-icp", "06f-unit", "07f-channel"):
-        quests.run_check(quests_root, SLUG, quest_id, proj)
-    assert sorted(os.listdir(str(proj / "research"))) == before
-    assert sorted(os.listdir(str(proj))) == before_root
+
+def test_checks_print_only_json_on_stdout(quests_root, project):
+    """Провал и проход печатают в stdout один объект JSON и ничего больше."""
+    import json
+    import subprocess
+
+    for proj in (_passing_project(project), project()):
+        for quest_id in SCRIPTED:
+            script = quests.script_path(quests_root, SLUG, quest_id)
+            done = subprocess.run(
+                ["bash", str(script)], cwd=str(proj), capture_output=True,
+                text=True, env=dict(os.environ, JEDICODER_PROJECT_PATH=str(proj)),
+            )
+            assert done.returncode in (0, 1), (quest_id, done.stderr)
+            payload = json.loads(done.stdout)
+            assert payload["quest"] == "act1/" + quest_id
+            assert payload["ok"] is (done.returncode == 0)
+
+
+def test_save_check_git_stays_untouched(quests_root, project):
+    """Проверка сохранения сама ничего не сохраняет и в индекс не кладёт."""
+    proj = saved_project(project)
+    (proj / "new.py").write_text("x = 1\n", encoding="utf-8")
+    check(quests_root, "04-save", proj)
+    import subprocess
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(proj),
+        capture_output=True, text=True,
+    ).stdout
+    assert status.strip() == "?? new.py"
+    _git(proj, "rev-parse", "HEAD")

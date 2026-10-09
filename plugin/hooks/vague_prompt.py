@@ -107,6 +107,9 @@ def main():
         payload = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
             return 0
+        # Раньше разбора запроса и сам по себе: режим пишется на каждом
+        # запросе, а не только на расплывчатом.
+        _shared.record_permission_mode(payload)
         out = react(payload)
         if out:
             print(json.dumps(out, ensure_ascii=False))

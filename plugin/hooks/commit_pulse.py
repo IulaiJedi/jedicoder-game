@@ -122,6 +122,45 @@ def dirty_count(project_dir):
     return len([line for line in done.stdout.splitlines() if line.strip()])
 
 
+def head_sha(project_dir):
+    """Отпечаток последнего коммита проекта. Только чтение.
+
+    Пустая строка — коммитов нет (репозиторий пуст или папка ещё не
+    репозиторий): это тоже знание, и с ним первый в жизни коммит
+    читается сдвигом, как любой другой. None — git не ответил вовсе:
+    сравнивать не с чем.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+            cwd=str(project_dir), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return ""
+    return done.stdout.strip()
+
+
+def seen_head(state, project_dir):
+    """Отпечаток, который хук видел в этой папке в прошлый раз, или None.
+
+    Хук зовётся ПОСЛЕ команды, и «до» ему взять неоткуда, кроме
+    собственной записи с прошлого вызова. Запись привязана к папке
+    проекта: отпечаток прежней папки — не «было» для новой, иначе после
+    `project path` любой текст `git commit` читался бы сдвигом.
+    """
+    seen = state.get("commit_head")
+    if not isinstance(seen, dict) or seen.get("path") != str(project_dir):
+        return None
+    sha = seen.get("sha")
+    return sha if isinstance(sha, str) else None
+
+
+def _remember_head(state, project_dir, sha):
+    state["commit_head"] = {"path": str(project_dir), "sha": sha}
+
+
 def _committed_today(project_dir, today):
     """Последний коммит в проекте — сегодняшний по UTC? Только чтение.
 
@@ -177,23 +216,34 @@ def react(payload):
     saw_commit = any(
         is_commit(tokens) for tokens in bash_guard.simple_commands(command)
     )
+    head = head_sha(project_dir)
+    before = seen_head(state, project_dir)
+    if not saw_commit and head is not None and head != before:
+        # HEAD сдвинулся без нашего участия (pull, checkout, коммит из
+        # другого окна): запоминаем как новое «было», серию не трогаем.
+        with _shared.update_state() as fresh:
+            _remember_head(fresh, project_dir, head)
     if saw_commit:
-        # «Успешный commit в проекте» — это и дата HEAD сегодня (не другой
-        # репозиторий, не мимо), и чистое рабочее дерево прямо сейчас: одной
-        # даты мало — тот же HEAD остаётся «сегодняшним» и после провала
-        # следующего коммита, и после команды, которая вообще ничего не
-        # сделала (симулированный вызов хука без реального git). Рабочее
-        # дерево пустеет только тогда, когда `git commit` действительно
-        # забрал в индекс то, что было изменено.
-        if dirty_count(project_dir) != 0 or not _committed_today(
-            project_dir, today_utc()
-        ):
-            # git не смог ответить, коммитов вовсе нет, последний — не
-            # сегодняшний, либо в рабочем дереве осталось несохранённое:
-            # увиденный `git commit` либо провалился, либо относится к
-            # другому репозиторию, либо ничего не закоммитил на самом деле.
-            # Спецификация («увидели успешный git commit в проекте») не
-            # выполнена — ни серии, ни снятого окна молчания.
+        # «Успешный commit в проекте» — это HEAD проекта, который сдвинулся
+        # за эту команду, и сдвинулся на сегодняшний коммит. Текст команды
+        # ничего не доказывает: коммит мог провалиться, уйти в другой
+        # репозиторий (`git -C`) или не найти, что сохранять.
+        #
+        # Чистоты рабочего дерева больше не требуется: «один файл сохранил,
+        # второй ещё правится» — обычный день, и раньше он серию не растил.
+        if before is not None:
+            happened = bool(head) and head != before
+        else:
+            # Первый вызов в этой папке: сравнивать не с чем. Тогда —
+            # прежняя, строгая примета: дерево опустело, значит коммит
+            # забрал изменённое. Недосчёт здесь безопаснее приписки.
+            happened = bool(head) and dirty_count(project_dir) == 0
+        if not happened or not _committed_today(project_dir, today_utc()):
+            # Ни серии, ни снятого окна молчания. Но сдвиг запоминаем:
+            # вчерашний коммит, подтянутый этой же командой, — уже «было».
+            if head is not None and head != before:
+                with _shared.update_state() as fresh:
+                    _remember_head(fresh, project_dir, head)
             return None
         # Мутация — под блокировкой, на свежепрочитанном состоянии: между
         # разведкой выше и этим окном могла успеть записаться чужая правка
@@ -215,6 +265,7 @@ def react(payload):
             # Коммит закрывает окно молчания: следующая порция правок снова
             # имеет право на напоминание.
             fresh.pop("commit_nag_left", None)
+            _remember_head(fresh, project_dir, head)
         return {"systemMessage": "Серия коммитов: {} (лучшая {}).".format(
             streak.get("current", 0), streak.get("best", 0)
         )}

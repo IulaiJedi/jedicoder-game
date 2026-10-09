@@ -3,11 +3,10 @@ term: tool
 title: Инструмент
 aliases: [инструмент, инструмента, инструменте, инструментом, инструменты]
 act: 1
-quest: 01-idea
+quest: 02-idea
 rank: seeker
 category: product
 xp: 5
-related: [mvp]
 example: Штопор открывает бутылки и больше ничего — поэтому он всегда под рукой.
 ---
 

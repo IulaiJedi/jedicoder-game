@@ -107,7 +107,7 @@ jc_has_heading() {
 # строкой: «TODO» отдельной строкой — пусто, «TODO: разобраться с ЦА» — нет.
 _jc_meaningful() {
   jc_section "$1" "$2" \
-    | grep -vxE '[[:space:]]*(TODO|TBD|XXX|FIXME|todo|tbd|-|--|—|\.\.\.|…|\?+)[[:space:]]*'
+    | grep -vxE '[[:space:]]*(TODO|TBD|XXX|FIXME|todo|tbd|-|--|—|\*|\+|\.\.\.|…|\?+)[[:space:]]*'
 }
 
 # jc_section_words <файл> <ERE заголовка> <минимум слов>

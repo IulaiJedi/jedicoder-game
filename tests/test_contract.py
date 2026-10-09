@@ -147,7 +147,7 @@ def test_track_is_not_invented_before_the_padawan_picks_it():
     в ту же минуту честно писал «трек не выбран».
     """
     rendered = contract.render("тело", {})
-    assert "Трек ещё не выбран" in rendered
+    assert "не решай за падавана" in rendered
     assert "Трек Ремесленник" not in rendered
     assert "Трек Основатель" not in rendered
 
@@ -179,3 +179,49 @@ def test_unknown_knob_value_raises():
 def test_render_is_deterministic():
     passport = {"track": "founder", "explain_depth": "max"}
     assert contract.render("тело", passport) == contract.render("тело", passport)
+
+
+# --- Контракт под новую игру: читатель впервые открыл Claude Code (#83) -----
+
+def _novice_contract(tmp_path, content_root, capsys):
+    """Контракт чистой установки — той же дверью, которой его грузит скилл."""
+    from jedicoder import cli
+
+    code = cli.main(
+        ["contract"], state_path=tmp_path / "state.json", content_root=content_root,
+    )
+    assert code == 0
+    return capsys.readouterr().out
+
+
+def test_novice_is_not_told_to_have_tried_something(tmp_path, content_root, capsys):
+    """Прогон 2026-10-08: «Падаван что-то уже пробовал» — человеку с нулём
+    квестов, которого скилл акта зовёт «впервые открыл Claude Code»."""
+    out = _novice_contract(tmp_path, content_root, capsys)
+    assert "что-то уже пробовал" not in out
+    assert "Падаван с нулевым опытом" in out
+
+
+def test_contract_does_not_send_the_model_to_ask_the_track(
+        tmp_path, content_root, capsys):
+    """Акт 1 трек не спрашивает — и контракт не имеет права велеть обратное."""
+    out = _novice_contract(tmp_path, content_root, capsys)
+    assert "спроси и запиши" not in out
+    assert "командой track" not in out
+    assert "Для кого продукт — для себя или для людей — не спрашивай" in out
+
+
+def test_objection_applies_only_where_the_padawan_formulates(content_root):
+    """Правило 7 в квестах «Папка», «Сохранение», «Стоп и отмена» применять
+    не к чему: человек там ничего не формулирует."""
+    body = contract.load_behavior(content_root)
+    rule = body.split("7. **Возражение Магистра", 1)[1].split("\n8. ", 1)[0]
+    assert "только там, где падаван что-то формулирует" in rule
+    assert "правило молчит" in rule
+
+
+def test_ceiling_says_what_to_do_with_longer_skill_text(content_root):
+    """Скилл велит сказать больше, чем влезает в одно сообщение, — контракт
+    обязан назвать выход, а не оставить два правила спорить."""
+    body = contract.load_behavior(content_root)
+    assert "раздели на шаги" in body

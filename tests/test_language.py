@@ -35,6 +35,17 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugin"
+# Полка прежнего Акта 1 «Поиск боли» (спека #75): слова и квесты лежат там
+# теми же именами и читаются тем же загрузчиком.
+SHELF_CONTENT = ROOT / "shelf" / "act1-poisk-boli" / "content"
+SHELF_QUESTS = ROOT / "shelf" / "act1-poisk-boli" / "quests" / "act1-poisk-boli"
+
+# Полка наружу не едет (`scripts/build_release.py`, SHIP_TOP): в выгрузке её
+# нет, и тест о ней честно пропускается, а не падает.
+needs_shelf = pytest.mark.skipif(
+    not SHELF_CONTENT.is_dir(),
+    reason="полки прежнего Акта 1 нет в этом дереве — она живёт только в рабочем репозитории",
+)
 sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -122,6 +133,7 @@ def test_franchise_word_crystal_absent():
     assert occurrences("кристалл") == []
 
 
+@needs_shelf
 def test_identifiers_unchanged():
     """Граница частичной отмены D-06 — что осталось неизменным и почему.
 
@@ -137,15 +149,17 @@ def test_identifiers_unchanged():
     падавану не печатаются, утечь через речь не могут, а их переименование
     стоило бы миграции без единой выгоды.
     """
-    terms = {item.term for item in content.load_terms(CONTENT_ROOT)}
+    # С 2026-10-08 прежний Акт 1 лежит на полке (спека #75) — и слова, и
+    # квесты. Идентификаторы прибиты там же: вернутся они теми же именами.
+    terms = {item.term for item in content.load_terms(SHELF_CONTENT)}
     assert "hutt-filter" in terms
     assert "crystal" in terms
 
-    quest_ids = [quest[0] for quest in acts.ACT1_QUESTS]
+    quest_ids = sorted(path.name for path in SHELF_QUESTS.iterdir())
     assert "02-one-evening" in quest_ids
     assert "02-hutt-filter" not in quest_ids
 
-    quest_dir = PLUGIN_ROOT / "quests" / "act1-poisk-boli" / "02-one-evening"
+    quest_dir = SHELF_QUESTS / "02-one-evening"
     assert quest_dir.is_dir()
 
 
@@ -205,22 +219,15 @@ def test_quest_scripts_carry_no_franchise():
     assert guilty == [], "франшиза в скриптах квестов: {}".format(guilty)
 
 
-def test_retired_quest_identifier_survives_only_in_the_migration():
-    """Прежний идентификатор жив ровно в одном месте кода — в карте миграции.
+def test_retired_quest_identifier_is_gone_from_the_game():
+    """Прежний идентификатор не живёт нигде, кроме этого стража.
 
-    Ноль вхождений там недостижим и был бы вреден: переименовать ключ, не
-    назвав его, нельзя, а склейка строки из кусков спрятала бы его от grep —
-    ровно от того прибора, которым эта проверка и держится. Поэтому граница
-    проводится здесь: карта миграции в state.py и тесты, доказывающие
-    переименование, — можно; всё остальное — нельзя.
+    До #78 он оставался в карте миграции 2→3: переименовать ключ, не назвав
+    его, нельзя. Сохранения прежней игры больше не мигрируют — уходят в
+    архив целиком, — и карта ушла вместе с миграцией. Последнее вхождение —
+    здесь, как имя того, что ищется.
     """
-    from jedicoder import state as st
-
-    assert ("1", "02-hutt-filter", "02-one-evening") in st.QUEST_RENAMES_V3
-
     allowed = {
-        PLUGIN_ROOT / "lib" / "jedicoder" / "state.py",
-        ROOT / "tests" / "test_state.py",
         ROOT / "tests" / "test_language.py",
     }
     guilty = []
@@ -236,9 +243,7 @@ def test_retired_quest_identifier_survives_only_in_the_migration():
                 continue
             if "02-hutt-filter" in text:
                 guilty.append(str(path.relative_to(ROOT)))
-    assert guilty == [], "прежний идентификатор жив вне миграции: {}".format(
-        guilty
-    )
+    assert guilty == [], "прежний идентификатор жив: {}".format(guilty)
 
 
 def test_retired_franchise_aliases_do_not_unlock_terms():
@@ -327,12 +332,13 @@ def test_pointers_to_rule_seven_survive():
     )
 
 
+@needs_shelf
 def test_hutt_filter_aliases_stay_clear_of_vertical_slice():
     """Ловушка, которую линтер не поймает: `_alias_collisions` видит только
     совпадение строк, а два термина об одном приёме — совпадение смысла.
     У `vertical-slice` занято поле «отрезать/отрезано/срез»; «правило одного
     вечера» называет правило, а не срез, и в это поле не лезет."""
-    by_term = {item.term: item for item in content.load_terms(CONTENT_ROOT)}
+    by_term = {item.term: item for item in content.load_terms(SHELF_CONTENT)}
     ours = {alias.lower() for alias in by_term["hutt-filter"].aliases}
     theirs = {alias.lower() for alias in by_term["vertical-slice"].aliases}
     assert ours & theirs == set()
@@ -391,39 +397,35 @@ def test_myth_words_are_not_renamed():
 
 # --- Бюджет новизны: замер плана 01.2-05, прибитый к файлам. ---
 
-# Восемь рыночных слов Основателя. Ремесленник их не получает по смыслу
-# трека: контракт Ремесленника прямым текстом велит модели не заводить
-# разговор о рынке, и именно на этом в 01.1 заглох словарь Акта 1.
-FOUNDER_MARKET_TERMS = frozenset((
-    "arpu", "ca", "cac", "channel", "icp", "ltv", "pmf", "tam-sam-som",
-))
-
-# Сколько слов доступно Ремесленнику к концу Акта 1. Число не произвольное:
-# у него в Акте 1 три квеста (01-idea, 02-one-evening, 03c-who), потолок
-# новизны три слова на квест — значит бюджет ровно девять. До плана 01.2-05
-# их было пятнадцать, то есть перебор на шесть.
+# Сколько слов Акта 1 доступно новичку за первый вечер. В акте пять квестов
+# и потолок новизны три слова на квест — пятнадцать было бы законно, но
+# вечер один, и читатель впервые открыл Claude Code. Девять — столько, во
+# что он упирается руками: папка и режим, одна работа, запрос и чужая
+# программа, три слова сохранения и откат. Поимённо — ACT1_TERMS в
+# tests/test_content.py.
+#
+# Прежний счёт был по треку: рыночные слова Основателя из пула Ремесленника
+# вычитались. Трека в акте больше нет, и вычитать нечего: прежние слова
+# лежат на полке вместе с актом.
 #
 # Считается по `act <= 1`, а не `act == 1`, и это не придирка: ровно так
 # фильтрует хук лута, а значит ровно столько слов человек и увидит. План
 # 01.4-03 увёл `terminal` в Акт 0 — из ВЫДАЧИ слово при этом никуда не
-# делось, и `act == 1` показал бы восемь там, где человек по-прежнему
-# получает девять. Разгружает пул только переезд в поздний акт; переезд в
-# ранний не разгружает ничего.
-CRAFTSMAN_ACT1_POOL = 9
+# делось. Разгружает пул только переезд в поздний акт; переезд в ранний не
+# разгружает ничего.
+#
+# Было девять: `env` вернулся в Акт 2 (#87) — паролей в первый вечер нет.
+ACT1_POOL = 8
 
-# Плюс Акт 0, который выдаётся с первой же сессии по тому же фильтру. Слов
-# там три, но пул они увеличили на два: `terminal` в нём и так лежал, а
-# новых по D-07 ровно два — режим разрешений и ручка «модель + мощность
-# рассуждения».
+# Плюс Акт 0, который выдаётся с первой же сессии по тому же фильтру:
+# терминал, ручка «модель + мощность рассуждения» и лимит запросов. Режим
+# разрешений с 2026-10-08 считается в Акте 1 — его называет первый квест.
 #
 # Число стоит отдельным слагаемым, а не растворено в сумме, ровно затем,
 # чтобы четвёртое слово Акта 0 уронило этот тест. Бюджет первого вечера
 # линтер не меряет (D-03), и это второй страж на него — не по именам, как
 # ACT0_TERMS в tests/test_content.py, а по тому, сколько карточек человек
 # реально увидит.
-# +1 с 2026-09-10: «usage» переехал из Акта 3 в Акт 0 вместе со строкой
-# состояния — лимит показывают с первого вечера, а не после того, как в него
-# упёрлись.
 ACT0_POOL = 3
 
 # Куда уехали шесть лишних. Переезд именной, по смыслу, а не по счёту:
@@ -440,8 +442,8 @@ RELOCATED_TERMS = {
 }
 
 
-def test_act1_craftsman_pool_size():
-    """Ремесленник в Акте 1 видит ровно девять слов — свой бюджет, не больше.
+def test_act1_pool_size():
+    """Новичок в Акте 1 видит ровно одиннадцать слов — восемь своих и три Акта 0.
 
     Настоящий рычаг плотности — состав пула акта, а не поле `quest`:
     `lexicon_loot.find_terms` фильтрует по `t.act <= current_act` и про
@@ -453,17 +455,16 @@ def test_act1_craftsman_pool_size():
     разгрузке, которой не было.
 
     Превышение читается однозначно: кто-то вернул слово в Акт 1 или завёл
-    новое, не заметив, что бюджет уже выбран под ноль.
+    новое, не заметив, что бюджет первого вечера уже выбран.
     """
     pool = sorted(
-        item.term for item in content.load_terms(CONTENT_ROOT)
-        if item.act <= 1 and item.term not in FOUNDER_MARKET_TERMS
+        item.term for item in content.load_terms(CONTENT_ROOT) if item.act <= 1
     )
-    budget = CRAFTSMAN_ACT1_POOL + ACT0_POOL
+    budget = ACT1_POOL + ACT0_POOL
     assert len(pool) == budget, (
-        "у Ремесленника к концу Акта 1 {} слов при бюджете {} ({} + {} за "
+        "у новичка к концу Акта 1 {} слов при бюджете {} ({} + {} за "
         "Акт 0) — {}".format(
-            len(pool), budget, CRAFTSMAN_ACT1_POOL, ACT0_POOL, ", ".join(pool)
+            len(pool), budget, ACT1_POOL, ACT0_POOL, ", ".join(pool)
         )
     )
 

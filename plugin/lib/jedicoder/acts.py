@@ -7,7 +7,7 @@
 а не в отдельном реестре на трек: общие квесты объявлены один раз, и им
 неоткуда разъехаться при правке одной из веток.
 
-Осей развилки две: трек падавана (Акты 1 и 5) и путь деплоя (Акт 4).
+Осей развилки две: трек падавана (Акт 5) и путь деплоя (Акт 4).
 Ось — свойство акта (ACT_AXIS), метка ветки стоит на квесте; общее
 значение «в обеих ветках» — BRANCH_BOTH.
 """
@@ -45,15 +45,14 @@ AXIS_DEPLOY = "deploy"
 # по разным осям. Не перечислен — ось трека.
 ACT_AXIS = {4: AXIS_DEPLOY}
 
+# Акт 1 «Знакомство» не ветвится: один вечер, одна дорога для всех. Прежний
+# состав с развилкой по треку лежит на полке (shelf/act1-poisk-boli/).
 ACT1_QUESTS = (
-    ("01-idea", KIND_SCRIPT, TRACK_BOTH),
-    ("02-one-evening", KIND_SCRIPT, TRACK_BOTH),
-    ("03c-who", KIND_SCRIPT, TRACK_CRAFTSMAN),
-    ("03f-market", KIND_SCRIPT, TRACK_FOUNDER),
-    ("04f-competitors", KIND_SCRIPT, TRACK_FOUNDER),
-    ("05f-icp", KIND_SCRIPT, TRACK_FOUNDER),
-    ("06f-unit", KIND_SCRIPT, TRACK_FOUNDER),
-    ("07f-channel", KIND_SCRIPT, TRACK_FOUNDER),
+    ("01-folder", KIND_SCRIPT, TRACK_BOTH),
+    ("02-idea", KIND_SCRIPT, TRACK_BOTH),
+    ("03-first-request", KIND_SCRIPT, TRACK_BOTH),
+    ("04-save", KIND_SCRIPT, TRACK_BOTH),
+    ("05-stop-undo", KIND_ACK, TRACK_BOTH),
 )
 
 ACT2_QUESTS = (
@@ -235,10 +234,28 @@ def quest_kind(act, quest_id):
     )
 
 
+#: Квесты со скриптом, у которых сначала идут слова человека, а потом
+#: проверка. Скрипт видит файлы, но не знает, открыл ли их кто-нибудь:
+#: «Первый запрос» закрывался, как только в папке появлялся код, — до того,
+#: как страницу увидел человек (прогон 2026-10-08). Исход по-прежнему решает
+#: exit-код проверки; слова лишь открывают ей дорогу.
+WORDS_FIRST = frozenset({(1, "03-first-request")})
+
+
+def needs_words(act, quest_id):
+    """Ждёт ли квест рассказа человека до проверки."""
+    return (act, quest_id) in WORDS_FIRST
+
+
 def _closed(state, act, quest_id):
     entry = (state.get("acts") or {}).get(str(act)) or {}
     quest = (entry.get("quests") or {}).get(quest_id) or {}
     return quest.get("status") == STATUS_DONE
+
+
+def is_closed(state, act, quest_id):
+    """Закрыт ли квест — по записи в сохранении."""
+    return _closed(state, act, quest_id)
 
 
 def next_quest(state, act, branch=None):

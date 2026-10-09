@@ -287,7 +287,7 @@ def test_facts_agree_with_what_status_prints(tmp_path, content_root, quests_root
     assert facts["rank_title"] == "Мастер"
     assert facts["dark_side"]["points"] == 5
     assert facts["rank_title"] in out.splitlines()[0]
-    assert _printed(out, "XP:") == [facts["xp"]]
+    assert _printed(out, "Очки:") == [facts["xp"]]
     assert _printed(out, "Штрафы:") == [facts["dark_side"]["points"]]
     assert _printed(out, "Серия сохранений:") == [
         facts["streak"]["current"], facts["streak"]["best"],
@@ -298,8 +298,7 @@ def test_facts_agree_with_what_status_prints(tmp_path, content_root, quests_root
     ]
 
 
-def test_facts_agree_with_what_finale_prints(tmp_path, content_root, quests_root,
-                                             capsys):
+def test_facts_agree_with_what_finale_prints(tmp_path, content_root, quests_root, capsys, all_acts_open):
     data = _master_save()
     state_path = tmp_path / "state.json"
     st.save(data, state_path)
@@ -416,23 +415,27 @@ def test_quests_of_an_act_the_registry_does_not_know_keep_their_attempts():
     }
 
 
-def test_closed_quests_count_both_branches_unlike_the_map(tmp_path, content_root,
-                                                          quests_root, capsys):
+def test_closed_quests_count_both_branches_unlike_the_map(tmp_path, content_root, quests_root, capsys, monkeypatch):
     """Сменивший трек: карта считает по нынешнему треку, факты — по всему.
 
     Расхождение намеренное и разное по смыслу. Карта отвечает «сколько
     осталось» и обязана мерить нынешний трек. Факты отвечают «что было», а
     квест покинутого трека падаван закрыл по-настоящему.
+
+    Развилка по треку осталась у одного акта — пятого, и он выключен
+    (`ranks.MUTED_ACTS`): дверь открывается здесь, иначе карта напечатала бы
+    «готовится» вместо счёта. У Акта 1 «Знакомство» развилки нет.
     """
-    data = _save(passport={"track": "craftsman"}, acts={"1": _act(
-        ("01-idea", 1), ("02-one-evening", 1), ("03f-market", 1),
+    monkeypatch.setattr(ranks, "MUTED_ACTS", ())
+    data = _save(passport={"track": "craftsman"}, acts={"5": _act(
+        ("01-deploy", 1), ("02-domain", 1), ("06f-publish", 1),
     )})
-    data["acts"]["1"]["status"] = "in_progress"
+    data["acts"]["5"]["status"] = "in_progress"
     state_path = tmp_path / "state.json"
     st.save(data, state_path)
     cli.main(["status"], state_path=state_path, content_root=content_root,
              quests_root=quests_root)
     out = capsys.readouterr().out
 
-    assert _printed(out, "[>] Акт 1.") == [2, 3]  # закрыто / всего на треке
+    assert _printed(out, "Акт 5.") == [2, 6]  # закрыто / всего на треке
     assert debrief.facts(data)["quests_closed"] == 3

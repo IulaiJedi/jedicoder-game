@@ -63,6 +63,43 @@ def update_state(path=None):
         yield state
 
 
+class _Unchanged(Exception):
+    """Выход из окна записи без сохранения: менять нечего."""
+
+
+def record_permission_mode(payload):
+    """Записать в сохранение режим разрешений из данных хука.
+
+    Claude Code кладёт его в поле `permission_mode` (у UserPromptSubmit и
+    PreToolUse оно есть, у SessionStart — нет). По нему первый квест говорит
+    человеку правду о режиме, а не просит искать строку внизу окна (#87).
+
+    Режим у каждой сессии свой, а поле в сохранении одно. Свежим его
+    держит PreToolUse: он срабатывает перед каждой командой игры в той же
+    сессии, поэтому контракт читает режим своего окна, а не соседнего.
+
+    Никогда не бросает: режим — справка, и её сбой не должен задеть ни
+    запрос падавана, ни решение сторожа о команде. Файл переписывается,
+    только когда режим сменился: хук срабатывает на каждой команде. Тому,
+    кто ещё не играет, сохранение не заводится: его создаёт первая команда
+    игры, а не чужой запрос в Claude Code.
+    """
+    try:
+        reported = payload.get("permission_mode")
+        path = state_path()
+        with update_state(path) as state:
+            # Под замком, после чтения: испорченный файл `load` к этому
+            # моменту уже унёс в сторону, и писать поверх пустоты нечего.
+            if not Path(path).exists():
+                raise _Unchanged()
+            if not st.note_permission_mode(state, reported):
+                raise _Unchanged()
+    except _Unchanged:
+        return
+    except Exception:
+        return
+
+
 def add_dark_side(state, amount, kind):
     """Прибавить к счёту штрафов (dark_side) и вернуть новое значение.
 

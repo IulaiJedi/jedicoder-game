@@ -269,7 +269,7 @@ def test_engine_and_hook_write_the_same_file(tmp_path, form):
     hook = subprocess.run(
         [sys.executable, str(HOOK_PY)],
         input=json.dumps(
-            {"last_assistant_message": "Начнём с MVP: одна кнопка."}
+            {"last_assistant_message": "Начнём с API: одна кнопка."}
         ),
         capture_output=True, text=True, timeout=60, env=env,
         cwd=str(откуда_хук),
@@ -309,7 +309,7 @@ def test_without_the_variable_both_write_to_the_home_folder(tmp_path):
     hook = subprocess.run(
         [sys.executable, str(HOOK_PY)],
         input=json.dumps(
-            {"last_assistant_message": "Начнём с MVP: одна кнопка."}
+            {"last_assistant_message": "Начнём с API: одна кнопка."}
         ),
         capture_output=True, text=True, timeout=60, env=env, cwd=str(tmp_path),
     )

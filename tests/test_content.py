@@ -178,18 +178,31 @@ def test_rule_and_recipe_validation(tmp_path):
         content.load_recipes(tmp_path)
 
 
+# Слова Акта 1 «Знакомство» (спека #75): то, во что человек упирается в
+# первый вечер с Claude Code. Перечислены поимённо, как и слова Акта 0 ниже:
+# десятое слово попадёт сюда руками, то есть осознанно.
+#
+# `commit` и `repository` приехали из Акта 2 вместе с квестом «Сохранение»,
+# `permission-mode` — из Акта 0: режим называет первый квест. `env` вернулся
+# в Акт 2 (#87): паролей в первый вечер нет, и карточка о них не звучит —
+# проверка сохранения стережёт `.env` молча.
+# `tool` и `api` остались от прежнего Акта 1 — «одна работа» и «чужая
+# программа, у которой просят» нужны идее на вечер и первому запросу.
 ACT1_TERMS = (
+    "project-folder", "permission-mode",
+    "tool",
+    "prompt", "api",
+    "commit", "repository",
+    "rollback",
+)
+
+# Слова прежнего Акта 1 «Поиск боли», уехавшие на полку вместе с ним:
+# бизнес-исследование уходит в клуб, работа над идеей вернётся будущим
+# Актом 4. В игре их нет — ни карточкой, ни алиасом.
+SHELVED_ACT1_TERMS = (
     "mvp", "ca", "icp", "pmf", "tam-sam-som", "vertical-slice",
     "cac", "ltv", "arpu", "channel",
-    # Семь терминов из языка самого Акта 1 (LOOP-03). Десятка выше —
-    # лексика Основателя, которую контракт Ремесленника запрещает
-    # произносить; на треке Ремесленника словарь молчал именно поэтому.
-    # `terminal` из этого списка ушёл планом 01.4-03: слово переехало в Акт 0,
-    # где человек и открывает терминал в первый раз. Доступность для него не
-    # изменилась — хук лута фильтрует по `t.act <= current_act`, — поэтому из
-    # бюджета Ремесленника оно НЕ выпало; см. CRAFTSMAN_ACT1_POOL.
     "pain", "crystal", "hutt-filter", "estimate",
-    "tool", "api",
 )
 
 # Шесть слов, уехавших из Акта 1 планом 01.2-05: у Ремесленника было
@@ -215,6 +228,36 @@ def test_act1_terms_marked_with_act_one(content_root):
     for item in content.load_terms(content_root):
         if item.term in ACT1_TERMS:
             assert item.act == 1, "{}: act должен быть 1".format(item.term)
+
+
+def test_act1_terms_are_exactly_the_named_ones(content_root):
+    """Состав слов первого вечера прибит поимённо, в обе стороны."""
+    from jedicoder import content
+
+    named = sorted(
+        item.term for item in content.load_terms(content_root) if item.act == 1
+    )
+    assert named == sorted(ACT1_TERMS)
+
+
+def test_shelved_terms_left_the_game_and_lie_on_the_shelf(content_root):
+    """Слова прежнего Акта 1 не удалены, а переложены: в игре их нет, на
+    полке — все четырнадцать, и каждый файл по-прежнему читается схемой."""
+    from pathlib import Path
+
+    from jedicoder import content
+
+    live = {item.term for item in content.load_terms(content_root)}
+    assert sorted(live & set(SHELVED_ACT1_TERMS)) == []
+
+    # Тем же загрузчиком, что и живой словарь: полка обязана оставаться
+    # читаемой схемой, иначе вернуть слова значило бы сначала их чинить.
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act1-poisk-boli" / "content"
+    if not shelf.is_dir():
+        # Полка наружу не едет: в выгрузке (`build_release.py`) её нет.
+        pytest.skip("полки прежнего Акта 1 нет в этом дереве")
+    on_shelf = sorted(item.term for item in content.load_terms(shelf))
+    assert on_shelf == sorted(SHELVED_ACT1_TERMS)
 
 
 def test_acts_1_to_3_terms_declare_quest(content_root):
@@ -304,14 +347,11 @@ def test_act4_terms_present(content_root):
 # осознанно, с ответом на вопрос, что именно человек не выдержит в первый
 # вечер, если слов станет четыре.
 #
-# Сегодня их три. Два — новая матчасть по D-07: режим разрешений и одна
-# ручка на две темы, модель с мощностью рассуждения. Третье, `terminal`, —
-# не новое слово: оно существовало в пуле Акта 1 и по фильтру хука лута
-# (`t.act <= current_act`) было доступно добычей с первой же сессии. Переезд
-# сменил объявленную точку введения на ту, где человек действительно
-# впервые открывает терминал, и снял два маркера `lint:novelty-ok` из узлов
-# Акта 0 — подавление правила ради слова, которое встречается именно здесь.
-ACT0_TERMS = ("model-effort", "permission-mode", "terminal", "usage")
+# Сегодня их три: одна ручка на две темы — модель с мощностью рассуждения
+# (D-07), лимит запросов и `terminal`, который человек открывает здесь
+# впервые. Режим разрешений с 2026-10-08 — слово Акта 1: его называет и
+# показывает первый квест «Знакомства» (спека #75), а не подготовка.
+ACT0_TERMS = ("model-effort", "terminal", "usage")
 
 
 def test_act0_terms_named_and_questless(content_root):
@@ -414,6 +454,7 @@ ACT_OK = (
     "rank_title: Искатель\n"
     "artifact: brainstorm\n"
     "axis: track\n"
+    "muted: false\n"
     "quests: [01-idea, 02-one-evening]\n"
     'quest_titles: ["Идея", "Фильтр Хатта"]\n'
     "quest_branches: [both, both]\n"
@@ -426,10 +467,11 @@ def test_loads_real_acts(content_root):
     items = content.load_acts(content_root)
     assert [item.act for item in items] == [1, 2, 3, 4, 5]
     first = items[0]
-    assert first.slug == "act1-poisk-boli"
+    assert first.slug == "act1-znakomstvo"
     assert first.rank == "seeker"
     assert first.artifact == "brainstorm"
-    assert first.quests[0] == "01-idea"
+    assert first.quests[0] == "01-folder"
+    assert set(first.quest_branches) == {"both"}
     assert len(first.quest_titles) == len(first.quests)
     assert first.body
 
@@ -528,14 +570,40 @@ def test_act_self_description_parsed(tmp_path):
     "rank_title: Искатель\n",
     "axis: track\n",
     "quest_branches: [both, both]\n",
+    "muted: false\n",
 ])
 def test_act_without_self_description_rejected(tmp_path, line):
-    """Каждое из трёх полей обязательно: акт без него — не самоописание,
+    """Каждое поле самоописания обязательно: акт без него — не самоописание,
     а половина карты, и Голокрон нарисовал бы доску без веток."""
     assert line in ACT_OK
     write(tmp_path, "acts/act1-poisk-boli.md", ACT_OK.replace(line, ""))
     key = line.split(":")[0]
     with pytest.raises(content.ContentError, match=key):
+        content.load_acts(tmp_path)
+
+
+@pytest.mark.parametrize("written, expected", [("false", False), ("true", True)])
+def test_act_muted_flag_parsed(tmp_path, written, expected):
+    """Выключен ли акт, он говорит сам — булевым полем (#82). Голокрон
+    читает его из фронтматтера и не лезет в ranks.py."""
+    write(
+        tmp_path,
+        "acts/act1-poisk-boli.md",
+        ACT_OK.replace("muted: false", "muted: " + written),
+    )
+    assert content.load_acts(tmp_path)[0].muted is expected
+
+
+@pytest.mark.parametrize("written", ["yes", "0", "1", '"true"'])
+def test_act_muted_must_be_boolean(tmp_path, written):
+    """Свой парсер знает только true и false: «yes» он прочёл бы строкой, а
+    непустая строка — истина. Акт выключился бы от любого слова."""
+    write(
+        tmp_path,
+        "acts/act1-poisk-boli.md",
+        ACT_OK.replace("muted: false", "muted: " + written),
+    )
+    with pytest.raises(content.ContentError, match="muted"):
         content.load_acts(tmp_path)
 
 
@@ -1044,3 +1112,53 @@ def test_real_roadmaps_carry_exactly_three_steps(content_root):
         if len(steps) != ROADMAP_STEPS:
             wrong.append("{}: шагов {}".format(card.path.name, len(steps)))
     assert wrong == [], "\n".join(wrong)
+
+
+# --- Задания квестов: одна фраза простыми словами (#83, пункт 6) -----------
+
+ACT_TASKS = 'quest_tasks: ["Назови папку своего проекта.", "Выбери одно дело на вечер."]\n'
+
+
+def _act_with(tmp_path, line=""):
+    """Загрузить акт-образец, вставив строку во фронтматтер."""
+    write(
+        tmp_path, "acts/act1-poisk-boli.md",
+        ACT_OK.replace("quest_branches:", line + "quest_branches:"),
+    )
+    return content.load_acts(tmp_path)[0]
+
+
+def test_act_quest_tasks_parsed(tmp_path):
+    act = _act_with(tmp_path, ACT_TASKS)
+    assert act.quest_tasks == (
+        "Назови папку своего проекта.", "Выбери одно дело на вечер.",
+    )
+
+
+def test_act_without_quest_tasks_loads_with_none(tmp_path):
+    """Выключенные акты перестраиваются — заданий у них пока нет."""
+    act = _act_with(tmp_path)
+    assert act.quest_tasks == ()
+
+
+def test_act_quest_tasks_count_must_match_quests(tmp_path):
+    """Запятая в задании рвёт список (долг №12) — ошибка называет причину."""
+    line = 'quest_tasks: ["Назови папку, где проект.", "Выбери одно дело."]\n'
+    with pytest.raises(content.ContentError, match="запят"):
+        _act_with(tmp_path, line)
+
+
+def test_act_quest_task_is_one_short_phrase(tmp_path):
+    long_task = " ".join(["слово"] * 16) + "."
+    line = 'quest_tasks: ["{}", "Выбери одно дело."]\n'.format(long_task)
+    with pytest.raises(content.ContentError, match="quest_tasks"):
+        _act_with(tmp_path, line)
+    line = 'quest_tasks: ["Назови папку. Потом вторую.", "Выбери одно дело."]\n'
+    with pytest.raises(content.ContentError, match="одна фраза"):
+        _act_with(tmp_path, line)
+
+
+def test_playable_acts_carry_a_task_for_every_quest(content_root):
+    for item in content.load_acts(content_root):
+        if not item.muted:
+            assert len(item.quest_tasks) == len(item.quests), item.slug

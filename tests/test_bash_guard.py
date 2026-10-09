@@ -694,3 +694,410 @@ def test_counter_and_journal_go_in_one_pass_over_the_state(
 
     assert saves == [3], "одно сохранение, и журнал в нём уже полный"
     assert st.load(path)["dark_side"] == 3
+
+
+# --- Режим без проверок: хук — единственная защита (тикет Н1) ---------------
+
+
+def test_heredoc_with_dash_does_not_swallow_the_tail():
+    # Долг №5: у `<<-EOF` лексер отдаёт разделитель как «-EOF», и
+    # терминатор «EOF» не находился никогда — съедалась вся команда.
+    commands = bash_guard.simple_commands(
+        "cat <<-EOF\n\tпривет\n\tEOF\nrm -rf /"
+    )
+    assert ["rm", "-rf", "/"] in commands
+    assert ["привет"] not in commands, "тело по-прежнему данные"
+
+
+def test_heredoc_with_dash_and_quoted_delimiter():
+    commands = bash_guard.simple_commands(
+        "cat > note.txt <<-'EOF'\n\trm -rf /tmp/scratch\n\tEOF\necho ok"
+    )
+    assert ["rm", "-rf", "/tmp/scratch"] not in commands
+    assert ["echo", "ok"] in commands
+
+
+def test_trailing_slash_on_symlink_wipes_the_target(tmp_path):
+    # Долг №4: `rm -rf build` снимает ссылку, `rm -rf build/` стирает
+    # содержимое того, на что она указывает, — а оно вне проекта.
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    cache = tmp_path / "outside-cache"
+    cache.mkdir()
+    (project_dir / "build").symlink_to(cache)
+    assert bash_guard.wipes_outside_project(
+        ["rm", "-rf", "build/"], project_dir, project_dir
+    ) is True
+    assert bash_guard.wipes_outside_project(
+        ["rm", "-rf", "./build//"], project_dir, project_dir
+    ) is True
+    # Без слэша — по-прежнему только ссылка, файл проекта.
+    assert bash_guard.wipes_outside_project(
+        ["rm", "-rf", "build"], project_dir, project_dir
+    ) is False
+
+
+def test_trailing_slash_on_a_real_folder_is_fine(tmp_path):
+    project_dir = tmp_path / "proj"
+    (project_dir / "dist").mkdir(parents=True)
+    inner = project_dir / "cache"
+    inner.mkdir()
+    (project_dir / "link").symlink_to(inner)
+    assert bash_guard.wipes_outside_project(
+        ["rm", "-rf", "dist/"], project_dir, project_dir
+    ) is False
+    # Ссылка на папку ВНУТРИ проекта: цель своя, блокировать нечего.
+    assert bash_guard.wipes_outside_project(
+        ["rm", "-rf", "link/"], project_dir, project_dir
+    ) is False
+
+
+def test_env_in_a_brand_new_folder_is_seen(project):
+    # Долг №7: неотслеживаемую папку git сворачивает в одну строку
+    # `?? api/`, и `.env` внутри неё не был виден вовсе.
+    proj = project(git=True, commits=1)
+    (proj / "api").mkdir()
+    (proj / "api" / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (proj / "api" / "main.py").write_text("print(1)\n", encoding="utf-8")
+    assert bash_guard.stages_env(["git", "add", "."], proj) is True
+    assert bash_guard.stages_env(["git", "add", "-A"], proj) is True
+    assert bash_guard.stages_env(["git", "add", "."], proj / "api") is True
+
+
+# Долг №10: хук судит только то, что опознал наверняка. Ниже — сначала
+# формы, которые он обязан узнавать, потом формы, которые обязан пропускать.
+
+
+def denied(out):
+    return bool(out) and (
+        out.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+    )
+
+
+def test_trailing_comment_does_not_glue_the_next_line():
+    # Комментарий съедал перевод строки, и следующая команда приклеивалась
+    # к предыдущей аргументами: `echo hi rm -rf /` — уже не rm.
+    assert bash_guard.simple_commands("echo hi # заметка\nrm -rf /") == [
+        ["echo", "hi"], ["rm", "-rf", "/"],
+    ]
+    assert bash_guard.simple_commands("# уборка\nrm -rf /") == [
+        ["rm", "-rf", "/"],
+    ]
+
+
+def test_comment_inside_heredoc_does_not_hide_the_terminator():
+    commands = bash_guard.simple_commands(
+        "cat > a.sh <<EOF\nmake # сборка\nEOF\nrm -rf /"
+    )
+    assert ["rm", "-rf", "/"] in commands
+
+
+def test_capital_r_is_recursive_too(tmp_path):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    for flags in (["-Rf"], ["-fR"], ["-R", "-f"]):
+        assert bash_guard.wipes_outside_project(
+            ["rm"] + flags + [str(tmp_path / "other")], project_dir, project_dir
+        ) is True, flags
+
+
+def test_shell_keywords_do_not_hide_the_command(tmp_path):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    other = str(tmp_path / "other")
+    for line in (
+        "if [ -d {0} ]; then rm -rf {0}; fi",
+        "if false; then true; else rm -rf {0}; fi",
+        "for i in 1 2; do rm -rf {0}; done",
+        "{{ rm -rf {0}; }}",
+        "! rm -rf {0}",
+    ):
+        hits = [
+            bash_guard.wipes_outside_project(tokens, project_dir, project_dir)
+            for tokens in bash_guard.simple_commands(line.format(other))
+        ]
+        assert any(hits), line
+
+
+def test_wiping_everything_in_root_or_home_is_a_catastrophe(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    for target in ("/*", "~/*", "$HOME/*", "~/"):
+        assert bash_guard.wipes_outside_project(
+            ["rm", "-rf", target], tmp_path, None
+        ) is True, target
+
+
+def test_cd_into_the_project_then_rm_is_not_blocked(project, hook_state, tmp_path):
+    # Сессия открыта этажом выше, Claude пишет `cd проект && rm -rf dist`:
+    # относительный путь считается от папки после cd, а не от cwd сессии.
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    out = bash_guard.decide(payload(
+        "cd {} && rm -rf dist node_modules".format(proj), tmp_path
+    ))
+    assert out is None
+    out = bash_guard.decide(payload("cd proj1 && rm -rf dist", tmp_path))
+    assert out is None
+    from jedicoder import state as st
+    assert st.load(path)["dark_side"] == 0
+
+
+def test_cd_out_of_the_project_then_rm_is_blocked(project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert denied(bash_guard.decide(payload(
+        "cd {} && rm -rf scratch".format(elsewhere), proj
+    )))
+    assert denied(bash_guard.decide(payload("cd .. ; rm -rf scratch", proj)))
+
+
+def test_cd_in_a_subshell_does_not_leak(project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for line in (
+        "(cd {} && ls); rm -rf dist",
+        "echo $(cd {} && pwd) && rm -rf dist",
+    ):
+        assert bash_guard.decide(payload(line.format(elsewhere), proj)) is None, line
+
+
+def test_unknown_folder_means_relative_paths_are_not_judged(
+        project, hook_state, tmp_path, monkeypatch):
+    monkeypatch.delenv("JC_NO_SUCH_VAR", raising=False)
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for line in (
+        # Куда ушли — неизвестно: ни `rm -rf dist`, ни `git add .` не судим.
+        'cd "$JC_NO_SUCH_VAR" && rm -rf dist',
+        'cd "$JC_NO_SUCH_VAR" && git add .',
+        "cd - && rm -rf dist",
+        "pushd {0} && popd && rm -rf dist",
+        "cd $(mktemp -d) && rm -rf dist",
+        # Определение функции и case: cd внутри мог и не выполниться.
+        "clean() {{ cd {0}; }}; rm -rf dist",
+        "case x in a) cd {0};; esac; rm -rf dist",
+    ):
+        out = bash_guard.decide(payload(line.format(elsewhere), proj))
+        assert out is None, line
+
+
+def test_cd_that_may_not_have_happened_is_not_trusted(
+        project, hook_state, tmp_path):
+    # cd под условием: выполнился он или нет, хук не знает. Считать папку
+    # известной — значит заблокировать уборку в собственном проекте.
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for line in (
+        "cd nope || cd {0}; rm -rf dist",
+        "test -d nope && cd {0}; rm -rf dist",
+        "if false; then cd {0}; fi; rm -rf dist",
+        "cd {0} & rm -rf dist",
+        "cd {0} | cat; rm -rf dist",
+    ):
+        out = bash_guard.decide(payload(line.format(elsewhere), proj))
+        assert out is None, line
+    # Цепочка `&&` — не условие, а порядок: дошли до rm, значит cd был.
+    assert denied(bash_guard.decide(payload(
+        "test -d . && cd {} && rm -rf scratch".format(elsewhere), proj
+    )))
+
+
+def test_heredoc_dash_with_a_space_before_the_delimiter():
+    commands = bash_guard.simple_commands(
+        "cat <<- EOF\n\tпривет\n\tEOF\nrm -rf /"
+    )
+    assert ["rm", "-rf", "/"] in commands
+    assert ["привет"] not in commands
+
+
+def test_redirection_is_not_a_command_and_not_an_argument():
+    # `2>/dev/null` лексер режет на `2`, `>` и путь: без этого цифра
+    # становилась аргументом, а путь — отдельной «командой».
+    assert bash_guard.simple_commands(
+        "make > build.log 2>&1 && echo ok >> build.log"
+    ) == [["make"], ["echo", "ok"]]
+    assert bash_guard.simple_commands("rm -rf /important &> /dev/null") == [
+        ["rm", "-rf", "/important"],
+    ]
+
+
+def test_redirection_does_not_hide_where_cd_went(project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    (proj / "sub").mkdir()
+    hook_state(project={"path": str(proj)})
+    assert denied(bash_guard.decide(payload(
+        "cd sub 2>/dev/null && rm -rf ../../elsewhere", proj
+    )))
+    assert denied(bash_guard.decide(payload(
+        "pushd sub >/dev/null; rm -rf ../../elsewhere", proj
+    )))
+    assert bash_guard.decide(payload(
+        "cd sub 2>/dev/null && rm -rf ../dist", proj
+    )) is None
+
+
+def test_env_by_name_is_judged_even_when_the_folder_is_unknown(
+        project, hook_state):
+    # Частая запись агента: `cd "$(git rev-parse --show-toplevel)" && …`.
+    # Куда ушли, хук не знает, но `.env` назван по имени — тогда судим по
+    # папке сессии, как судили всегда.
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    hook_state(project={"path": str(proj)})
+    for line in (
+        'cd "$(git rev-parse --show-toplevel)" && git add .env',
+        "cd - && git add -f .env",
+    ):
+        assert denied(bash_guard.decide(payload(line, proj))), line
+
+
+def test_function_or_case_without_cd_does_not_switch_the_guard_off(
+        project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    hook_state(project={"path": str(proj)})
+    for line in (
+        "greet() { echo hi; }; greet; git add .",
+        "case $x in a) echo 1;; esac; git add .",
+        "case $x in a) echo 1;; esac; rm -rf ../elsewhere",
+    ):
+        assert denied(bash_guard.decide(payload(line, proj))), line
+
+
+def test_unknown_folder_does_not_unlock_absolute_paths(
+        project, hook_state, tmp_path, monkeypatch):
+    monkeypatch.delenv("JC_NO_SUCH_VAR", raising=False)
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert denied(bash_guard.decide(payload(
+        'cd "$JC_NO_SUCH_VAR" && rm -rf {}'.format(elsewhere), proj
+    )))
+    assert denied(bash_guard.decide(payload("cd - && rm -rf /", proj)))
+
+
+def test_path_with_an_unknown_value_is_not_judged(
+        project, hook_state, tmp_path, monkeypatch):
+    # Значения переменной или подстановки хук не знает: `$D/build` мог
+    # оказаться где угодно, в том числе внутри проекта. Не знаем — пропуск.
+    monkeypatch.delenv("JC_NO_SUCH_VAR", raising=False)
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    for line in (
+        'rm -rf "$JC_NO_SUCH_VAR/build"',
+        "rm -rf /tmp/$(whoami)/build",
+        "rm -rf /tmp/`whoami`/build",
+        "rm -rf ~jc_no_such_user/build",
+    ):
+        assert bash_guard.decide(payload(line, tmp_path)) is None, line
+
+
+def test_known_variable_is_still_resolved(project, hook_state, tmp_path, monkeypatch):
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    monkeypatch.setenv("JC_KNOWN_DIR", str(tmp_path / "elsewhere"))
+    assert denied(bash_guard.decide(payload('rm -rf "$JC_KNOWN_DIR/x"', proj)))
+
+
+def test_pwd_is_the_tracked_folder_not_the_hooks_own(
+        project, hook_state, tmp_path, monkeypatch):
+    # `$PWD` в окружении хука — папка процесса хука, а не команды: брать
+    # его оттуда нельзя ни в ту, ни в другую сторону.
+    proj = project(git=True, commits=1)
+    hook_state(project={"path": str(proj)})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("PWD", str(elsewhere))
+    monkeypatch.setenv("OLDPWD", str(elsewhere))
+    assert bash_guard.decide(payload('rm -rf "$PWD/dist"', proj)) is None
+    assert bash_guard.decide(payload('rm -rf "${PWD}/dist"', proj)) is None
+    assert bash_guard.decide(payload('rm -rf "$OLDPWD/dist"', proj)) is None
+    monkeypatch.setenv("PWD", str(proj))
+    assert denied(bash_guard.decide(payload(
+        'cd {} && rm -rf "$PWD/scratch"'.format(elsewhere), proj
+    )))
+
+
+def test_cd_scopes_mass_add_to_the_new_folder(project, hook_state):
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (proj / "frontend").mkdir()
+    (proj / "frontend" / "app.py").write_text("print(1)\n", encoding="utf-8")
+    (proj / "api").mkdir()
+    (proj / "api" / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    hook_state(project={"path": str(proj)})
+    assert bash_guard.decide(payload("cd frontend && git add .", proj)) is None
+    assert denied(bash_guard.decide(payload("cd api && git add .", proj)))
+
+
+def test_adding_a_folder_by_name_is_a_mass_add(project):
+    # `git add api` забирает папку целиком — тот же `git add .`, только
+    # с именем.
+    proj = project(git=True, commits=1)
+    (proj / "api").mkdir()
+    (proj / "api" / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (proj / "web").mkdir()
+    (proj / "web" / "index.html").write_text("<p>\n", encoding="utf-8")
+    assert bash_guard.stages_env(["git", "add", "api"], proj) is True
+    assert bash_guard.stages_env(["git", "add", "web", "api/"], proj) is True
+    assert bash_guard.stages_env(["git", "add", "web"], proj) is False
+    assert bash_guard.stages_env(["git", "add", "web/index.html"], proj) is False
+
+
+def test_taking_env_out_of_git_is_not_blocked(project):
+    # Падаван чинит утечку так, как велит сам хук: .env в .gitignore и
+    # вон из индекса. `git add .` после этого отправляет УДАЛЕНИЕ .env —
+    # блокировать лечение нельзя.
+    proj = project(git=True, commits=1, commit_env=True)
+    (proj / ".gitignore").write_text(".env\n", encoding="utf-8")
+    _git(proj, "rm", "-q", "--cached", ".env")
+    assert bash_guard.stages_env(["git", "add", "."], proj) is False
+    assert bash_guard.stages_env(["git", "add", "-A"], proj) is False
+
+
+def test_deleting_a_committed_env_is_not_blocked(project):
+    proj = project(git=True, commits=1, commit_env=True)
+    (proj / ".env").unlink()
+    assert bash_guard.stages_env(["git", "add", "-A"], proj) is False
+
+
+def test_hook_process_blocks_in_bypass_mode(project, tmp_path):
+    """Режим без проверок: deny от хука — единственное, что стоит между
+    командой и диском. Payload тот же, что шлёт Claude Code в этом режиме.
+    """
+    proj = project(git=True, commits=1)
+    (proj / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    state_path = tmp_path / "hook-state.json"
+    from jedicoder import state as st
+    data = st.default_state("local-test")
+    data["project"] = {"path": str(proj)}
+    st.save(data, state_path)
+    env = {"JEDICODER_STATE_PATH": str(state_path)}
+
+    for command in ("git add .env", "rm -rf ../elsewhere"):
+        done = run_hook("bash_guard.py", {
+            "hook_event_name": "PreToolUse",
+            "permission_mode": "bypassPermissions",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "cwd": str(proj),
+        }, env)
+        assert done.returncode == 0, done.stderr
+        assert denied(json.loads(done.stdout)), command
+
+    saved = st.load(state_path)
+    assert saved["dark_side"] == 3
+    assert sorted(e["type"] for e in st.dark_side_entries(saved)) == [
+        st.DARK_ENV_STAGED, st.DARK_ENV_STAGED, st.DARK_RM_OUTSIDE_PROJECT,
+    ]

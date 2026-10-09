@@ -462,6 +462,18 @@ def _act_problems(items):
                     name, item.axis, axis
                 )
             )
+        # Признак «выключен» — копия ranks.MUTED_ACTS для читателей без
+        # движка (Голокрон). Разошлась — приложение объявит открытым акт, в
+        # который игра не пускает, или спрячет играбельный.
+        if info is not None and item.muted != ranks.is_muted(item.act):
+            problems.append(
+                "{}: muted {} расходится с ranks.MUTED_ACTS — там акт {} {}".format(
+                    name,
+                    "true" if item.muted else "false",
+                    item.act,
+                    "выключен" if ranks.is_muted(item.act) else "не выключен",
+                )
+            )
         if item.slug != item.path.stem:
             problems.append(
                 "{}: slug '{}' не совпадает с именем файла".format(name, item.slug)
@@ -502,6 +514,14 @@ def _act_problems(items):
         for title in item.quest_titles:
             if not str(title).strip():
                 problems.append("{}: пустая подпись квеста".format(name))
+        # Задание квеста — то, что игра печатает человеку вместо кода
+        # квеста (#83). Число заданий сверяет загрузчик; здесь — что
+        # играбельный акт вообще их несёт.
+        if not ranks.is_muted(item.act) and not item.quest_tasks:
+            problems.append(
+                "{}: нет quest_tasks — играбельный акт называет задание "
+                "каждого квеста одной фразой".format(name)
+            )
 
     return problems
 
@@ -1371,6 +1391,14 @@ def _language_units(content_root, skills_root, commands_root,
             "катсцена " + item.slug, item.act, item.body, item.path,
             verbatim + (RULE_CUTSCENE,),
         ))
+        # Задания квестов игра печатает человеку на входе в акт и под
+        # «Что дальше» — те же правила, что у катсцены, кроме её размера.
+        # Подписи рядом — имена квестов, а не фразы: их правила не меряют.
+        if item.quest_tasks:
+            units.append((
+                "задания квестов " + item.slug, item.act,
+                "\n\n".join(item.quest_tasks), item.path, verbatim,
+            ))
     for item in rules:
         # Правило Кодекса о штрафах показывает хук с первой сессии.
         position = 0 if item.dark_side else item.act

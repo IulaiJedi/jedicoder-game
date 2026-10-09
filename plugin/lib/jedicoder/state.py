@@ -10,9 +10,11 @@ JEDICODER_STATE_PATH, и её же зовут хуки, чтобы обе пол
 один файл.
 """
 import contextlib
+import itertools
 import json
 import os
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,9 +24,22 @@ try:
 except ImportError:  # Windows: работаем без взаимного исключения
     fcntl = None
 
-from .ranks import STATUS_DONE, STATUS_IN_PROGRESS, rank_for
+SCHEMA_VERSION = 4
 
-SCHEMA_VERSION = 3
+# Первая версия схемы перестроенной игры (спека #75): под номером 1 новый
+# акт, прежние выключены. Всё, что ниже, писала прежняя игра, и с новым
+# порядком актов оно несовместимо — такое сохранение не мигрирует, а уходит
+# в архив целиком (start_over). Отдельной константой, а не SCHEMA_VERSION:
+# следующая обычная миграция поднимет версию схемы, а граница игр останется
+# на месте.
+#
+# Признак — версия схемы, а не отдельное поле, по двум причинам. Версию
+# игра писала всегда, значит прежнее сохранение опознаётся по тому, что в
+# нём уже есть, без догадок по составу актов. И откат плагина обязан быть
+# громким: прежний плагин на сохранении новой игры показал бы её Акт 1 под
+# прежним именем и с прежними квестами — migrate в нём бросает StateError
+# на версии новее своей, и это честнее молчаливой путаницы.
+REBUILT_GAME_SCHEMA = 4
 
 STATE_DIR = Path.home() / ".jedicoder"
 STATE_PATH = STATE_DIR / "state.json"
@@ -81,18 +96,10 @@ def _target(path):
 
 RANK_YOUNGLING = "youngling"
 
-# Одноразовое объяснение от миграции: Акт 1 перестал закрываться словом.
+# Одноразовое объяснение: игра перестроена, прежнее сохранение в архиве.
 # Ключ латиницей, как и всё в JSON; текст для падавана живёт в cli.py —
 # он единственный, кто печатает.
-NOTICE_ACT1_REAL = "act1_became_real"
-
-# Переоткрытый квест — то же самое, что «квест, который просто ещё не
-# пройден»: то же значение, которым ranks.enter_act и quests._quest_entry
-# помечают свежие акты и квесты. Импортируем константу, а не дублируем
-# строку "in_progress": ranks.py уже единственный источник правды для
-# статусов (quests.py и acts.py берут их оттуда же), и бесшумный разъезд
-# значений сломал бы artifacts_for и карту статуса без единой ошибки.
-STATUS_REOPENED = STATUS_IN_PROGRESS
+NOTICE_GAME_REBUILT = "game_rebuilt"
 
 
 class StateError(RuntimeError):
@@ -235,6 +242,53 @@ def dark_side_entries(state):
     return entries
 
 
+#: Режимы разрешений Claude Code, как он сам называет их хукам в поле
+#: `permission_mode` (документация, раздел hooks). Список закрытый: незнакомое
+#: слово читается как «не знаю», а не как «какой-то режим».
+PERMISSION_MODE_FREE = "bypassPermissions"   # в текстах — «режим без вопросов»
+PERMISSION_MODES = (
+    "default", "plan", "acceptEdits", "auto", "dontAsk", PERMISSION_MODE_FREE,
+)
+
+
+def permission_mode(state):
+    """Режим, который Claude Code назвал хуку последним, либо None.
+
+    Поле необязательное: его нет у того, кто играл до этой правки, и у того,
+    чей Claude Code режим хукам не передаёт. Мусор читается как отсутствие —
+    сказать человеку «ты в режиме без вопросов» можно только по бесспорному.
+    """
+    return _known_mode(
+        state.get("permission_mode") if isinstance(state, dict) else None
+    )
+
+
+def _known_mode(value):
+    """Имя режима из закрытого списка либо None: и список, и словарь в поле
+    нехешируемы, поэтому сначала тип, потом вхождение."""
+    if isinstance(value, str) and value in PERMISSION_MODES:
+        return value
+    return None
+
+
+def note_permission_mode(state, reported):
+    """Записать режим из данных хука. True — сохранение изменилось.
+
+    Режим не назван или назван незнакомо — прежнее знание стирается:
+    устаревшее хуже отсутствующего, игра сказала бы человеку неправду.
+    """
+    known = _known_mode(reported)
+    if known is None:
+        if "permission_mode" not in state:
+            return False
+        del state["permission_mode"]
+        return True
+    if state.get("permission_mode") == known:
+        return False
+    state["permission_mode"] = known
+    return True
+
+
 def default_state(padawan_id=None):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -296,6 +350,11 @@ def default_state(padawan_id=None):
         # (migrate бросает StateError при version > SCHEMA_VERSION).
         "book_open": None,     # None — не ответил; True/False — ответ падавана
         "book_asked": False,   # вопрос уже напечатан хотя бы раз
+        # Куда ушло сохранение прежней игры (start_over): путь к архиву или
+        # None у того, кто прежней игры не видел. Хранится, а не только
+        # печатается: первый экран называет его один раз, а найти свой
+        # прежний путь человек может захотеть и через месяц.
+        "previous_save": None,
     }
 
 
@@ -307,36 +366,204 @@ def corrupt_path(path):
     return Path(str(path) + ".corrupt")
 
 
+def _read_dict(path):
+    """Содержимое файла словарём либо None: файла нет или в нём не то."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def load(path=None):
     # Умолчание считается на вызове, а не на импорте: значение по
     # умолчанию у аргумента застыло бы навсегда и не увидело бы
     # JEDICODER_STATE_PATH.
     path = _target(path)
+    # Обычный случай — файл на месте и это новая игра — читается без замка,
+    # как и раньше. Всё остальное меняет диск или может застать чужую
+    # перемену на середине, поэтому идёт под замком:
+    #  - прежняя игра уходит в архив (start_over), и хук с командой,
+    #    встретившие её разом, не должны начать две новые игры;
+    #  - файла нет или он не читается — возможно, другой процесс в эту
+    #    секунду между переименованием прежнего файла и записью нового.
+    #    Поверивший пустоте получил бы игру без переноса и записал бы её
+    #    поверх настоящей, а «восстановление» унесло бы настоящую в сторону.
+    data = _read_dict(path)
+    if data is not None and not is_previous_game(data):
+        return migrate(data)
+    if not path.parent.is_dir():
+        # Нет и папки — нет ни игры, ни чужой перемены, и чтение не заводит
+        # папку ради замка.
+        return default_state()
+    with _locked(path):
+        return _load_under_lock(path)
+
+
+def _load_under_lock(path):
+    """Прочитать сохранение; замок состояния уже у вызывающего.
+
+    Сохранение прежней игры дальше этой функции не проходит: кто бы ни
+    встретил его первым — команда, хук, строка состояния, — получает новую
+    игру, а прежний файл уходит в архив (start_over). Дверь одна на всех,
+    поэтому и исход один.
+    """
     if not path.exists():
         return default_state()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return _recover(path)
-    if not isinstance(data, dict):
-        return _recover(path)
+    data = _read_dict(path)
+    if data is None:
+        data = _recover(path)
+        if data is None:
+            return default_state()
+    if is_previous_game(data):
+        return start_over(path, data)
     return migrate(data)
 
 
 def _recover(path):
+    """Испорченный файл — в сторону; вернуть резервную копию либо None."""
     try:
         path.replace(corrupt_path(path))
     except OSError:
         pass
     backup = backup_path(path)
+    return _read_dict(backup) if backup.exists() else None
+
+
+def is_previous_game(data):
+    """Писала ли это сохранение прежняя игра — до перестройки актов.
+
+    Только по прямому признаку: версия схемы числом ниже границы. Файл без
+    версии игра не писала никогда — он собран руками, и чей он, неизвестно;
+    такой читается как обычно, а не уезжает в архив по догадке.
+
+    Число — любое: правленое руками `3.0` — та же прежняя игра, и мимо
+    архива под видом новой она пройти не должна. bool числом не считается.
+    """
+    version = data.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, (int, float)):
+        return False
+    return version < REBUILT_GAME_SCHEMA
+
+
+ARCHIVE_MARK = ".arhiv-"
+
+
+def archive(path=None):
+    """Убрать сохранение в архив рядом; вернуть путь архива или None.
+
+    Один код на оба случая: `reset` по слову человека и прежняя игра при
+    первой встрече (start_over). Файл переименовывается, а не копируется:
+    содержимое остаётся до байта тем же. Резервная копия `.bak` едет следом
+    с тем же хвостом — рядом с новой игрой она подняла бы прежнюю при первом
+    же восстановлении.
+
+    В имени — дата и время по UTC. Занято — добавляются секунды, занято и
+    так — номер: архив не затирает архив никогда, сколько бы раз подряд ни
+    звали.
+
+    Основного файла нет, а копия есть (его унесло восстановление) — архивом
+    становится копия, и возвращается её путь. Нет ни того, ни другого — None.
+
+    Идёт под замком состояния: имя выбирается и занимается одним окном, и
+    хук не пишет в файл, который в эту секунду переименовывают.
+    """
+    path = _target(path)
+    with _locked(path):
+        return _archive_under_lock(path)
+
+
+def _archive_under_lock(path):
+    backup = backup_path(path)
+    now = time.gmtime()
+    second = time.strftime("%Y-%m-%d-%H%M%S", now)
+    tails = itertools.chain(
+        [time.strftime("%Y-%m-%d-%H%M", now), second],
+        ("{}-{}".format(second, number) for number in itertools.count(2)),
+    )
+    for tail in tails:
+        target = path.with_name(path.name + ARCHIVE_MARK + tail)
+        target_backup = Path(str(target) + ".bak")
+        if not target.exists() and not target_backup.exists():
+            break
+    moved = None
+    if path.exists():
+        os.replace(str(path), str(target))
+        moved = target
     if backup.exists():
-        try:
-            data = json.loads(backup.read_text(encoding="utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            data = None
-        if isinstance(data, dict):
-            return migrate(data)
-    return default_state()
+        os.replace(str(backup), str(target_backup))
+        moved = moved or target_backup
+    return moved
+
+
+def _carried_over(previous):
+    """Что переезжает из прежней игры в новую: всё, что не про прохождение.
+
+    Человек и его связь с ботом (`padawan_id`, `link_key`, `cohort`) — иначе
+    код от бота пришлось бы вводить заново, а приложение Голокрон показало
+    бы уже игравшему шаг первого запуска. Ответ про Книгу — вопрос задан
+    человеку, а не игре. Папка проекта — без неё сторож не стережёт файл с
+    паролями (#81); остальное в разделе проекта отвечало на вопросы прежних
+    актов.
+
+    Акты, ранг, приёмы, XP, штрафы, словарь, серия и очередь событий не
+    переезжают: это и есть прежний путь, он лежит в архиве целиком.
+
+    Значение не той формы не переезжает вовсе: сохранение правят руками, а
+    новая игра не должна начинаться с чужого мусора.
+    """
+    carried = {}
+    for key in ("padawan_id", "link_key", "cohort"):
+        value = previous.get(key)
+        if isinstance(value, str) and value:
+            carried[key] = value
+    if isinstance(previous.get("book_open"), bool):
+        carried["book_open"] = previous["book_open"]
+    if previous.get("book_asked") is True:
+        carried["book_asked"] = True
+    project = previous.get("project")
+    folder = project.get("path") if isinstance(project, dict) else None
+    if isinstance(folder, str) and folder:
+        carried["project"] = {"path": folder}
+    return carried
+
+
+def _has_something_to_lose(previous):
+    """Было ли в прежнем сохранении хоть что-то, о чём стоит сказать.
+
+    Сохранение мог завести и хук — на старте сессии, до первой команды.
+    Человеку, который в прежнюю игру не играл, строка «пройденное не
+    перешло» была бы неправдой.
+    """
+    return any(previous.get(key) for key in (
+        "acts", "xp", "dark_side", "lexicon_unlocked", "artifacts",
+    ))
+
+
+def start_over(path, previous):
+    """Прежняя игра — в архив, на её месте новая; вернуть новую.
+
+    Зовётся под замком состояния (_load_under_lock). Новое сохранение
+    пишется здесь же,
+    а не оставляется вызывающему: команда, которая только читает, иначе
+    оставила бы человека без файла, следующая начала бы игру уже без
+    переноса и без объяснения — молча.
+
+    Ровно один раз держится самим файлом: новое сохранение несёт версию
+    новой игры, и is_previous_game на нём больше не сработает.
+
+    Ошибка диска летит наверх как есть. Хук по своему закону промолчит и
+    ничего не запишет — прежний файл либо на месте, либо уже в архиве, и в
+    обоих случаях цел.
+    """
+    fresh = default_state()
+    fresh.update(_carried_over(previous))
+    where = archive(path)
+    fresh["previous_save"] = str(where) if where else None
+    if _has_something_to_lose(previous):
+        add_notice(fresh, NOTICE_GAME_REBUILT)
+    save(fresh, path)
+    return fresh
 
 
 def save(data, path=None):
@@ -402,6 +629,33 @@ def _release_lock(handle):
         pass
 
 
+# Замки, которые этот поток уже держит. flock не повторно-входим: второй
+# open того же файла в том же процессе встал бы в очередь за самим собой и
+# повис навсегда. С тех пор как load берёт замок сам (прежняя игра, пустое
+# место), вызов load или archive из тела update_state стал бы таким
+# зависанием — в хуке это остановленная сессия падавана.
+_held = threading.local()
+
+
+@contextlib.contextmanager
+def _locked(path):
+    """Замок состояния на время блока; уже взятый этим потоком — не берётся."""
+    key = os.path.abspath(str(path))
+    held = getattr(_held, "paths", None)
+    if held is None:
+        held = _held.paths = set()
+    if key in held:
+        yield
+        return
+    handle = _acquire_lock(path)
+    held.add(key)
+    try:
+        yield
+    finally:
+        held.discard(key)
+        _release_lock(handle)
+
+
 @contextlib.contextmanager
 def update_state(path=None):
     """Загрузить состояние, дать изменить, сохранить — одним окном под
@@ -409,13 +663,10 @@ def update_state(path=None):
     отсюда. Сохранение не происходит, если тело with подняло исключение.
     """
     target = _target(path)
-    handle = _acquire_lock(target)
-    try:
-        data = load(target)
+    with _locked(target):
+        data = _load_under_lock(target)
         yield data
         save(data, target)
-    finally:
-        _release_lock(handle)
 
 
 NESTED_DEFAULTS = ("streak", "first_try")
@@ -424,10 +675,9 @@ NESTED_DEFAULTS = ("streak", "first_try")
 def add_notice(data, key):
     """Поставить одноразовое сообщение падавану.
 
-    Список, а не одно поле: следующая миграция допишет своё, не затерев
+    Список, а не одно поле: следующее сообщение допишется, не затерев
     чужое ещё не показанное — молчаливая потеря сообщения и есть тот самый
-    дефект, ради которого механика заводится. Повтор не дублируется:
-    миграция крутится на каждом load, пока файл не переписан версией 2.
+    дефект, ради которого механика заводится. Повтор не дублируется.
     """
     notices = data.get("notices")
     if not isinstance(notices, list):
@@ -438,106 +688,14 @@ def add_notice(data, key):
     return data
 
 
-def _migrate_v1_to_v2(data):
-    """Снять ack-закрытие квеста 01-idea.
-
-    В версии 1 Акт 1 был заглушкой из одного ack-квеста, и 01-idea значил
-    «падаван подтвердил, что идея есть». В версии 2 тот же идентификатор
-    значит «research/IDEA.md написан и содержит три части формулы». Оставить
-    старое закрытие в силе — значит закрыть Акт 1 без единой строчки IDEA.md,
-    при том что следующий квест (02-one-evening) режет именно эту идею: это
-    ложный проход ровно того рода, ради которого игра меряет исход
-    exit-кодом, а не мнением модели или падавана о себе.
-
-    Закрытие без пометки acknowledged (то есть сделанное проверкой check.sh)
-    не трогаем: работа сделана по-настоящему, терять её нельзя ни при каком
-    повороте — это правило схемы миграций, а не только этого перехода.
-    """
-    act = (data.get("acts") or {}).get("1")
-    if not act:
-        return data
-    quest = (act.get("quests") or {}).get("01-idea")
-    if not quest or quest.get("acknowledged") is not True:
-        return data
-    quest["status"] = STATUS_REOPENED
-    quest.pop("acknowledged", None)
-    if act.get("status") == STATUS_DONE:
-        act["status"] = STATUS_REOPENED
-        act.pop("completed_at", None)
-        # rank — записанное поле, не производное: без пересчёта здесь падаван
-        # увидел бы на первом же status ранг «Искатель», выданный за Акт 1,
-        # который эта же миграция только что вернула в in_progress. rank_for
-        # смотрит только на acts, поэтому его можно звать до слияния с
-        # дефолтами, не дожидаясь остальной формы состояния.
-        data["rank"] = rank_for(data)
-        # Ровно здесь у падавана отбирается видимое: закрытый акт и ранг —
-        # у прошедшего дальше честно это два ранга сразу. Решение верное,
-        # но молчание превращает его в поломку игры на глазах человека.
-        # Ветка одна и та же не случайно: сообщение ставится там, где
-        # есть потеря, и не ставится там, где её нет.
-        add_notice(data, NOTICE_ACT1_REAL)
-    return data
-
-
-QUEST_RENAMES_V3 = (("1", "02-hutt-filter", "02-one-evening"),)
-
-
-def _migrate_v2_to_v3(data):
-    """Переименовать идентификатор квеста 02 Акта 1.
-
-    Прежний идентификатор нёс имя из франшизы, и холодный прогон 2026-08-06
-    замерил механизм дословно: игра печатает идентификатор, падаван набирает
-    его же, модель читает латинский слаг, узнаёт отсылку и восстанавливает
-    выпиленную метафору из собственных знаний. Слово прозвучало трижды при
-    нулевых вхождениях в поставке — вычистить контент оказалось недостаточно.
-
-    Почему версия поднимается, хотя двумя экранами выше (default_state,
-    book_open/book_asked) стоит комментарий, читающийся как запрет на бампы.
-    Различитель один: нужна ли функция миграции. Там дотягивались два плоских
-    ключа, и merged.update(data) плюс default_state() делали это без единой
-    строки кода — бамп не покупал ничего, а рисковал откатом. Здесь вложенный
-    ключ сам себя не переименует: NESTED_DEFAULTS содержит только streak и
-    first_try, acts в слияние не входит. Раз нужен код — нужен и страж версии:
-    безусловное переименование крутилось бы на каждом load вечно и не
-    оставляло бы отметки, по которой следующая миграция отличит «до» от
-    «после». И отказ при откате обязан быть громким: без бампа старый плагин
-    молча показал бы закрытый Акт 1 с неначатым квестом 02, а это ровно тот
-    противоречивый зелёный экран, дороже которого честный отказ.
-
-    add_notice не ставится намеренно: миграция ничего видимого не отбирает —
-    статус, попытки, статус акта, ранг и XP переезжают целиком. Сообщение
-    ставится там, где есть потеря, и не ставится там, где её нет.
-
-    Очередь pending_sync переименовывается вместе с состоянием: это аутбокс,
-    а не журнал, бот этих строк ещё не видел. Уже отправленные события лежат
-    в таблице events бота — другой репозиторий, отсюда их не переписать.
-    """
-    acts_map = data.get("acts")
-    if not isinstance(acts_map, dict):
-        acts_map = {}
-    for act_key, old_id, new_id in QUEST_RENAMES_V3:
-        act = acts_map.get(act_key)
-        if isinstance(act, dict):
-            quests = act.get("quests")
-            # Новый ключ уже на месте — старый не переезжает поверх него:
-            # иначе переименование затёрло бы работу, сделанную после
-            # обновления плагина.
-            if isinstance(quests, dict) and old_id in quests:
-                if new_id not in quests:
-                    quests[new_id] = quests[old_id]
-                del quests[old_id]
-        # Поле act у события не сверяется: все 38 идентификаторов квестов
-        # уникальны в пределах игры (прибито тестом), поэтому совпадения
-        # по quest достаточно, а лишняя сверка типа (1 против "1") дала бы
-        # непереименованное событие — то есть испорченную книгу — на ровном
-        # месте.
-        for event in data.get("pending_sync") or []:
-            if isinstance(event, dict) and event.get("quest") == old_id:
-                event["quest"] = new_id
-    return data
-
-
 def migrate(data):
+    """Дотянуть сохранение новой игры до текущей формы.
+
+    Сохранение прежней игры сюда не доходит: его уносит в архив _load, и
+    миграций через границу игр нет — прогресс не переносится (спека #75,
+    решение 7). Прежние шаги 1→2 и 2→3 правили акты прежней игры и ушли
+    вместе с ней.
+    """
     version = data.get("schema_version", 0)
     if version > SCHEMA_VERSION:
         raise StateError(
@@ -545,10 +703,6 @@ def migrate(data):
                 version, SCHEMA_VERSION
             )
         )
-    if version < 2:
-        data = _migrate_v1_to_v2(data)
-    if version < 3:
-        data = _migrate_v2_to_v3(data)
     merged = default_state()
     merged.update(data)
     for key in NESTED_DEFAULTS:

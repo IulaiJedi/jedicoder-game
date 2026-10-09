@@ -1,5 +1,14 @@
 """Сквозной тест Акта 4: обе ветки, той же дверью, что падаван, — через
 cli.py. GitHub сеется локально (update-ref), сервер — стаб ssh в PATH.
+
+Акт 4 выключен (ranks.MUTED_ACTS, спека #75): войти в него нельзя, значит и
+пройти его дверью падавана нельзя тоже. Файл не удалён и не переписан: он
+оживёт сам в тот день, когда номер уйдёт из MUTED_ACTS.
+
+Проверки самого акта при этом гоняются как прежде — они в
+tests/test_act4_checks.py и от входа в акт не зависят. Механику входа
+(развилка по пути деплоя, строка карты) держат юнит-тесты tests/test_cli.py
+под фикстурой `old_acts_open`.
 """
 import pytest
 
@@ -7,6 +16,11 @@ from test_act4_checks import add_github_remote, fake_ssh  # noqa: F401 — фи�
 from jedicoder import acts, cli, ranks, state as st
 
 ACT = 4
+
+pytestmark = pytest.mark.skipif(
+    ranks.is_muted(ACT),
+    reason="Акт 4 выключен (ranks.MUTED_ACTS): войти в него нельзя, пройти — тем более",
+)
 
 
 def run_cli(args, paths, capsys):
