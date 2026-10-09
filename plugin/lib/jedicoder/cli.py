@@ -282,6 +282,47 @@ def artifact_words(name):
     return ARTIFACT_WORDS.get(name)
 
 
+# Штраф словами человека, по типу из журнала. В памятке те же типы названы
+# рабочим языком (scroll.DARK_SIDE_TITLES): её читают без игры и позже, а
+# первый экран — в первый вечер, до слов «git» и «сервер под root».
+PENALTY_WORDS = {
+    st.DARK_ENV_STAGED: "файл с паролями едва не попал в сохранение",
+    st.DARK_RM_OUTSIDE_PROJECT: "удаление мимо папки проекта",
+    st.DARK_ROOT_LOGIN: "вход на сервер главным пользователем",
+    st.DARK_VAGUE_PROMPT: "запрос без подробностей",
+}
+
+
+def _penalty_lines(dark):
+    """Счёт штрафов на первом экране: что это и за что набралось.
+
+    Голое «Штрафы: 1» человек не читал, а модель на вопрос «за что?»
+    отвечала, что истории числа не знает (живой проход 2026-10-09): не
+    объяснять за игру ей велит скилл, а у игры объяснения не было.
+
+    Число стоит перед словами намеренно: строки складываются в счёт сверху,
+    а «— 2» после слов читалось бы как «дважды». Файл с паролями стоит двух
+    очков за один раз (debrief._dark_side).
+
+    Очки без записи в журнале и тип, которого эта версия не знает, идут
+    одной строкой: назвать их нечем, а выдать разницу за ноль нельзя.
+    """
+    points = dark["points"]
+    if not points:
+        return []
+    lines = ["Штрафы: {} — счёт промахов; очков не отнимают".format(points)]
+    unnamed = dark["unlogged"]
+    for row in dark["by_kind"]:
+        words = PENALTY_WORDS.get(row["kind"])
+        if words is None:
+            unnamed += row["points"]
+            continue
+        lines.append("  {} — {}".format(row["points"], words))
+    if unnamed:
+        lines.append("  {} — за что именно, игра не записала".format(unnamed))
+    return lines
+
+
 def render_status(data, project_exists, recipe):
     """Первый экран. `recipe` — рецепт выбранного типа продукта или None.
 
@@ -324,8 +365,7 @@ def render_status(data, project_exists, recipe):
     # Тёмная сторона на нуле вдобавок называет наказание раньше, чем падаван
     # успел что-то сделать; она обязана появляться вместе с первым очком, и
     # тогда её видно.
-    if data.get("dark_side", 0):
-        lines.append("Штрафы: {}".format(data["dark_side"]))
+    lines += _penalty_lines(debrief.facts(data)["dark_side"])
     streak = data.get("streak", {})
     if streak.get("current", 0) or streak.get("best", 0):
         # «Сохранений», а не «коммитов»: эта строка печатается на самом

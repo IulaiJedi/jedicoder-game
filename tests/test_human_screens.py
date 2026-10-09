@@ -127,6 +127,31 @@ def test_counters_are_explained_where_they_first_appear(game, project):
     assert machine_words(out) == []
 
 
+def _vague_request(game, monkeypatch):
+    """Штраф начисляет хук — та же дверь, которой он приходит к человеку."""
+    sys.path.insert(0, str(HOOKS))
+    import vague_prompt
+
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(game.state_path))
+    assert vague_prompt.react({"prompt": "сделай мне сайт"}) is not None
+
+
+def test_penalties_say_what_they_are_and_what_they_are_for(game, monkeypatch):
+    """Число без истории человек не читает (живой проход 2026-10-09).
+
+    «Штрафы: 1» стояло на первом экране голым, а на вопрос «за что?» модель
+    отвечала, что истории этого числа не знает: правило не объяснять за
+    игру у неё есть, а объяснения у игры не было.
+    """
+    assert game("status")[0] == 0
+    _vague_request(game, monkeypatch)
+    _, out = game("status")
+    lines = out.splitlines()
+    at = lines.index("Штрафы: 1 — счёт промахов; очков не отнимают")
+    assert lines[at + 1] == "  1 — запрос без подробностей"
+    assert machine_words(out) == []
+
+
 def test_lost_folder_is_named_without_a_command(game, project):
     proj = project()
     assert game("project", "path", str(proj))[0] == 0

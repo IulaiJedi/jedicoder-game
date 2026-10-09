@@ -1626,6 +1626,57 @@ def test_first_screen_shows_dark_side_once_earned(paths, capsys):
     assert "Штрафы: 1" in out
 
 
+def _penalty_block(out):
+    lines = out.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith("Штрафы:"))
+    block = [lines[at]]
+    for line in lines[at + 1:]:
+        if not line.startswith("  "):
+            break
+        block.append(line)
+    return block
+
+
+def test_first_screen_breaks_penalties_down_by_what_happened(paths, capsys):
+    """Строки под счётом складываются в него: число стоит перед словами.
+
+    Файл с паролями стоит двух очков за один раз — «— 2» после слов читалось
+    бы как «дважды».
+    """
+    data = st.default_state("local-test")
+    data["dark_side"] = 3
+    st.record_dark_side(data, st.DARK_VAGUE_PROMPT)
+    st.record_dark_side(data, st.DARK_ENV_STAGED, count=2)
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert _penalty_block(out) == [
+        "Штрафы: 3 — счёт промахов; очков не отнимают",
+        "  2 — файл с паролями едва не попал в сохранение",
+        "  1 — запрос без подробностей",
+    ]
+
+
+def test_first_screen_does_not_pass_unrecorded_penalties_for_zero(paths, capsys):
+    """Очко без записи и очко незнакомого типа названы одной строкой."""
+    data = st.default_state("local-test")
+    data["dark_side"] = 4
+    st.record_dark_side(data, st.DARK_RM_OUTSIDE_PROJECT)
+    st.record_dark_side(data, "from_a_newer_plugin")
+    st.save(data, paths["state_path"])
+    code, out = run(["status"], paths, capsys)
+    assert code == 0
+    assert _penalty_block(out) == [
+        "Штрафы: 4 — счёт промахов; очков не отнимают",
+        "  1 — удаление мимо папки проекта",
+        "  3 — за что именно, игра не записала",
+    ]
+
+
+def test_every_penalty_kind_has_words_for_the_first_screen():
+    assert set(cli.PENALTY_WORDS) == set(st.DARK_SIDE_KINDS)
+
+
 def test_first_screen_names_both_costs_when_no_path(paths, capsys):
     """Пути нет вовсе: первый экран называет следствие и лечение.
 
