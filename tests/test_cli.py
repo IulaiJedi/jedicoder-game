@@ -118,7 +118,7 @@ def test_status_shows_rank_and_counters_after_progress(paths, capsys):
     assert "Искатель" in out
     assert "55" in out
     assert "Штрафы: 2" in out
-    assert "plan" in out
+    assert "спланировать работу" in out
 
 
 def test_default_roots_exist_on_disk():
@@ -309,7 +309,7 @@ def test_enter_act_persists(paths, capsys):
     code, out = run(["enter", "1"], paths, capsys)
     assert code == 0
     assert "Знакомство" in out
-    assert "brainstorm" in out
+    assert "Приём этого акта помогает найти идею" in out
     data = st.load(paths["state_path"])
     assert data["acts"]["1"]["status"] == "in_progress"
 
@@ -1401,7 +1401,7 @@ def test_enter_act4_with_deploy_starts_and_grants_cso(paths, capsys, old_acts_op
     code, out = run(["enter", "4"], paths, capsys)
     assert code == 0
     assert "Щит" in out
-    assert "cso" in out
+    assert "Приём этого акта помогает проверить ключи" in out
     data = st.load(paths["state_path"])
     assert data["acts"]["4"]["status"] == "in_progress"
     assert "cso" in data["artifacts"]
@@ -1856,7 +1856,7 @@ def test_status_names_penalties_and_moves(paths, capsys):
     code, out = run(["status"], paths, capsys)
     assert code == 0
     assert "Штрафы: 1" in out
-    assert "Приёмы: /jedicoder:brainstorm" in out
+    assert "Приёмы: найти идею. Скажи Claude: «помоги найти идею»" in out
     assert "Тёмная сторона" not in out and "Артефакт" not in out
 
 
@@ -1917,7 +1917,7 @@ def test_enter_at_seeker_says_the_book_sentence_and_asks_once(paths, capsys, mon
 def test_enter_names_the_move_not_the_artifact(paths, capsys):
     code, out = run(["enter", "1"], paths, capsys)
     assert code == 0
-    assert "Приём этого акта: /jedicoder:brainstorm" in out
+    assert "Приём этого акта помогает найти идею. Скажи Claude: «помоги найти идею»." in out
 
 
 def test_enter_without_track_asks_in_plain_words(paths, capsys, monkeypatch):

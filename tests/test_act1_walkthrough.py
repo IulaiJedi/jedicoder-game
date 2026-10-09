@@ -132,7 +132,7 @@ def test_enter_gives_brainstorm_and_lists_five_quests(game):
     code, out = game("enter", "1")
     assert code == 0
     assert "Акт 1. Знакомство — начат." in out
-    assert "Приём этого акта: /jedicoder:brainstorm" in out
+    assert "Приём этого акта помогает найти идею. Скажи Claude: «помоги найти идею»." in out
     assert "Ранг за акт: Искатель." in out
     assert "Квесты акта (5):" in out
     # Человеку — номер, название и задание; коды квестов знает скилл акта.

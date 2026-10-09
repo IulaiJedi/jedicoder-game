@@ -293,13 +293,18 @@ def test_login_names_the_mode_and_the_english_warning(content_root):
     при первом запуске он по-английски спрашивает согласия. Человек, которого
     об этом не предупредили, видит красное английское окно и закрывает его.
 
-    Дословных подписей кнопок узел не называет: они не подтверждены.
+    Замер живого экрана 2026-10-09 (Claude Code 2.1.295): вопросов два — про
+    папку и про режим, — и в обоих по умолчанию выбрано «No, exit». Поэтому
+    узел называет клавиши, а не «выбери согласие»: просто Enter закрывает
+    Claude Code. И игра начинается сама — команду набирают только запасным путём.
     """
     text = lint_content.visible_text(shipped_nodes(content_root)[LOGIN_NODE].body)
     assert "режиме без вопросов" in text
     assert "по-английски" in text
-    assert "согласи" in text
-    assert "папке проекта" in text
+    assert "папку проекта" in text
+    assert "стрелку вниз и Enter" in text
+    assert "«No, exit»" in text
+    assert "игра начнётся сама" in text
 
 
 def test_open_asks_for_the_key_right_after_the_window(content_root):

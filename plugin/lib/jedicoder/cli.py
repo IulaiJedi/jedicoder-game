@@ -264,6 +264,24 @@ def artifact_command(name):
     return "/jedicoder:{}".format(name)
 
 
+# Приём словами: что он делает и что сказать, чтобы Claude его применил.
+# Человек команду не набирает — живой прогон 2026-10-09: «поможет приём
+# /jedicoder:brainstorm» новичок прочёл и не понял, что с этим делать.
+# Команду знает модель (скилл акта); на экране — слова.
+ARTIFACT_WORDS = {
+    "brainstorm": ("найти идею", "помоги найти идею"),
+    "plan": ("спланировать работу", "помоги составить план"),
+    "investigate": ("разобраться в поломке", "помоги разобраться, почему сломалось"),
+    "cso": ("проверить ключи", "проверь, не утекают ли ключи"),
+    "deploy": ("выложить продукт", "помоги выложить"),
+}
+
+
+def artifact_words(name):
+    """(что делает, что сказать) или None — у приёма без записи."""
+    return ARTIFACT_WORDS.get(name)
+
+
 def render_status(data, project_exists, recipe):
     """Первый экран. `recipe` — рецепт выбранного типа продукта или None.
 
@@ -398,10 +416,18 @@ def render_status(data, project_exists, recipe):
         if isinstance(name, str)
     ]
     if artifacts:
-        tail_lines.append(
-            "Приёмы: {} — готовые способы работы, каждый зовётся своей "
-            "командой".format(", ".join(artifact_command(name) for name in artifacts))
-        )
+        worded = [artifact_words(name) for name in artifacts]
+        if all(worded):
+            tail_lines.append(
+                "Приёмы: {}. Скажи Claude: «{}» — он применит приём.".format(
+                    ", ".join(does for does, _ in worded), worded[-1][1],
+                )
+            )
+        else:
+            tail_lines.append(
+                "Приёмы: {} — готовые способы работы, каждый зовётся своей "
+                "командой".format(", ".join(artifact_command(name) for name in artifacts))
+            )
     # Тот же довод, что у остальных счётчиков: нуль молчит. Появившееся число
     # объясняется в той же строке тем, что падаван уже видел, — карточкой
     # «✦ Новое слово», которую печатает хук словаря.
@@ -958,10 +984,14 @@ def _cmd_enter(args, state_path, content_root, quests_root):
     _print_quest_list(data, act, content_root)
     print("")
     print(_act_rank_line(data, info["rank"]))
-    print(
-        "Приём этого акта: {} — готовый способ работы, зовётся этой "
-        "командой.".format(artifact_command(info["artifact"]))
-    )
+    words = artifact_words(info["artifact"])
+    if words:
+        print("Приём этого акта помогает {}. Скажи Claude: «{}».".format(*words))
+    else:
+        print(
+            "Приём этого акта: {} — готовый способ работы, зовётся этой "
+            "командой.".format(artifact_command(info["artifact"]))
+        )
     if inside_golokron or not past_first_rank:
         # Книгу показывает Сцена справа; ни ссылки, ни вопроса, ни вкладки.
         # Юнлингу — по той же причине, что и флаг выше: до первого ранга

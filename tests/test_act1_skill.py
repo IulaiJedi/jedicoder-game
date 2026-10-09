@@ -193,3 +193,14 @@ def test_rewind_menu_is_named_as_the_person_will_see_it(skill):
                   "Restore code", "Never mind"):
         assert "«{}»".format(label) in quest, label
     assert "`/rewind`" in quest
+
+
+def test_rewind_menu_says_which_keys_to_press(skill):
+    """Замер живого меню 2026-10-09 (Claude Code 2.1.295): курсор списка стоит
+    на строке «(current)», а не на запросе; во втором окне выбран первый пункт,
+    «Restore code» — третий. Проверено руками: вверх до запроса, Enter, два раза
+    вниз, Enter — файл вернулся. Без клавиш новичок застрянет."""
+    quest = " ".join(section(skill, "Квест 05").split())
+    assert "Стрелкой вверх" in quest
+    assert "стрелку вниз два раза" in quest
+    assert "Interrupted" in quest
