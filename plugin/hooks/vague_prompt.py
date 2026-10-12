@@ -89,10 +89,8 @@ def react(payload):
         _shared.add_dark_side(state, DARK_VAGUE, st.DARK_VAGUE_PROMPT)
         invite = _shared.magistr_invite(state)
     message = (
-        "Это заказ по настроению, а не задача: ИИ достроит недосказанное "
-        "из среднего по интернету. Назови боль, того, для кого решаешь, и "
-        "что должно заработать сегодня. Или позови /jedicoder:brainstorm — "
-        "он поможет нарезать."
+        _shared.penalty_line(DARK_VAGUE, st.DARK_VAGUE_PROMPT)
+        + " Claude возьмётся за работу, но недосказанное решит сам."
     )
     extra = _shared.rule_text(_shared.plugin_root(), "vague-prompt")
     if extra:

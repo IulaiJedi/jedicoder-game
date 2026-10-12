@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 .claude/worktrees/
 .superpowers/
+
+# Движок Claude Code кладёт это сам, когда грузит плагин с модулем из папки
+plugin/tsconfig.json
+plugin/.claude-plugin/types/

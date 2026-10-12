@@ -78,7 +78,7 @@ def test_subcommands_declared():
     assert cli.SUBCOMMANDS == (
         "status", "contract", "enter", "check", "seen", "ack", "project", "track",
         "artifact", "debrief", "scroll", "link", "sync", "finale", "book",
-        "root", "reset", "recipe",
+        "root", "reset", "recipe", "face", "tools", "tool",
     )
 
 
@@ -2041,7 +2041,9 @@ def test_next_step_names_the_open_quest_with_its_title(paths, capsys, project):
     assert run(["enter", "1"], paths, capsys)[0] == 0
     _, out = run(["status"], paths, capsys)
     assert "Что дальше: квест «Папка» — Акт 1 «Знакомство»." in out
-    assert "  Назови папку своего проекта." in out
+    # Папка названа до входа в акт: просить её снова строка не вправе (#91).
+    assert "  Назови папку своего проекта." not in out
+    assert "  Папка названа. Дальше — проверка квеста." in out
 
     for quest_id in SCRIPTED:
         if quest_id == WORDS_FIRST:

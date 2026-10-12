@@ -266,9 +266,9 @@ def react(payload):
             # имеет право на напоминание.
             fresh.pop("commit_nag_left", None)
             _remember_head(fresh, project_dir, head)
-        return {"systemMessage": "Серия коммитов: {} (лучшая {}).".format(
+        return {"systemMessage": st.streak_line(
             streak.get("current", 0), streak.get("best", 0)
-        )}
+        ) + "."}
 
     left = int(state.get("commit_nag_left", 0) or 0)
     if left > 0:
@@ -282,8 +282,9 @@ def react(payload):
     with _shared.update_state() as fresh:
         fresh["commit_nag_left"] = QUIET_CALLS
     return {"systemMessage": (
-        "Ты давно не сохранялся: изменённых файлов уже много, а откатиться "
-        "будет некуда. Сделай коммит — это точка возврата, а не отчётность."
+        "Изменённых файлов уже много, а сохранения давно не было. Попроси "
+        "Claude сохранить сделанное: будет куда вернуться, если что-то "
+        "сломается."
     )}
 
 

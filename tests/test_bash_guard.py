@@ -293,7 +293,7 @@ def test_magistr_invite_appears_at_threshold(project, hook_state):
     hook_state(project={"path": str(proj)}, dark_side=4)
 
     out = bash_guard.decide(payload("git add .env", proj))
-    assert "/jedicoder:magistr" in out["systemMessage"]
+    assert "«позови Магистра»" in out["systemMessage"]
 
 
 def test_non_bash_tool_is_ignored(tmp_path, hook_state):

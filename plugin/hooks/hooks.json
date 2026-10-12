@@ -1,5 +1,6 @@
 {
-  "description": "Jedicoder: корень плагина и папка проекта из запуска (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit) и серия коммитов (PostToolUse)",
+  "description": "Jedicoder: корень плагина и папка проекта из запуска (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit) и серия коммитов (PostToolUse); модуль face.tsx рисует полосу «Что дальше» над полем ввода",
+  "modules": ["./face.tsx"],
   "hooks": {
     "SessionStart": [
       {

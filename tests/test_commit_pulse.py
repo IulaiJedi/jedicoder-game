@@ -163,7 +163,7 @@ def test_reminder_fires_over_threshold(project, hook_state):
         (proj / "f{}.txt".format(i)).write_text("x", encoding="utf-8")
     out = commit_pulse.react(payload("ls", proj))
     assert out is not None
-    assert "коммит" in out["systemMessage"].lower()
+    assert "сохранить сделанное" in out["systemMessage"]
 
 
 def test_reminder_silent_under_threshold(project, hook_state):

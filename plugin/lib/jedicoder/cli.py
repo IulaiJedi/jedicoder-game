@@ -4,6 +4,7 @@
 Скиллы — markdown, поэтому вся логика вызывается отсюда одной командой,
 а скилл только пересказывает вывод падавану по правилам контракта.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -13,13 +14,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jedicoder import acts, content, contract, debrief, frontmatter, quests, ranks, scroll, sync  # noqa: E402
+from jedicoder import acts, content, contract, debrief, frontmatter, quests, ranks, scroll, sync, tools  # noqa: E402
 from jedicoder import state as st  # noqa: E402
 
 SUBCOMMANDS = (
     "status", "contract", "enter", "check", "seen", "ack", "project", "track",
     "artifact", "debrief", "scroll", "link", "sync", "finale", "book", "root",
-    "reset", "recipe",
+    "reset", "recipe", "face", "tools", "tool",
 )
 
 # Адрес сайта: на нём живёт Книга — разворот главы в браузере. Переменная
@@ -282,15 +283,9 @@ def artifact_words(name):
     return ARTIFACT_WORDS.get(name)
 
 
-# Штраф словами человека, по типу из журнала. В памятке те же типы названы
-# рабочим языком (scroll.DARK_SIDE_TITLES): её читают без игры и позже, а
-# первый экран — в первый вечер, до слов «git» и «сервер под root».
-PENALTY_WORDS = {
-    st.DARK_ENV_STAGED: "файл с паролями едва не попал в сохранение",
-    st.DARK_RM_OUTSIDE_PROJECT: "удаление мимо папки проекта",
-    st.DARK_ROOT_LOGIN: "вход на сервер главным пользователем",
-    st.DARK_VAGUE_PROMPT: "запрос без подробностей",
-}
+# Штраф словами человека, по типу из журнала. Те же слова говорит хук в
+# момент начисления, поэтому перечень один — в state.py.
+PENALTY_WORDS = st.DARK_SIDE_WORDS
 
 
 def _penalty_lines(dark):
@@ -368,22 +363,12 @@ def render_status(data, project_exists, recipe):
     lines += _penalty_lines(debrief.facts(data)["dark_side"])
     streak = data.get("streak", {})
     if streak.get("current", 0) or streak.get("best", 0):
-        # «Сохранений», а не «коммитов»: эта строка печатается на самом
-        # первом экране, до любого акта, а слово «коммит» падаван получает
-        # только в Акте 2. Игра сама называет коммит точкой сохранения —
-        # значит на первом экране у счётчика есть честное имя, которое ничего
-        # не должно объяснять заранее. Регрессия закрыта тестом первого
+        # Слова — state.streak_line: ту же строку печатает хук после
+        # сохранения. Регрессия «Серия коммитов» закрыта тестом первого
         # экрана в tests/test_cli.py: линтер контента сюда не дотягивается.
-        #
-        # «Лучшая» — только когда она отличается: «1 (лучшая 1)» читалось
-        # как повтор (второй прогон 2026-10-08).
-        current, best = streak.get("current", 0), streak.get("best", 0)
-        lines.append(
-            "Серия сохранений: {}{} — дней подряд, когда работа была "
-            "сохранена".format(
-                current, " (лучшая {})".format(best) if best != current else ""
-            )
-        )
+        lines.append(st.streak_line(
+            streak.get("current", 0), streak.get("best", 0)
+        ))
     lines.append("")
     lines += _project_lines(data, project_exists)
     lines.append("")
@@ -524,6 +509,55 @@ def _quest_tasks(content_root):
     return tasks
 
 
+#: Квест «Папка»: его действие — назвать папку проекта (`project path`).
+FOLDER_QUEST = (1, "01-folder")
+
+#: Вторая форма строки «Что дальше»: действие квеста сделано, а проверка ещё
+#: не шла (#91). Задание в повелительном наклонении («Назови папку…») здесь
+#: просило бы уже сделанное. Слова живут рядом с остальными словами первого
+#: экрана, а не в `quest_tasks` акта: это не задание квеста, а состояние
+#: прохождения, и знает его только сохранение.
+STEP_FOLDER_NAMED = "Папка названа. Дальше — проверка квеста."
+STEP_WORDS_TAKEN = "Рассказ записан. Дальше — проверка квеста."
+
+
+def _folder_named(data):
+    """Записанная папка проекта, если её назвал сам человек; иначе None.
+
+    Сверяется сама папка, а не флажок: `project path` пишет `path` и
+    `path_named` разом, а приложение на старте сессии — только `path`.
+    Записали потом другую — названной она не считается.
+    """
+    recorded = _project_path(data)
+    if recorded is None or data["project"].get("path_named") != recorded:
+        return None
+    return recorded
+
+
+def _action_done(data, act, quest_id):
+    """Вторая форма задания — или None, когда действие квеста ещё не сделано.
+
+    Только там, где игра знает это из сохранения: папка названа человеком;
+    рассказ записан и не стёрт несошедшейся проверкой. Рассказ читает
+    `quests.seen` — тот же, по которому проверка решает, идти ли ей.
+    """
+    if (act, quest_id) == FOLDER_QUEST:
+        return STEP_FOLDER_NAMED if _folder_named(data) else None
+    if acts.needs_words(act, quest_id):
+        return STEP_WORDS_TAKEN if quests.seen(data, act, quest_id) else None
+    return None
+
+
+#: Подписи всплывающих сообщений Лица (#91). Модуль слов не держит: он
+#: сравнивает два снимка и показывает подпись из нового как получил. Без
+#: точки: это подпись, а не фраза.
+TOAST_QUEST = "Квест закрыт"
+
+#: Строка о новом ранге. Читателей два, и слова у них одни: экран закрытия
+#: акта (с точкой) и подпись всплывающего Лица (без неё).
+RANK_NEW = "Новый ранг: {}"
+
+
 def quest_name(act, quest_id, quest_titles):
     """Квест так, как его зовёт человек: «Папка», а не `01-folder`.
 
@@ -534,24 +568,34 @@ def quest_name(act, quest_id, quest_titles):
     return "«{}»".format(title) if title else quest_id
 
 
-def render_next_step(data, quest_titles, quest_tasks=None):
-    """Последние строки первого экрана: что делать дальше. Одно, не три.
+#: Слово, которым человек начинает акт (#94). Читателей два, и слово у них
+#: одно: вторая строка «Что дальше» называет его в кавычках, а Лицо ставит
+#: его в поле ввода подсказкой — поле `say` снимка. Написать слово второй раз
+#: в другом месте значит дать строке и подсказке разойтись.
+SAY_START = "начинаем"
+STEP_SAY = "Скажи Claude: «{}»."
 
-    Новичок написал «сложно везде» (спека #75): первый экран называл ранг,
-    папку, карту из пяти актов и приёмы — и не говорил, с чего начать. Шаг
-    считается из того же реестра, что и карта: ближайший незакрытый акт из
-    играбельных, в нём — первый незакрытый квест.
+#: Где человек на пути — виды ответа `_next_position`.
+_AT_ACT_START = "act_start"
+_AT_QUEST = "quest"
+_AT_NOTHING = "nothing"
 
-    `quest_titles` — {(акт, квест): подпись}; читает вызывающий, печать
-    остаётся чистой функцией. Пустой список — сказать нечего: состав акта
-    ждёт выбора падавана, и об этом уже спросила строка карты.
 
-    Вторая строка — человеку и словами: что сделать, а не какую ручку
-    дёрнуть (#83). `enter 1` новичок читал как «нажми Enter и 1», `ack` —
-    как слово ни на одном знакомом языке. Ручки модель берёт из скилла.
-    `quest_tasks` — {(акт, квест): задание}; нет задания — нет и строки.
+def _next_position(data):
+    """Где человек на пути: (вид, акт, что именно).
+
+    None — все играбельные акты закрыты.
+
+    `_AT_ACT_START` — ближайший незакрытый акт ещё не начат; третье — список
+    его квестов. `_AT_QUEST` — акт идёт; третье — первый незакрытый квест.
+    `_AT_NOTHING` — сказать нечего: состав акта ждёт выбора падавана
+    («трек не выбран», «путь не назван») или в идущем акте всё закрыто.
+
+    Читателей два — строка «Что дальше» и фраза для поля ввода, — и шаг они
+    обязаны назвать один: поэтому он считается здесь, один раз. Из того же
+    реестра, что и карта: ближайший незакрытый акт из играбельных, в нём —
+    первый незакрытый квест.
     """
-    quest_tasks = quest_tasks or {}
     acts_state = data.get("acts")
     acts_state = acts_state if isinstance(acts_state, dict) else {}
     for number in ranks.playable_acts():
@@ -560,12 +604,13 @@ def render_next_step(data, quest_titles, quest_tasks=None):
         status = entry.get("status")
         if status == ranks.STATUS_DONE:
             continue
-        title = ranks.ACTS[number]["title"]
         try:
             ids = acts.quest_ids(number, acts.branch_of(data, number))
         except acts.UnknownActError:
             # Сюда же попадают «трек не выбран» и «путь не назван».
-            return []
+            return (_AT_NOTHING, number, None)
+        if status != ranks.STATUS_IN_PROGRESS:
+            return (_AT_ACT_START, number, ids)
         # Закрытые квесты читаются из уже проверенной записи, а не через
         # acts.next_quest: тот верит форме сохранения, а сохранение правят
         # руками, и первый экран обязан это пережить.
@@ -577,21 +622,66 @@ def render_next_step(data, quest_titles, quest_tasks=None):
                      and recorded[candidate].get("status") == ranks.STATUS_DONE)),
             None,
         )
-        if status != ranks.STATUS_IN_PROGRESS:
+        if quest_id is None:
+            return (_AT_NOTHING, number, None)
+        return (_AT_QUEST, number, quest_id)
+    return None
+
+
+def phrase_to_say(data):
+    """Фраза, которую игра предлагает сказать, — или пустая строка (#94).
+
+    Одна на всю игру: слово, которым начинают акт, и только пока акт не
+    начат — там же, где его называет строка «Что дальше». На вопросы квестов
+    человек отвечает сам: готовый ответ в поле ввода проходил квест за него.
+    """
+    position = _next_position(data)
+    if position is not None and position[0] == _AT_ACT_START:
+        return SAY_START
+    return ""
+
+
+def render_next_step(data, quest_titles, quest_tasks=None):
+    """Последние строки первого экрана: что делать дальше. Одно, не три.
+
+    Новичок написал «сложно везде» (спека #75): первый экран называл ранг,
+    папку, карту из пяти актов и приёмы — и не говорил, с чего начать. Где
+    человек на пути, считает `_next_position`.
+
+    `quest_titles` — {(акт, квест): подпись}; читает вызывающий, печать
+    остаётся чистой функцией. Пустой список — сказать нечего: состав акта
+    ждёт выбора падавана, и об этом уже спросила строка карты.
+
+    Вторая строка — человеку и словами: что сделать, а не какую ручку
+    дёрнуть (#83). `enter 1` новичок читал как «нажми Enter и 1», `ack` —
+    как слово ни на одном знакомом языке. Ручки модель берёт из скилла.
+    `quest_tasks` — {(акт, квест): задание}; нет задания — нет и строки.
+
+    У второй строки две формы (#91). Действие квеста сделано, а проверка ещё
+    не шла — задание заменяет строка из `_action_done`: Полоса не просит уже
+    сделанное.
+    """
+    quest_tasks = quest_tasks or {}
+    position = _next_position(data)
+    if position is not None:
+        kind, number, what = position
+        title = ranks.ACTS[number]["title"]
+        if kind == _AT_ACT_START:
             return [
                 "Что дальше: начать Акт {} «{}» — квестов в нём {}.".format(
-                    number, title, len(ids)
+                    number, title, len(what)
                 ),
-                "  Скажи Claude: «начинаем».",
+                "  " + STEP_SAY.format(SAY_START),
             ]
-        if quest_id is None:
+        if kind != _AT_QUEST:
             return []
         step = [
             "Что дальше: квест {} — Акт {} «{}».".format(
-                quest_name(number, quest_id, quest_titles), number, title
+                quest_name(number, what, quest_titles), number, title
             ),
         ]
-        task = quest_tasks.get((number, quest_id))
+        task = (_action_done(data, number, what)
+                or quest_tasks.get((number, what)))
         if task:
             step.append("  {}".format(task))
         return step
@@ -694,12 +784,69 @@ def _cmd_status(args, state_path, content_root, quests_root):
     return 0
 
 
+#: `contract --section` — контракт разделом системного промпта, для Лица (#92).
+CONTRACT_SECTION = "--section"
+
+
+def contract_section(data, content_root):
+    """Текст раздела системного промпта с контрактом — или пусто. Диск не пишет.
+
+    `data` — сохранение, прочитанное через `state.peek`, или None. Раздел
+    берёт модуль Лица в любой Игровой сессии, а отпечаток раздела едет в
+    снимке после каждого хода, поэтому `_load` здесь не годится: он заводит
+    файл, чинит испорченное и уносит в архив прежнюю игру. Читает вызывающий,
+    и один раз: отпечаток в снимке и сам снимок — от одного сохранения.
+
+    Раздел есть, только когда игра знает режим разрешений. Системный промпт
+    сессии застывает на первом запросе человека (замер 2026-10-10, Claude
+    Code 2.1.296: что модуль отвечает позже, до модели не доходит). Раздел
+    со строкой «режим неизвестен» остался бы таким до конца сессии, и первый
+    квест не сказал бы человеку правду о режиме (#87). Режима нет у того,
+    кто ещё не играл: сохранение заводит первая команда игры. Без раздела
+    модель грузит контракт командой — уже после неё, с известным режимом.
+    Сохранения нет или оно не читается — раздела нет по той же причине.
+
+    Закон лица: любая ошибка — пусто, раздела нет. О поломке контента или
+    паспорта скажет команда `contract`, которую модель позовёт сама.
+    """
+    try:
+        mode = st.permission_mode(data)
+        if data is None or mode is None:
+            return ""
+        text = contract.render(
+            contract.load_behavior(content_root), data.get("passport"),
+            contract.mode_directive(mode),
+        )
+        return contract.section(text)
+    except Exception:
+        return ""
+
+
+def _cmd_contract_section(state_path, content_root):
+    """Напечатать раздел одной строкой JSON: `stamp` и `text`. Пусто — код 1.
+
+    Только ASCII, как у снимка: локаль терминала, из которого модуль позвал
+    команду, текст не уронит и не испортит.
+    """
+    try:
+        data = st.peek(state_path)
+    except Exception:
+        data = None
+    text = contract_section(data, content_root)
+    if not text:
+        return 1
+    print(json.dumps({"stamp": contract.stamp(text), "text": text}))
+    return 0
+
+
 def _cmd_contract(args, state_path, content_root, quests_root):
     """Контракт — первая команда каждого скилла.
 
     Поэтому она не имеет права упасть трейсбеком: падаван увидел бы
     FileNotFoundError вместо игры и не понял бы, что делать.
     """
+    if CONTRACT_SECTION in args:
+        return _cmd_contract_section(state_path, content_root)
     data = _load(state_path)
     try:
         body = contract.load_behavior(content_root)
@@ -1109,7 +1256,7 @@ def _maybe_close_act(state, act, state_path):
     # непрерывной цепочке закрытых актов, и при пропущенном предыдущем акте
     # эти два значения расходятся. Игра не должна называть ранг, которого нет.
     rank = state.get("rank", st.RANK_YOUNGLING)
-    print("Новый ранг: {}.".format(ranks.RANK_TITLES.get(rank, rank)))
+    print(RANK_NEW.format(ranks.RANK_TITLES.get(rank, rank)) + ".")
     if act == ranks.FINAL_ACT:
         # Последний играбельный акт закрыт — это и есть конец игры. Молчание
         # здесь читалось бы как «игра сломалась»: падаван закрыл акт, дальше
@@ -1215,10 +1362,9 @@ def _env_for(data, act):
     recorded = _project_path(data)
     if recorded is not None:
         env["JEDICODER_PROJECT_PATH"] = recorded
-        # Папку назвал сам человек (`project path`), а не приложение на
-        # старте сессии. Сверяется сама папка, а не флажок: записали потом
-        # другую — названной она не считается.
-        if project.get("path_named") == recorded:
+        # Папку назвал сам человек, а не приложение на старте сессии; как
+        # это сверяется — `_folder_named`.
+        if _folder_named(data):
             env["JEDICODER_PROJECT_NAMED"] = "yes"
     has_db = project.get("has_db")
     if has_db is True:
@@ -2743,6 +2889,307 @@ def _cmd_book(args, state_path, content_root, quests_root):
     return 0
 
 
+#: Флаги снимка. Их набирает модуль Лица, человек их не видит.
+FACE_CWD = "--cwd"
+FACE_CALLED = "--called"
+
+
+def _face_args(args):
+    """Разобрать вызов снимка: (папка сессии или None, позвана ли игра).
+
+    Незнакомое пропускается молча, `--cwd` без значения — папки нет. Модуль
+    и команда едут одним выпуском, но кэш плагина обновляется не разом с
+    открытой сессией: модуль новее команды не должен остаться без Полосы
+    из-за флага, которого команда ещё не знает.
+    """
+    cwd = None
+    called = False
+    rest = iter(args)
+    for arg in rest:
+        if arg == FACE_CALLED:
+            called = True
+        elif arg == FACE_CWD:
+            value = next(rest, None)
+            if value == FACE_CALLED:
+                # Папку не передали, а следующий флаг — не папка.
+                called = True
+            elif value and not value.startswith("--"):
+                cwd = value
+    return cwd, called
+
+
+def _inside_project(data, cwd):
+    """Открыта ли сессия в записанной папке проекта или внутри неё."""
+    project = _project_path(data)
+    if project is None or not cwd:
+        return False
+    # Относительный путь в сохранении — правка руками: от какой папки его
+    # считать, неизвестно, и совпал бы он с любой сессией.
+    if not Path(project).is_absolute():
+        return False
+    try:
+        # Обе стороны раскрываются: папку проекта записал `project path`
+        # уже раскрытой, а сессию могли открыть по ссылке на неё.
+        here = Path(cwd).resolve()
+        root = Path(project).resolve()
+        wide = root == Path(root.anchor) or root == Path.home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if here == root:
+        return True
+    # Проектом назвали домашнюю папку или корень диска: «внутри» оказался бы
+    # любой проект человека, и Лицо встало бы в каждом. Там — только сама папка.
+    return not wide and root in here.parents
+
+
+def face_snapshot(data, is_game, quest_titles, quest_tasks, today=None,
+                  contract_stamp=""):
+    """Снимок для Лица — всё, что рисует модуль; чистая функция.
+
+    Правило слоя (ADR-0019): модуль рисует и подаёт, слов и чисел у него
+    нет. Поэтому здесь нет ни одного своего слова и ни одного своего счёта:
+    строки — `render_next_step`, та же функция, что кончает первый экран;
+    ранг и число закрытых квестов — `debrief.facts`.
+
+    `data` — сохранение или None, когда показать нечего (`state.peek`).
+    Вне Игровой сессии снимок пуст целиком: Лица там нет, и отдавать ранг
+    человека в его чужой проект незачем.
+
+    Ключи — договор с модулем (`plugin/types/index.d.ts`):
+    `is_game` — игровая ли сессия; `next` — строки Полосы без отступа
+    первого экрана; `rank` — ранг словом; `quests_closed` — число закрытых
+    квестов; `say` — фраза, которую игра предлагает сказать (`phrase_to_say`),
+    или пусто;
+    `toast_quest` и `toast_rank` — подписи всплывающих «квест закрыт» и
+    «новый ранг». Подписи приходят с каждым снимком Игровой сессии: когда
+    их показать, решает модуль по разнице двух снимков, а что — команда.
+    `contract` — отпечаток раздела системного промпта с контрактом
+    (`contract_stamp`, считает вызывающий) или пусто: раздела нет.
+    """
+    snapshot = {
+        "is_game": bool(is_game), "next": [], "rank": "", "quests_closed": 0,
+        "say": "", "toast_quest": "", "toast_rank": "", "contract": "",
+    }
+    if is_game:
+        snapshot["contract"] = contract_stamp
+    if data is None or not is_game:
+        return snapshot
+    facts = debrief.facts(data, today=today or st.today_utc())
+    snapshot["next"] = [
+        line.strip() for line in render_next_step(data, quest_titles, quest_tasks)
+    ]
+    snapshot["rank"] = facts["rank_title"]
+    snapshot["quests_closed"] = facts["quests_closed"]
+    snapshot["say"] = phrase_to_say(data)
+    snapshot["toast_quest"] = TOAST_QUEST
+    snapshot["toast_rank"] = RANK_NEW.format(facts["rank_title"])
+    return snapshot
+
+
+def _cmd_face(args, state_path, content_root, quests_root):
+    """Напечатать снимок для Лица одной строкой JSON. Только чтение.
+
+    Игровая сессия определяется здесь, а не в модуле: её запустил Голокрон,
+    она открыта в папке проекта или в ней позвана команда игры. Первый
+    признак команда видит сама — переменная запуска доходит до неё через
+    модуль; два других модуль передаёт флагами.
+
+    Сохранение читается через `state.peek`, а не `_load`: тот заводит файл
+    и паспорт, чинит испорченное и уносит в архив прежнюю игру, а снимок
+    зовётся после каждого хода в любой сессии этой машины.
+    """
+    cwd, called = _face_args(args)
+    is_game = _inside_golokron() or called
+    stamp = ""
+    try:
+        data = st.peek(state_path)
+        is_game = is_game or (data is not None and _inside_project(data, cwd))
+        if is_game:
+            # Вне игры контракт не собирается, как не читается и контент:
+            # команду зовут после каждого хода в любой сессии этой машины.
+            section = contract_section(data, content_root)
+            stamp = contract.stamp(section) if section else ""
+        if data is None or not is_game:
+            snapshot = face_snapshot(None, is_game, {}, {}, contract_stamp=stamp)
+        else:
+            snapshot = face_snapshot(
+                data, is_game, _quest_titles(content_root),
+                _quest_tasks(content_root), contract_stamp=stamp,
+            )
+    except Exception:
+        # Закон лица: любая ошибка — тишина, а не трейсбек. Сохранение правят
+        # руками, и счёт фактов форме верит; первый экран о поломке скажет
+        # сам, Полосе сказать нечем — она просто не рисуется.
+        snapshot = face_snapshot(None, is_game, {}, {}, contract_stamp=stamp)
+    # Только ASCII: кириллица уходит \u-записью, и локаль терминала, из
+    # которого модуль позвал команду, снимок не уронит.
+    print(json.dumps(snapshot))
+    return 0
+
+
+#: Инструменты игры (#93): `tools` печатает перечень, `tool <имя>` выполняет
+#: один. Обе команды набирает модуль Лица; человек их не видит.
+TOOL_LIST = "tools"
+TOOL_CALL = "tool"
+
+#: Инструмент действует на текущий квест, а открытого квеста нет: акты
+#: закрыты или состав акта ждёт выбора. Ниже печатается строка «Что дальше».
+TOOL_NO_QUEST = "Открытого квеста сейчас нет."
+
+#: Инструменту назвали не тот квест, что открыт: команда не запускается,
+#: попытка не тратится. Квест зовётся так же, как на остальных экранах.
+TOOL_QUEST_OPEN = "Сейчас открыт квест {}."
+TOOL_QUEST_CLOSED = "Квест {} уже закрыт."
+
+#: Знаки, которые не отличают одно название квеста от другого: кавычки
+#: любого вида вокруг и пробелы.
+_NAME_QUOTES = "«»\"'“”„‘’`"
+
+
+def _same_name(given, title):
+    """Одно ли это название квеста. Сравнение прощающее.
+
+    Регистр, кавычки-ёлочки и обычные, пробелы по краям и лишние внутри,
+    «ё» и «е» названий не различают: модель набирает название с экрана, и
+    придираться к знакам значило бы отказывать за верный квест.
+    """
+    def plain(text):
+        text = "".join(ch for ch in str(text) if ch not in _NAME_QUOTES)
+        return " ".join(text.casefold().replace("ё", "е").split())
+
+    return bool(plain(given)) and plain(given) == plain(title)
+
+
+def _closed_quest_named(data, given, titles):
+    """Закрытый квест с таким названием — как его зовёт экран — или None."""
+    for (act, quest_id), title in sorted(titles.items()):
+        if _same_name(given, title) and acts.is_closed(data, act, quest_id):
+            return quest_name(act, quest_id, titles)
+    return None
+
+#: Команда игры под инструментом упала с ошибкой, которой никто не ждал.
+TOOL_BROKEN = (
+    "Команда игры сломалась, это баг игры ({}). Что она успела записать, "
+    "покажет первый экран."
+)
+
+
+def _cmd_tools(args, state_path, content_root, quests_root):
+    """Напечатать перечень инструментов одной строкой JSON. Только чтение.
+
+    Модуль зовёт её на старте каждой сессии этой машины: сохранение она не
+    читает и не заводит. Только ASCII — как снимок `face`.
+    """
+    print(json.dumps(tools.listing()))
+    return 0
+
+
+def _tool_quest(handler, given, state_path, content_root, quests_root):
+    """Позвать команду квеста на открытом квесте, названном словами.
+
+    `given` — название квеста, как на экране; его видит человек в строке
+    вызова. Шаг пути считает `_next_position` — тот же, что читают строка
+    «Что дальше» и Полоса. Название сверяется с открытым квестом: совпало —
+    команда идёт, и годится ли квест для действия, решает она сама. Не
+    совпало — команда не запускается вовсе: попытка не тратится, сохранение
+    не пишется. Так повторный вызов после закрытого квеста не бьёт по
+    следующему. Названия — те же, что печатает первый экран
+    (`_quest_titles`); нет подписи — именем квеста остаётся его код.
+    """
+    data = _load(state_path)
+    position = _next_position(data)
+    if position is not None and position[0] == _AT_ACT_START:
+        # Акт не начат: команда скажет это сама, теми же словами.
+        return handler(
+            [str(position[1]), position[2][0]], state_path, content_root,
+            quests_root,
+        )
+    titles = _quest_titles(content_root)
+    closed = _closed_quest_named(data, given, titles)
+    if position is not None and position[0] == _AT_QUEST:
+        act, quest_id = position[1], position[2]
+        if _same_name(given, titles.get((act, quest_id), quest_id)):
+            return handler(
+                [str(act), quest_id], state_path, content_root, quests_root
+            )
+        if closed:
+            print(TOOL_QUEST_CLOSED.format(closed))
+        print(TOOL_QUEST_OPEN.format(quest_name(act, quest_id, titles)))
+        return 1
+    if closed:
+        print(TOOL_QUEST_CLOSED.format(closed))
+    print(TOOL_NO_QUEST)
+    step = render_next_step(
+        data, titles, _quest_tasks(content_root)
+    )
+    if step:
+        print("\n".join(step))
+    return 1
+
+
+def _tool_act(handler, state_path, content_root, quests_root):
+    """Позвать вход в акт без номера: ближайший незакрытый играбельный акт.
+
+    Все играбельные акты закрыты — вход просится в следующий по реестру, и
+    команда отвечает то же, что ответила бы на его номер: акты ещё не
+    написаны.
+    """
+    position = _next_position(_load(state_path))
+    act = position[1] if position is not None else ranks.FINAL_ACT + 1
+    return handler([str(act)], state_path, content_root, quests_root)
+
+
+def _cmd_tool(args, state_path, content_root, quests_root):
+    """Выполнить инструмент игры: `tool <имя> [значения входа]`.
+
+    Единственная дверь модуля Лица к командам, которые пишут сохранение.
+    Имя ищется в перечне `tools.py`, и только в нём: подкоманду игры модуль
+    не называет, поэтому позвать через инструмент `reset`, `link` или ручку
+    выключенного акта нельзя. Значений берётся столько, сколько объявил
+    инструмент; лишние отбрасываются.
+
+    Ответ и код возврата — той команды игры, которую инструмент зовёт:
+    второго текста и второго судьи здесь нет.
+    """
+    name = args[0] if args else ""
+    tool = tools.BY_NAME.get(name)
+    if tool is None:
+        print(
+            "Нет инструмента {!r}. Инструменты игры: {}.".format(
+                name, ", ".join(tools.NAMES)
+            )
+        )
+        return 1
+    handler = HANDLERS[tool.command]
+    try:
+        if tool.needs == tools.NEEDS_QUEST:
+            # Значение одно — название квеста; остальное отбрасывается.
+            return _tool_quest(
+                handler, args[1] if len(args) > 1 else "", state_path,
+                content_root, quests_root,
+            )
+        if tool.needs == tools.NEEDS_ACT:
+            return _tool_act(handler, state_path, content_root, quests_root)
+        words = []
+        if tool.inputs:
+            # Вход один — путь к папке, и он всегда путь: `db` или `deploy`
+            # здесь имя папки, а не ручка `project`. Оболочки между моделью
+            # и командой нет, поэтому тильду раскрывает игра. Пустой путь
+            # папку не называет: иначе записалась бы та, из которой пришёл
+            # вызов. Значений берётся столько, сколько объявлено.
+            values = args[1:1 + len(tool.inputs)]
+            path = values[0].strip() if values else ""
+            if path:
+                words = ["path", os.path.expanduser(path)]
+        return handler(words, state_path, content_root, quests_root)
+    except Exception as error:
+        # Ответ инструмента человек видит под вызовом: трейсбек там — стена
+        # чужих слов. Код тот же, что у несошедшейся проверки, поэтому слова
+        # обязаны сказать, что это не она.
+        print(TOOL_BROKEN.format(type(error).__name__))
+        return 1
+
+
 HANDLERS = {
     "status": _cmd_status,
     "contract": _cmd_contract,
@@ -2761,6 +3208,9 @@ HANDLERS = {
     "book": _cmd_book,
     "reset": _cmd_reset,
     "recipe": _cmd_recipe,
+    "face": _cmd_face,
+    TOOL_LIST: _cmd_tools,
+    TOOL_CALL: _cmd_tool,
 }
 
 
@@ -2785,7 +3235,12 @@ def main(argv=None, state_path=None, content_root=None, quests_root=None,
         print("Неизвестная команда {!r}. {}".format(name, USAGE))
         return 1
     code = handler(args, state_path, content_root, quests_root)
-    if name not in ("link", "sync"):
+    # `face` — чтение для Лица после каждого хода: ни сети, ни записи.
+    # Раздел с контрактом — такое же чтение для Лица, в любой сессии машины.
+    reads_for_face = name == "face" or (
+        name == "contract" and CONTRACT_SECTION in args
+    )
+    if name not in ("link", "sync", TOOL_LIST) and not reads_for_face:
         sync.maybe_flush(state_path)
     return code
 

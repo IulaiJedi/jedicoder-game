@@ -691,9 +691,14 @@ def logs_in_as_root(tokens):
     )
 
 
-def _deny(reason, extra):
-    """Отказ PreToolUse: причина уходит и в решение, и падавану."""
-    message = reason if not extra else reason + "\n\n" + extra
+def _deny(reason, said, extra):
+    """Отказ PreToolUse: причина — Claude, слова — человеку.
+
+    Адресатов два, и языка два. Claude получает точную причину, по которой
+    чинить: имя файла, имя списка. Человек первого вечера этих слов ещё не
+    знает — ему говорится, что случилось и что ничего не пропало.
+    """
+    message = said if not extra else said + "\n\n" + extra
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -779,21 +784,30 @@ def decide(payload):
             "Это rm -rf мимо папки проекта. Удалённое так не "
             "возвращается — посмотри путь ещё раз."
         )
+        env_said = (
+            _shared.penalty_line(DARK_ENV, st.DARK_ENV_STAGED)
+            + " Игра остановила команду: файл на месте, в сохранение он не"
+            " попал."
+        )
+        rm_said = (
+            _shared.penalty_line(DARK_RM, st.DARK_RM_OUTSIDE_PROJECT)
+            + " Игра остановила команду: ничего не удалено."
+        )
         if env_hit:
-            reason = env_reason
+            reason, said = env_reason, env_said
             extra = _shared.rule_text(_shared.plugin_root(), "env-never-in-git")
         else:
-            reason = rm_reason
+            reason, said = rm_reason, rm_said
             extra = _shared.rule_text(
                 _shared.plugin_root(), "rm-rf-outside-project"
             )
-        out = _deny(reason, extra)
+        out = _deny(reason, said, extra)
         if env_hit and rm_hit:
             # Оба сработали в одной команде: причина отказа — про .env
             # (она опаснее), но rm -rf мимо проекта тоже произошёл и тоже
             # был начислен — падаван должен увидеть оба, а не только
             # первый по счёту.
-            out["systemMessage"] += "\n\n" + rm_reason
+            out["systemMessage"] += "\n\n" + rm_said
         if invite:
             out["systemMessage"] += "\n\n" + invite
         return out
@@ -802,9 +816,8 @@ def decide(payload):
         # Не блокируем: у падавана может ещё не быть другого
         # пользователя — он его и заводит в Акте 4.
         message = (
-            "Ты заходишь на сервер под root. Это работает, но однажды "
-            "стоит всего сервера — заведи обычного пользователя "
-            "(квест 03v-user Акта 4)."
+            _shared.penalty_line(DARK_ROOT, st.DARK_ROOT_LOGIN)
+            + " Команда прошла: об этом игра только предупреждает."
         )
         extra = _shared.rule_text(
             _shared.plugin_root(), "no-root-in-production"

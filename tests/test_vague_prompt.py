@@ -78,7 +78,7 @@ def test_react_scores_and_suggests_brainstorm(hook_state):
         "hook_event_name": "UserPromptSubmit",
         "prompt": "сделай мне приложение для медитации",
     })
-    assert "/jedicoder:brainstorm" in out["systemMessage"]
+    assert "«помоги найти идею»" in out["systemMessage"]
     assert "Сила" not in out["systemMessage"], "образов нет (language.md)"
     assert "decision" not in out, "хук не блокирует промпт"
     assert st.load(path)["dark_side"] == 1
