@@ -133,7 +133,13 @@ def _vague_request(game, monkeypatch):
     import vague_prompt
 
     monkeypatch.setenv("JEDICODER_STATE_PATH", str(game.state_path))
-    assert vague_prompt.react({"prompt": "сделай мне сайт"}) is not None
+    # Штраф — только в игровой сессии (#97): сначала человек зовёт игру.
+    assert vague_prompt.react(
+        {"prompt": "/jedicoder:start", "session_id": "S-game"}
+    ) is None
+    assert vague_prompt.react(
+        {"prompt": "сделай мне сайт", "session_id": "S-game"}
+    ) is not None
 
 
 def test_penalties_say_what_they_are_and_what_they_are_for(game, monkeypatch):

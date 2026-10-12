@@ -712,14 +712,18 @@ def test_session_start_without_a_folder_leaves_the_previous_save_to_the_cli(save
 
 def test_penalty_hook_writes_into_the_new_game(save_path, project):
     """Хук штрафов встретил прежнее сохранение первым: очко ложится в новую
-    игру, прежний файл в архиве не тронут ни байтом."""
+    игру, прежний файл в архиве не тронут ни байтом.
+
+    Сессию делает игровой Голокрон (#97): папке проекта из прежнего
+    сохранения хук не верит, пока оно не перенесено, — как и Лицо.
+    """
     folder = project(files={".env": "TOKEN=secret\n"}, git=True, commits=1)
     before = put(save_path, previous_save(project_path=str(folder)))
 
     result = _hook("bash_guard.py", {
         "hook_event_name": "PreToolUse", "tool_name": "Bash",
         "tool_input": {"command": "git add .env"}, "cwd": str(folder),
-    }, _hook_env(save_path))
+    }, _hook_env(save_path, JEDICODER_GOLOKRON="1"))
 
     assert result.returncode == 0
     verdict = json.loads(result.stdout)["hookSpecificOutput"]
@@ -730,6 +734,60 @@ def test_penalty_hook_writes_into_the_new_game(save_path, project):
     assert after["dark_side"] == 2, "очки новой игры, а не 3 + 2 прежней"
     assert [entry["type"] for entry in after["dark_side_log"]] == ["env_staged"] * 2
     assert after["notices"] == [st.NOTICE_GAME_REBUILT]
+
+
+def test_a_hook_without_a_game_sign_leaves_the_previous_save_alone(
+        save_path, project):
+    """Прежнее сохранение уносит в архив тот, кого позвал человек (#97).
+
+    Раньше это делал первый же хук любой сессии на машине — в том числе в
+    чужом проекте. Теперь хук без признака игровой сессии прежнее сохранение
+    только видит: папке проекта из него он не верит, как и Лицо
+    (`state.peek`), файл цел, архива нет. Катастрофа блокируется и тут.
+    """
+    folder = project(files={".env": "TOKEN=secret\n"}, git=True, commits=1)
+    before = put(save_path, previous_save(project_path=str(folder)))
+
+    for command, blocked in (("git add .env", False), ("rm -rf /", True)):
+        result = _hook("bash_guard.py", {
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": command}, "cwd": str(folder),
+            "session_id": "S-terminal",
+        }, _hook_env(save_path))
+        assert result.returncode == 0
+        assert bool(result.stdout.strip()) is blocked, command
+
+    assert save_path.read_bytes() == before
+    assert archives(save_path) == []
+
+
+def test_the_game_command_carries_the_previous_save_over_and_the_guard_wakes(
+        save_path, project):
+    """Голый терминал, прежнее сохранение: человек зовёт игру — хук запроса
+    уносит прежнее в архив той же дверью, что и команда, и с этой минуты
+    сторож в папке проекта судит."""
+    folder = project(files={".env": "TOKEN=secret\n"}, git=True, commits=1)
+    before = put(save_path, previous_save(project_path=str(folder)))
+    env = _hook_env(save_path)
+
+    called = _hook("vague_prompt.py", {
+        "hook_event_name": "UserPromptSubmit", "prompt": "/jedicoder:start",
+        "session_id": "S-terminal", "cwd": str(folder),
+    }, env)
+    assert called.returncode == 0 and called.stdout == ""
+    (archive,) = archives(save_path)
+    assert archive.read_bytes() == before
+    assert st.load(save_path)["notices"] == [st.NOTICE_GAME_REBUILT]
+
+    result = _hook("bash_guard.py", {
+        "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "tool_input": {"command": "git add .env"}, "cwd": str(folder),
+        "session_id": "S-terminal",
+    }, env)
+    verdict = json.loads(result.stdout)["hookSpecificOutput"]
+    assert verdict["permissionDecision"] == "deny"
+    assert st.load(save_path)["dark_side"] == 2
+    assert archives(save_path) == [archive], "архив один"
 
 
 def test_hook_stays_silent_when_the_archive_cannot_be_made(save_path, tmp_path):

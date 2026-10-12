@@ -11,6 +11,11 @@
 
 Правило session_start.py действует и здесь: любая ошибка — exit 0 молча,
 сломать ход падавана из-за лута недопустимо.
+
+Слова открываются только в игровой сессии (#97): плагин стоит на всей
+машине, и хук зовётся после каждого хода в любом проекте человека. В чужой
+сессии нет ни карточки, ни очков, ни очереди, и сохранение не читается
+дальше вопроса «игровая ли».
 """
 import json
 import os
@@ -23,9 +28,11 @@ _PLUGIN_ROOT = Path(
     or Path(__file__).resolve().parents[1]
 )
 sys.path.insert(0, str(_PLUGIN_ROOT / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from jedicoder import content, ranks
-from jedicoder import state as st
+import _shared  # noqa: E402
+from jedicoder import content, ranks  # noqa: E402
+from jedicoder import state as st  # noqa: E402
 
 MAX_CARDS = 1
 # Сколько слов ждёт в очереди. Длинная очередь раздаёт карточки о словах,
@@ -187,6 +194,8 @@ def main():
     try:
         payload = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
+            return 0
+        if not _shared.is_game_session(payload):
             return 0
         # Пустой ответ не повод молчать: в очереди может ждать слово.
         text = _last_assistant_text(payload) or ""

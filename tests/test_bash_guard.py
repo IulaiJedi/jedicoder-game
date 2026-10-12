@@ -163,12 +163,19 @@ def test_root_login_detected():
     assert bash_guard.logs_in_as_root(["cat", "root@x"]) is False
 
 
-def payload(command, cwd):
+#: Сессия, в которой человек позвал команду игры: её идентификатор лежит в
+#: сохранении, которое сеет `hook_state`. Сторож судит только в игровой
+#: сессии (#97), и тесты ниже описывают её — где бы ни была открыта.
+GAME = "S-game"
+
+
+def payload(command, cwd, session_id=GAME):
     return {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
         "tool_input": {"command": command},
         "cwd": str(cwd),
+        "session_id": session_id,
     }
 
 
@@ -181,6 +188,7 @@ def hook_state(tmp_path, monkeypatch):
 
     def seed(**fields):
         data = st.default_state("local-test")
+        data["game_sessions"] = [GAME]
         data.update(fields)
         st.save(data, path)
         monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
@@ -1101,3 +1109,157 @@ def test_hook_process_blocks_in_bypass_mode(project, tmp_path):
     assert sorted(e["type"] for e in st.dark_side_entries(saved)) == [
         st.DARK_ENV_STAGED, st.DARK_ENV_STAGED, st.DARK_RM_OUTSIDE_PROJECT,
     ]
+
+
+# --- Игровая сессия (#97) -----------------------------------------------------
+#
+# Плагин стоит на всей машине, и сторож видит каждую команду Bash — в том
+# числе в проектах, где человек не играет. Там он не судит ничего и
+# сохранение не трогает; блок остаётся один — катастрофа, без штрафа.
+
+WORK = "S-work"
+
+
+def untouched(path):
+    return (path.stat().st_mtime_ns, path.read_bytes())
+
+
+@pytest.mark.parametrize("command", [
+    "git add .", "git add .env", "rm -rf ../elsewhere", "rm -rf /tmp/jc-elsewhere",
+    "ssh root@example.test",
+])
+def test_a_foreign_session_is_not_judged_and_the_save_is_untouched(
+        project, hook_state, command):
+    proj = project(git=True, commits=1)
+    other = project(git=True, commits=1)
+    (other / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    path = hook_state(project={"path": str(proj)})
+    before = untouched(path)
+
+    assert bash_guard.decide(payload(command, other, session_id=WORK)) is None
+
+    assert untouched(path) == before
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf /", "rm -rf ~", "rm -rf ~/*", "sudo rm -rf /", "ls && rm -rf $HOME",
+])
+def test_a_catastrophe_is_blocked_in_a_foreign_session_without_a_penalty(
+        project, hook_state, command):
+    proj = project(git=True, commits=1)
+    other = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    before = untouched(path)
+
+    out = bash_guard.decide(payload(command, other, session_id=WORK))
+
+    assert denied(out), command
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert reason == bash_guard.RM_CATASTROPHE_REASON
+    assert "папки проекта" not in reason, "вне игры папки проекта нет"
+    # Ни слова «штраф», ни правила Кодекса: человек не играет.
+    assert "systemMessage" not in out
+    assert "Штраф" not in json.dumps(out, ensure_ascii=False)
+    assert untouched(path) == before
+
+
+def test_a_catastrophe_is_blocked_for_someone_who_never_played(tmp_path, monkeypatch):
+    save = tmp_path / "jc" / "state.json"
+    save.parent.mkdir()
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(save))
+
+    assert denied(bash_guard.decide(payload("rm -rf /", tmp_path, session_id=WORK)))
+    assert bash_guard.decide(
+        payload("rm -rf ../elsewhere", tmp_path, session_id=WORK)
+    ) is None
+    assert list(save.parent.iterdir()) == [], "ни сохранения, ни замка"
+
+
+def test_hook_process_blocks_a_catastrophe_in_a_foreign_session(
+        project, tmp_path):
+    proj = project(git=True, commits=1)
+    state_path = tmp_path / "hook-state.json"
+    from jedicoder import state as st
+    data = st.default_state("local-test")
+    data["project"] = {"path": str(proj)}
+    st.save(data, state_path)
+    before = untouched(state_path)
+
+    done = run_hook("bash_guard.py", {
+        "hook_event_name": "PreToolUse", "tool_name": "Bash",
+        "permission_mode": "bypassPermissions",
+        "tool_input": {"command": "rm -rf ~"},
+        "cwd": str(tmp_path), "session_id": WORK,
+    }, {"JEDICODER_STATE_PATH": str(state_path)})
+
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert denied(out) and "systemMessage" not in out
+    assert untouched(state_path) == before
+
+
+def test_a_session_without_an_id_outside_the_project_is_foreign(
+        project, hook_state):
+    proj = project(git=True, commits=1)
+    other = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    request = payload("rm -rf ../elsewhere", other)
+    del request["session_id"]
+
+    assert bash_guard.decide(request) is None
+    from jedicoder import state as st
+    assert st.load(path)["dark_side"] == 0
+
+
+@pytest.mark.parametrize("sign", ["голокрон", "папка проекта", "команда игры"])
+def test_each_sign_of_a_game_session_brings_the_penalty_back(
+        project, hook_state, monkeypatch, sign):
+    proj = project(git=True, commits=1)
+    other = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)}, game_sessions=[])
+    cwd, session_id = other, WORK
+    if sign == "голокрон":
+        monkeypatch.setenv("JEDICODER_GOLOKRON", "1")
+    elif sign == "папка проекта":
+        cwd = proj
+    else:
+        from jedicoder import state as st
+        data = st.load(path)
+        data["game_sessions"] = [WORK]
+        st.save(data, path)
+
+    out = bash_guard.decide(
+        payload("rm -rf {}".format(other / "scratch"), cwd, session_id=session_id)
+    )
+
+    assert denied(out)
+    assert out["systemMessage"].startswith("Штраф: +1")
+    from jedicoder import state as st
+    assert st.load(path)["dark_side"] == 1
+
+
+def test_a_catastrophe_in_a_game_session_still_costs_a_penalty(
+        project, hook_state):
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    out = bash_guard.decide(payload("rm -rf /", proj))
+    assert denied(out) and out["systemMessage"].startswith("Штраф: +1")
+    from jedicoder import state as st
+    assert st.load(path)["dark_side"] == 1
+
+
+def test_a_broken_session_check_never_blocks_more_than_a_catastrophe(
+        project, hook_state, monkeypatch):
+    """Закон хуков: не смогли понять, игровая ли сессия, — она не игровая."""
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)})
+    from jedicoder import game_session
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("сломано")
+
+    monkeypatch.setattr(game_session, "is_game", boom)
+    before = untouched(path)
+    assert bash_guard.decide(payload("rm -rf ../elsewhere", proj)) is None
+    assert denied(bash_guard.decide(payload("rm -rf /", proj)))
+    assert untouched(path) == before

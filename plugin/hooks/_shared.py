@@ -17,6 +17,7 @@ PLUGIN_ROOT = Path(
 sys.path.insert(0, str(PLUGIN_ROOT / "lib"))
 
 from jedicoder import content  # noqa: E402
+from jedicoder import game_session  # noqa: E402
 from jedicoder import state as st  # noqa: E402
 
 # Порог из §9.2: на пятом нарушении приходит Магистр. Не наказание —
@@ -82,6 +83,70 @@ class _Unchanged(Exception):
     """Выход из окна записи без сохранения: менять нечего."""
 
 
+def is_game_session(payload):
+    """Игровая ли сессия, в которой сработал хук (#97).
+
+    Плагин стоит на всей машине, и хук зовётся в любой сессии Claude Code.
+    Вне игровой он молчит и сохранение не трогает; исключений два, и оба
+    не про сессию: катастрофу сторож блокирует везде, а серию сохранений
+    хук считает по папке проекта, из какого бы окна ни сохранили.
+    Признаки считает движок,
+    той же функцией, что и для Лица (`game_session.is_game`); хук приносит
+    своё: папку сессии и её идентификатор из данных Claude Code (`cwd`,
+    `session_id`) и переменную запуска Голокрона.
+
+    Сохранение читается через `state.peek`: без замка, без починки, без
+    архива — в чужой сессии диск не трогается вовсе. Никогда не бросает:
+    не смогли понять — сессия не игровая, хук молчит (закон хуков).
+    """
+    try:
+        return bool(game_session.is_game(
+            st.peek(state_path()),
+            cwd=payload.get("cwd"),
+            session_id=payload.get("session_id"),
+            golokron=game_session.launched_by_golokron(),
+        ))
+    except Exception:
+        return False
+
+
+def note_game_command(payload):
+    """Запрос зовёт команду игры — записать сессию игровой (#97).
+
+    Третий признак игровой сессии для хуков. Зовёт его один хук запроса:
+    только он видит, что набрал человек. Остальные сверяют свой
+    `session_id` с записанным.
+
+    Сохранения ещё нет — заводится здесь: в голом терминале первая команда
+    игры приходит раньше, чем её скилл позовёт движок, и без записи хуки
+    первого вечера молчали бы до второй команды. Человек игру позвал сам,
+    и то же сохранение через секунду завела бы она; прежнюю игру по той же
+    причине уносит в архив та же дверь (`state.load`). Паспорт (`padawan_id`)
+    хук не ставит и здесь: по нему приложение держит шаг «Первый запуск», и
+    ставит его команда игры.
+
+    Никогда не бросает: запись — справка для хуков, её сбой запрос человека
+    не задевает. Файл переписывается, только когда список изменился.
+    """
+    try:
+        text = payload.get("prompt") or payload.get("user_prompt")
+        if not game_session.is_game_command(text):
+            return
+        session_id = payload.get("session_id")
+        if not game_session.is_session_id(session_id):
+            return  # идентификатора нет — писать нечего и заводить нечего
+        path = state_path()
+        if game_session.sessions(st.peek(path))[-1:] == [session_id]:
+            return
+        with update_state(path) as state:
+            if not game_session.note(state, session_id):
+                raise _Unchanged()
+    except _Unchanged:
+        return
+    except Exception:
+        return
+
+
 def record_permission_mode(payload):
     """Записать в сохранение режим разрешений из данных хука.
 
@@ -93,6 +158,9 @@ def record_permission_mode(payload):
     держит PreToolUse: он срабатывает перед каждой командой игры в той же
     сессии, поэтому контракт читает режим своего окна, а не соседнего.
 
+    Пишется только из игровой сессии (#97): режим чужого окна игре не
+    нужен, а назвать его человеку она бы могла.
+
     Никогда не бросает: режим — справка, и её сбой не должен задеть ни
     запрос падавана, ни решение сторожа о команде. Файл переписывается,
     только когда режим сменился: хук срабатывает на каждой команде. Тому,
@@ -100,6 +168,8 @@ def record_permission_mode(payload):
     игры, а не чужой запрос в Claude Code.
     """
     try:
+        if not is_game_session(payload):
+            return
         reported = payload.get("permission_mode")
         path = state_path()
         with update_state(path) as state:

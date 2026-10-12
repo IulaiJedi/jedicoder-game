@@ -223,6 +223,12 @@ CLI_PY = ROOT / "plugin" / "lib" / "jedicoder" / "cli.py"
 HOOK_PY = ROOT / "plugin" / "hooks" / "lexicon_loot.py"
 
 
+def _game(env):
+    """Окружение хука в игровой сессии (#97): хук слов действует только в
+    ней. Признак — запуск из Голокрона; движок идёт без него."""
+    return dict(env, JEDICODER_GOLOKRON="1")
+
+
 def _sandbox_env(home, value=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
@@ -271,7 +277,7 @@ def test_engine_and_hook_write_the_same_file(tmp_path, form):
         input=json.dumps(
             {"last_assistant_message": "Начнём с API: одна кнопка."}
         ),
-        capture_output=True, text=True, timeout=60, env=env,
+        capture_output=True, text=True, timeout=60, env=_game(env),
         cwd=str(откуда_хук),
     )
     assert hook.returncode == 0, hook.stderr
@@ -311,7 +317,8 @@ def test_without_the_variable_both_write_to_the_home_folder(tmp_path):
         input=json.dumps(
             {"last_assistant_message": "Начнём с API: одна кнопка."}
         ),
-        capture_output=True, text=True, timeout=60, env=env, cwd=str(tmp_path),
+        capture_output=True, text=True, timeout=60, env=_game(env),
+        cwd=str(tmp_path),
     )
     assert hook.returncode == 0, hook.stderr
 

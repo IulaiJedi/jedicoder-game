@@ -356,3 +356,95 @@ def test_head_of_another_project_is_not_a_starting_point(project, hook_state):
     (proj / "draft.txt").write_text("в работе", encoding="utf-8")
     assert commit_pulse.react(payload("git commit -m 'мимо'", proj)) is None
     assert st.load(path)["streak"]["current"] == 0
+
+
+# --- Игровая сессия (#97) -----------------------------------------------------
+#
+# Серия от сессии не зависит: хук смотрит на сдвиг HEAD записанной папки
+# проекта, откуда бы человек ни сохранил. Напоминание сохраниться — слова
+# игры, и звучит оно только в игровой сессии.
+
+def from_elsewhere(command, cwd, session_id="S-work"):
+    request = payload(command, cwd)
+    request["session_id"] = session_id
+    return request
+
+
+def untouched(path):
+    return (path.stat().st_mtime_ns, path.read_bytes())
+
+
+def dirty(proj):
+    for i in range(commit_pulse.DIRTY_THRESHOLD):
+        (proj / "f{}.txt".format(i)).write_text("x", encoding="utf-8")
+
+
+def test_a_foreign_session_gets_no_reminder_and_the_save_is_untouched(
+        project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    dirty(proj)
+    path = hook_state(project={"path": str(proj)}, commit_head={
+        "path": str(proj), "sha": commit_pulse.head_sha(proj),
+    })
+    before = untouched(path)
+
+    assert commit_pulse.react(from_elsewhere("ls", tmp_path)) is None
+
+    assert untouched(path) == before
+
+
+def test_a_foreign_session_does_not_run_down_the_quiet_window(
+        project, hook_state, tmp_path):
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)}, commit_nag_left=5, commit_head={
+        "path": str(proj), "sha": commit_pulse.head_sha(proj),
+    })
+    before = untouched(path)
+
+    assert commit_pulse.react(from_elsewhere("ls", tmp_path)) is None
+
+    assert untouched(path) == before
+    assert st.load(path)["commit_nag_left"] == 5
+
+
+@pytest.mark.parametrize("sign", ["голокрон", "команда игры"])
+def test_a_game_session_outside_the_folder_still_gets_the_reminder(
+        project, hook_state, tmp_path, monkeypatch, sign):
+    proj = project(git=True, commits=1)
+    dirty(proj)
+    hook_state(project={"path": str(proj)}, game_sessions=["S-game"])
+    if sign == "голокрон":
+        monkeypatch.setenv("JEDICODER_GOLOKRON", "1")
+        request = from_elsewhere("ls", tmp_path)
+    else:
+        request = from_elsewhere("ls", tmp_path, session_id="S-game")
+
+    out = commit_pulse.react(request)
+
+    assert out is not None and "сохранить" in out["systemMessage"]
+
+
+def test_the_series_counts_a_save_made_from_a_foreign_session(
+        project, hook_state, tmp_path):
+    """Серия — про папку проекта, а не про окно, из которого сохранили."""
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)}, commit_head={
+        "path": str(proj), "sha": commit_pulse.head_sha(proj),
+    })
+    (proj / "new.txt").write_text("x", encoding="utf-8")
+    _git(proj, "add", "-A")
+    _git(proj, "commit", "-q", "-m", "шаг")
+
+    commit_pulse.react(from_elsewhere(
+        "git -C {} commit -m 'шаг'".format(proj), tmp_path
+    ))
+
+    assert st.load(path)["streak"]["current"] == 1
+
+
+def test_a_foreign_session_starts_no_save(tmp_path, monkeypatch):
+    save = tmp_path / "jc" / "state.json"
+    save.parent.mkdir()
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(save))
+    assert commit_pulse.react(from_elsewhere("git commit -m x", tmp_path)) is None
+    assert list(save.parent.iterdir()) == [], "ни сохранения, ни замка"

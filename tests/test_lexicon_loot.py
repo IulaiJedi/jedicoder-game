@@ -358,10 +358,21 @@ def test_render_card_full_sections_on_real_content(content_root):
 HOOK = ROOT / "plugin" / "hooks" / "lexicon_loot.py"
 
 
-def run_hook(payload, state_path, transcript=None):
+#: Сессия, в которой человек позвал команду игры: её идентификатор лежит в
+#: сохранении `seeded_state_file`. Слова открываются только в игровой
+#: сессии (#97).
+GAME = "S-game"
+
+
+def run_hook(payload, state_path, transcript=None, session_id=GAME, env_extra=None):
+    """Прогнать хук процессом. Словарь данных получает идентификатор сессии,
+    как у Claude Code; строка уходит как есть."""
     env = dict(**__import__("os").environ)
     env["JEDICODER_STATE_PATH"] = str(state_path)
     env["CLAUDE_PLUGIN_ROOT"] = str(ROOT / "plugin")
+    env.update(env_extra or {})
+    if isinstance(payload, dict) and session_id is not None:
+        payload = dict(payload, session_id=session_id)
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     return subprocess.run(
         [sys.executable, str(HOOK)], input=raw,
@@ -375,6 +386,7 @@ def seeded_state_file(tmp_path, current_act=1):
     if current_act >= 2:
         ranks.close_act(data, 1)
         ranks.enter_act(data, 2)
+    data["game_sessions"] = [GAME]
     path = tmp_path / "state.json"
     st.save(data, path)
     return path
@@ -526,8 +538,9 @@ def test_e2e_tool_output_not_scanned(tmp_path):
 @pytest.mark.parametrize("payload", [
     "не json вовсе",
     "{}",
-    json.dumps({"last_assistant_message": 42}),
-    json.dumps({"transcript_path": "/нет/такого/файла"}),
+    json.dumps({"session_id": GAME}),
+    json.dumps({"session_id": GAME, "last_assistant_message": 42}),
+    json.dumps({"session_id": GAME, "transcript_path": "/нет/такого/файла"}),
 ])
 def test_e2e_broken_payload_silent_success(tmp_path, payload):
     state_path = seeded_state_file(tmp_path)
@@ -560,3 +573,109 @@ def test_e2e_status_shows_loot(tmp_path, content_root, quests_root, capsys):
     assert code == 0
     assert "Открыто слов: 1" in out
     assert "Очки: 5 " in out
+
+
+# --- Игровая сессия (#97) -----------------------------------------------------
+#
+# Плагин стоит на всей машине, и хук слов зовётся после каждого хода в любой
+# сессии Claude Code. В чужой он молчит: карточки нет, слово не открыто,
+# очки не идут, очередь не копится, сохранение не тронуто.
+
+API = {"last_assistant_message": "Сравним API и режим разрешений."}
+
+
+def untouched(path):
+    return (path.stat().st_mtime_ns, path.read_bytes())
+
+
+def test_e2e_a_foreign_session_gets_no_card_and_the_save_is_untouched(tmp_path):
+    state_path = seeded_state_file(tmp_path)
+    before = untouched(state_path)
+
+    done = run_hook(dict(API, cwd=str(tmp_path)), state_path, session_id="S-work")
+
+    assert done.returncode == 0 and done.stdout.strip() == ""
+    assert untouched(state_path) == before
+    data = st.load(state_path)
+    assert data["lexicon_unlocked"] == [] and data["lexicon_queue"] == []
+    assert data["xp"] == 0
+
+
+def test_e2e_a_foreign_session_does_not_hand_out_the_waiting_word(tmp_path):
+    """Слово из очереди ждёт игровую сессию, а не ближайший чужой ход."""
+    state_path = seeded_state_file(tmp_path)
+    run_hook(API, state_path)
+    assert st.load(state_path)["lexicon_queue"] == ["api"]
+    before = untouched(state_path)
+
+    done = run_hook({"last_assistant_message": "Идём дальше."}, state_path,
+                    session_id="S-work")
+
+    assert done.stdout.strip() == ""
+    assert untouched(state_path) == before
+
+
+def test_e2e_no_session_id_and_no_other_sign_is_a_foreign_session(tmp_path):
+    state_path = seeded_state_file(tmp_path)
+    done = run_hook(API, state_path, session_id=None)
+    assert done.returncode == 0 and done.stdout.strip() == ""
+    assert st.load(state_path)["lexicon_unlocked"] == []
+
+
+@pytest.mark.parametrize("sign", ["голокрон", "папка проекта", "команда игры"])
+def test_e2e_each_sign_of_a_game_session_gives_the_card(tmp_path, sign):
+    state_path = seeded_state_file(tmp_path)
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    with st.update_state(state_path) as data:
+        data["game_sessions"] = ["S-called"]
+        data["project"]["path"] = str(project)
+    payload, env, session_id = dict(API, cwd=str(tmp_path)), {}, "S-work"
+    if sign == "голокрон":
+        env["JEDICODER_GOLOKRON"] = "1"
+    elif sign == "папка проекта":
+        payload["cwd"] = str(project / "src")
+    else:
+        session_id = "S-called"
+
+    done = run_hook(payload, state_path, session_id=session_id, env_extra=env)
+
+    assert "Новое слово:" in json.loads(done.stdout)["systemMessage"]
+    assert st.load(state_path)["lexicon_unlocked"] == ["permission-mode"]
+
+
+def test_e2e_first_evening_in_a_bare_terminal(tmp_path, content_root, quests_root):
+    """Папка не названа, Голокрона нет, сохранения нет. Запрос
+    `/jedicoder:start` делает сессию игровой — и карточка слова печатается."""
+    from jedicoder import cli
+
+    state_path = tmp_path / "jc" / "state.json"
+    env = dict(**__import__("os").environ)
+    env["JEDICODER_STATE_PATH"] = str(state_path)
+    asked = subprocess.run(
+        [sys.executable, str(HOOK.parent / "vague_prompt.py")],
+        input=json.dumps({
+            "hook_event_name": "UserPromptSubmit", "prompt": "/jedicoder:start",
+            "session_id": "S-first", "cwd": str(tmp_path),
+        }),
+        capture_output=True, text=True, timeout=30, env=env,
+    )
+    assert asked.returncode == 0 and asked.stdout == "", asked.stderr
+    assert cli.main(
+        ["enter", "1"], state_path=state_path,
+        content_root=content_root, quests_root=quests_root,
+    ) == 0
+
+    other = run_hook(dict(API, cwd=str(tmp_path)), state_path, session_id="S-work")
+    assert other.stdout.strip() == ""
+
+    done = run_hook(dict(API, cwd=str(tmp_path)), state_path, session_id="S-first")
+    assert "Новое слово:" in json.loads(done.stdout)["systemMessage"]
+
+
+def test_e2e_a_foreign_session_starts_no_save(tmp_path):
+    state_path = tmp_path / "jc" / "state.json"
+    state_path.parent.mkdir()
+    done = run_hook(dict(API, cwd=str(tmp_path)), state_path, session_id="S-work")
+    assert done.returncode == 0 and done.stdout.strip() == ""
+    assert list(state_path.parent.iterdir()) == [], "ни сохранения, ни замка"

@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jedicoder import acts, content, contract, debrief, frontmatter, quests, ranks, scroll, sync, tools  # noqa: E402
+from jedicoder import acts, content, contract, debrief, frontmatter, game_session, quests, ranks, scroll, sync, tools  # noqa: E402
 from jedicoder import state as st  # noqa: E402
 
 SUBCOMMANDS = (
@@ -39,11 +39,11 @@ BOT_URL = "https://t.me/Jedicoderstore_bot"
 # показывает Сцена справа — то же самое, только рядом с терминалом. Вопрос
 # «открывать ли Книгу» падавану внутри Голокрона звучит как «открыть
 # Голокрон в браузере?» — живой прогон 2026-09-10 — и не задаётся.
-GOLOKRON_MARK = "JEDICODER_GOLOKRON"
+GOLOKRON_MARK = game_session.GOLOKRON_MARK
 
 
 def _inside_golokron():
-    return bool(os.environ.get(GOLOKRON_MARK))
+    return game_session.launched_by_golokron()
 
 # Маршрут страницы финала на сайте. Отдельной константой и ровно одной: тот
 # же адрес печатает карточка ранга и уносит с собой Свиток, а адрес, набранный
@@ -2918,30 +2918,6 @@ def _face_args(args):
     return cwd, called
 
 
-def _inside_project(data, cwd):
-    """Открыта ли сессия в записанной папке проекта или внутри неё."""
-    project = _project_path(data)
-    if project is None or not cwd:
-        return False
-    # Относительный путь в сохранении — правка руками: от какой папки его
-    # считать, неизвестно, и совпал бы он с любой сессией.
-    if not Path(project).is_absolute():
-        return False
-    try:
-        # Обе стороны раскрываются: папку проекта записал `project path`
-        # уже раскрытой, а сессию могли открыть по ссылке на неё.
-        here = Path(cwd).resolve()
-        root = Path(project).resolve()
-        wide = root == Path(root.anchor) or root == Path.home().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return False
-    if here == root:
-        return True
-    # Проектом назвали домашнюю папку или корень диска: «внутри» оказался бы
-    # любой проект человека, и Лицо встало бы в каждом. Там — только сама папка.
-    return not wide and root in here.parents
-
-
 def face_snapshot(data, is_game, quest_titles, quest_tasks, today=None,
                   contract_stamp=""):
     """Снимок для Лица — всё, что рисует модуль; чистая функция.
@@ -2992,18 +2968,24 @@ def _cmd_face(args, state_path, content_root, quests_root):
     Игровая сессия определяется здесь, а не в модуле: её запустил Голокрон,
     она открыта в папке проекта или в ней позвана команда игры. Первый
     признак команда видит сама — переменная запуска доходит до неё через
-    модуль; два других модуль передаёт флагами.
+    модуль; два других модуль передаёт флагами. Считает признаки
+    `game_session.is_game` — та же функция, по которой хуки решают,
+    действовать ли им в этой сессии (#97).
 
     Сохранение читается через `state.peek`, а не `_load`: тот заводит файл
     и паспорт, чинит испорченное и уносит в архив прежнюю игру, а снимок
     зовётся после каждого хода в любой сессии этой машины.
     """
     cwd, called = _face_args(args)
-    is_game = _inside_golokron() or called
+    golokron = _inside_golokron()
+    # Сохранение ещё не прочитано: говорят признаки, которым оно не нужно.
+    is_game = game_session.is_game(None, golokron=golokron, called=called)
     stamp = ""
     try:
         data = st.peek(state_path)
-        is_game = is_game or (data is not None and _inside_project(data, cwd))
+        is_game = game_session.is_game(
+            data, cwd=cwd, golokron=golokron, called=called
+        )
         if is_game:
             # Вне игры контракт не собирается, как не читается и контент:
             # команду зовут после каждого хода в любой сессии этой машины.

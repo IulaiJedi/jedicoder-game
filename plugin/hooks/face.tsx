@@ -15,6 +15,15 @@
 //
 // Команда игры зовётся по пути своего плагина. Файл-маркер в домашней папке
 // модулю не нужен и им не читается.
+//
+// Память. Всё, что модуль знает о разговоре, лежит в состоянии сессии, и движок
+// вправе его стереть. Замер 2026-10-12, Claude Code 2.1.296: на `/clear` он
+// зовёт `session.end` с причиной `clear`, затем стирает состояние целиком —
+// и то, что записано в самом `session.end`, — затем зовёт прежнее событие
+// старта с источником `clear`. `session.start` не приходит. Поэтому память
+// восстанавливается лениво (`wake`): хук, которому она нужна, сам замечает,
+// что её нет, и спрашивает игру заново. Вне состояния модуль держит одно:
+// прошёл ли его старт в этом процессе.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -26,7 +35,9 @@ const game = atom({ plugin: 'jedicoder', key: 'game' } as const, false)
 const said = atom({ plugin: 'jedicoder', key: 'said' } as const, '')
 const voice = atom({ plugin: 'jedicoder', key: 'voice' } as const, null)
 const look = atom({ plugin: 'jedicoder', key: 'look' } as const, 'none')
-const kit = atom({ plugin: 'jedicoder', key: 'tools' } as const, [])
+const KIT = { plugin: 'jedicoder', key: 'tools' } as const
+const kit = atom(KIT, [])
+const awake = atom({ plugin: 'jedicoder', key: 'awake' } as const, false)
 
 // Имя раздела системного промпта с контрактом игры: <плагин>:<раздел>.
 const CONTRACT_SECTION = 'jedicoder:contract'
@@ -117,19 +128,24 @@ function isTool(item: unknown): item is GameTool {
 }
 
 // Перечень инструментов, как его напечатала команда, — или пусто: команда
-// упала, ответ обрезан, хоть одна запись испорчена. Половины перечня нет.
+// упала или не запустилась, ответ обрезан, хоть одна запись испорчена.
+// Половины перечня нет.
 async function listed($: EngineInterface): Promise<GameTool[]> {
-  const ran = await ask($, ['tools'])
-  if (ran.exitCode !== 0 || ran.isStdoutTruncated) return []
-  const data: unknown = JSON.parse(ran.stdout)
-  if (!Array.isArray(data) || !data.every(isTool)) return []
+  try {
+    const ran = await ask($, ['tools'])
+    if (ran.exitCode !== 0 || ran.isStdoutTruncated) return []
+    const data: unknown = JSON.parse(ran.stdout)
+    if (!Array.isArray(data) || !data.every(isTool)) return []
 
-  return data.map(({ name, description, inputSchema, input }) => ({
-    name,
-    description,
-    inputSchema,
-    input,
-  }))
+    return data.map(({ name, description, inputSchema, input }) => ({
+      name,
+      description,
+      inputSchema,
+      input,
+    }))
+  } catch {
+    return []
+  }
 }
 
 // Объявить инструменты игры: что команда перечислила, то и объявлено, её
@@ -137,14 +153,8 @@ async function listed($: EngineInterface): Promise<GameTool[]> {
 // игры искать некому. Перечня нет — инструментов нет, и модель зовёт команды
 // игры в терминале, как велит скилл.
 async function declare($: EngineInterface) {
-  let tools: GameTool[] = []
-  try {
-    tools = await listed($)
-  } catch {
-    tools = []
-  }
   const declared: GameTool[] = []
-  for (const tool of tools) {
+  for (const tool of await listed($)) {
     try {
       const { name, description, inputSchema } = tool
       await $.tool.register({ name, description, inputSchema, isDeferred: false })
@@ -302,7 +312,38 @@ async function refresh($: EngineInterface, isOfferTime: boolean) {
   }
 }
 
+// Перечень инструментов заново, когда его в состоянии нет вовсе: память
+// стёрта. Движку инструменты при этом не объявляются: они объявлены этому
+// процессу на старте, стирание памяти их не снимает, и вызовы по-прежнему
+// идут сюда. Пустой перечень старта («инструментов нет») — не «нет вовсе»,
+// и заново не спрашивается. Команда упала или ответ испорчен — не пишется
+// ничего: следующий вызов инструмента спросит снова.
+async function recall($: EngineInterface) {
+  if ((await $.state.get(KIT)).value !== undefined) return
+  const tools = await listed($)
+  if (tools.length > 0) await update($, kit, () => tools)
+}
+
+// Память сессии стёрта — снимок берётся заново, как на старте: с ним Полоса,
+// признак игры и раздел с контрактом. Перечень инструментов возвращает их хук,
+// когда инструмент позван (`recall`).
+// Примета — пометка, которую ставит старт и ставит эта функция: стёрта память —
+// стёрта и она. Память на месте — ни одной команды, и на стёртую память
+// снимок берётся один раз, а не на каждое событие. Любая ошибка — тишина.
+async function wake($: EngineInterface) {
+  try {
+    if (await read($, awake)) return
+    await update($, awake, () => true)
+    await refresh($, false)
+  } catch {
+    // Тишина: Полоса вернётся после хода.
+  }
+}
+
 export const register: Register = on => {
+  // Прошёл ли старт модуля в этом процессе: память есть чему возвращать.
+  let isStarted = false
+
   on('session.start', async ($, e, next) => {
     try {
       // Сессию продолжили или начали заново: первый запрос снова ждёт снимка.
@@ -317,17 +358,39 @@ export const register: Register = on => {
     } catch {
       // Тишина: без инструментов игра идёт командами в терминале.
     }
+    try {
+      await update($, awake, () => true)
+    } catch {
+      // Тишина: лишний снимок на следующем событии.
+    }
+    isStarted = true
 
     return next(e)
   })
 
+  // Разговор начат заново под живым процессом (`/clear`): `session.start` не
+  // придёт, а это событие приходит уже после стирания памяти — и Полоса
+  // встаёт до первого запроса. На старте процесса оно приходит раньше
+  // `session.start` и ничего не делает; после сжатия память на месте.
+  on('classic.SessionStart', async ($, e, next) => {
+    if (isStarted) await wake($)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   // Руки: Инструменты игры. Хук один на все: имя вызванного ищется в
-  // перечне, который объявлен в этой сессии. Чужого имени с тем же началом
+  // перечне, который игра отдала этому процессу. Чужого имени с тем же началом
   // хук не знает и отдаёт вызов дальше — как и при собственной ошибке: совет
   // «набери команду в терминале» получает только тот, чей инструмент есть в
-  // перечне, а команда не выполнилась.
+  // перечне, а команда не выполнилась. Память стёрта — перечень сперва
+  // спрашивается заново: объявленный инструмент обязан ответить.
   on('tool.call', { tool: OWN_TOOLS }, async ($, e, next) => {
     const name = e.tool.slice(TOOL_PREFIX.length)
+    try {
+      await recall($)
+    } catch {
+      // Тишина: без перечня вызов уйдёт дальше.
+    }
     const tool = (await read($, kit)).find(item => item.name === name)
     if (tool === undefined) return next(e)
     try {
@@ -344,11 +407,15 @@ export const register: Register = on => {
   // оставляет пометку: системный промпт этого хода собирается по свежему
   // снимку (ниже, `prompt.compose`). Сам снимок здесь не берётся: режим
   // разрешений пишет в сохранение прежний хук на этом же событии, уже после
-  // модуля.
+  // модуля. Исключение — стёртая память, которую не вернуло событие старта:
+  // без снимка не узнать, игровая ли сессия, и пометку не поставить. Режим
+  // в том снимке прежний; свежий возьмёт `prompt.compose`.
   on('prompt.submit', async ($, e, next) => {
     try {
       const isCalled = e.text.trimStart().startsWith(GAME_COMMAND)
       if (isCalled) await update($, called, () => true)
+      // Память стёрта — признак игры и раздел возвращаются до пометки.
+      await wake($)
       if ((isCalled || (await read($, game))) && (await read($, look)) === 'none') {
         await update($, look, () => 'due')
       }

@@ -6,6 +6,10 @@
 
 Закон хуков: любая ошибка — молчаливый выход. Этот хук вообще ничего не
 блокирует, он только считает и напоминает.
+
+Серия от сессии не зависит: считается сдвиг HEAD записанной папки проекта,
+из какого бы окна человек ни сохранил. Напоминание сохраниться — слова
+игры, и звучит оно только в игровой сессии (#97).
 """
 import json
 import os
@@ -203,7 +207,16 @@ def react(payload):
     # commit_nag_left, чтобы решить, будет ли вообще мутация. Настоящий
     # read-modify-write — ниже, отдельным `update_state()` на каждую ветку,
     # где состояние действительно меняется.
-    state = _shared.load_state()
+    game = _shared.is_game_session(payload)
+    if game:
+        state = _shared.load_state()
+    else:
+        # Чужая сессия: сохранение только читается. `load` на пустом месте
+        # берёт замок, испорченный файл уносит в сторону, прежнюю игру — в
+        # архив; ничего из этого чужой запрос в Claude Code делать не вправе.
+        state = st.peek(_shared.state_path())
+        if state is None:
+            return None
     project_dir = (state.get("project") or {}).get("path")
     if not project_dir or not Path(project_dir).is_dir():
         # Папка проекта неизвестна: считать нечего, а угадывать по cwd
@@ -270,6 +283,10 @@ def react(payload):
             streak.get("current", 0), streak.get("best", 0)
         ) + "."}
 
+    if not game:
+        # Напоминание и его окно молчания — только в игровой сессии: в чужом
+        # проекте человек не играет, и слова игры ему там не нужны.
+        return None
     left = int(state.get("commit_nag_left", 0) or 0)
     if left > 0:
         with _shared.update_state() as fresh:

@@ -14,7 +14,21 @@ sys.path.insert(0, str(ROOT / "plugin" / "hooks"))
 
 import vague_prompt  # noqa: E402
 
+from jedicoder import game_session  # noqa: E402
 from jedicoder import state as st  # noqa: E402
+
+#: Сессия, в которой человек уже позвал команду игры: её идентификатор лежит
+#: в сохранении, которое сеет `hook_state` (#97).
+GAME = "S-game"
+
+
+def asked(text, session_id=GAME, field="prompt", **more):
+    """Данные хука запроса, как их шлёт Claude Code."""
+    payload = {"hook_event_name": "UserPromptSubmit", field: text}
+    if session_id is not None:
+        payload["session_id"] = session_id
+    payload.update(more)
+    return payload
 
 
 @pytest.mark.parametrize("text", [
@@ -64,6 +78,7 @@ def hook_state(tmp_path, monkeypatch):
 
     def seed(**fields):
         data = st.default_state("local-test")
+        data[game_session.SESSIONS_KEY] = [GAME]
         data.update(fields)
         st.save(data, path)
         monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
@@ -74,10 +89,7 @@ def hook_state(tmp_path, monkeypatch):
 
 def test_react_scores_and_suggests_brainstorm(hook_state):
     path = hook_state()
-    out = vague_prompt.react({
-        "hook_event_name": "UserPromptSubmit",
-        "prompt": "сделай мне приложение для медитации",
-    })
+    out = vague_prompt.react(asked("сделай мне приложение для медитации"))
     assert "«помоги найти идею»" in out["systemMessage"]
     assert "Сила" not in out["systemMessage"], "образов нет (language.md)"
     assert "decision" not in out, "хук не блокирует промпт"
@@ -86,13 +98,13 @@ def test_react_scores_and_suggests_brainstorm(hook_state):
 
 def test_react_reads_legacy_field(hook_state):
     hook_state()
-    out = vague_prompt.react({"user_prompt": "сделай мне сайт"})
+    out = vague_prompt.react(asked("сделай мне сайт", field="user_prompt"))
     assert out is not None
 
 
 def test_react_silent_on_normal_prompt(hook_state):
     path = hook_state()
-    assert vague_prompt.react({"prompt": "почини импорт в app.py"}) is None
+    assert vague_prompt.react(asked("почини импорт в app.py")) is None
     assert st.load(path)["dark_side"] == 0
 
 
@@ -129,7 +141,7 @@ def test_work_words_mean_a_task_about_a_product():
 
 def test_react_writes_its_kind_to_the_log(hook_state):
     path = hook_state()
-    vague_prompt.react({"prompt": "сделай мне приложение для медитации"})
+    vague_prompt.react(asked("сделай мне приложение для медитации"))
     saved = st.load(path)
     (entry,) = st.dark_side_entries(saved)
     assert entry["type"] == "vague_prompt"
@@ -140,7 +152,7 @@ def test_react_writes_its_kind_to_the_log(hook_state):
 def test_react_never_stores_the_prompt(hook_state):
     """ADR-0011: в промпте бывают имена заказчиков — журнал их не хранит."""
     path = hook_state()
-    vague_prompt.react({"prompt": "сделай мне сайт"})
+    vague_prompt.react(asked("сделай мне сайт"))
     saved = st.load(path)
     assert "сайт" not in str(saved["dark_side_log"])
     for entry in saved["dark_side_log"]:
@@ -161,8 +173,137 @@ def test_broken_journal_leaves_the_prompt_alone(hook_state, monkeypatch,
 
     monkeypatch.setattr(st, "record_dark_side", boom)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
-        {"prompt": "сделай мне приложение для медитации"}
+        asked("сделай мне приложение для медитации")
     )))
 
     assert vague_prompt.main() == 0
     assert capsys.readouterr().out == ""
+
+
+# --- Игровая сессия (#97) -----------------------------------------------------
+#
+# Плагин стоит на всей машине, и хук запроса зовётся в каждой сессии Claude
+# Code. Штраф — только в игровой: её запустил Голокрон, она открыта в папке
+# проекта или в ней позвана команда игры.
+
+VAGUE = "сделай мне сайт"
+
+
+def test_a_foreign_session_gets_no_penalty_and_the_save_is_untouched(
+        hook_state, tmp_path):
+    path = hook_state()
+    before = (path.stat().st_mtime_ns, path.read_bytes())
+
+    out = vague_prompt.react(asked(VAGUE, session_id="S-work", cwd=str(tmp_path)))
+
+    assert out is None
+    assert (path.stat().st_mtime_ns, path.read_bytes()) == before
+
+
+def test_no_session_id_and_no_other_sign_is_a_foreign_session(hook_state):
+    path = hook_state()
+    assert vague_prompt.react(asked(VAGUE, session_id=None)) is None
+    assert st.load(path)["dark_side"] == 0
+
+
+def test_a_session_in_the_project_folder_is_penalised(hook_state, tmp_path):
+    project = tmp_path / "proj"
+    (project / "src").mkdir(parents=True)
+    path = hook_state(project={"path": str(project)}, game_sessions=[])
+
+    out = vague_prompt.react(
+        asked(VAGUE, session_id="S-new", cwd=str(project / "src"))
+    )
+
+    assert out["systemMessage"].startswith("Штраф: +1")
+    assert st.load(path)["dark_side"] == 1
+
+
+def test_a_session_launched_by_golokron_is_penalised(hook_state, monkeypatch):
+    path = hook_state(game_sessions=[])
+    monkeypatch.setenv(game_session.GOLOKRON_MARK, "1")
+
+    assert vague_prompt.react(asked(VAGUE, session_id=None)) is not None
+    assert st.load(path)["dark_side"] == 1
+
+
+def test_first_evening_in_a_bare_terminal(tmp_path, monkeypatch):
+    """Папка ещё не названа, Голокрона нет, сохранения нет: игровой сессию
+    делает сам запрос `/jedicoder:start` — и с этой минуты хуки работают."""
+    path = tmp_path / "jc" / "state.json"
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
+
+    assert vague_prompt.react(asked("/jedicoder:start", session_id="S")) is None
+    assert game_session.sessions(st.load(path)) == ["S"]
+    assert st.load(path)["padawan_id"] is None, (
+        "паспорт ставит команда игры: по нему приложение держит «Первый запуск»"
+    )
+    assert st.load(path)["dark_side"] == 0, "команда игры — не запрос без подробностей"
+
+    assert vague_prompt.react(asked(VAGUE, session_id="S-other")) is None
+    assert st.load(path)["dark_side"] == 0
+
+    out = vague_prompt.react(asked(VAGUE, session_id="S"))
+    assert out["systemMessage"].startswith("Штраф: +1")
+    assert st.load(path)["dark_side"] == 1
+
+
+def test_a_game_command_keeps_everything_else_in_the_save(hook_state):
+    path = hook_state(game_sessions=["S-old"], xp=40, dark_side=2)
+    vague_prompt.react(asked("/jedicoder:magistr", session_id="S-new"))
+    saved = st.load(path)
+    assert game_session.sessions(saved) == ["S-old", "S-new"]
+    assert (saved["xp"], saved["dark_side"]) == (40, 2)
+
+
+def test_a_repeated_game_command_does_not_rewrite_the_save(hook_state):
+    path = hook_state()
+    vague_prompt.react(asked("/jedicoder:start"))
+    before = path.stat().st_mtime_ns
+    vague_prompt.react(asked("/jedicoder:start"))
+    assert path.stat().st_mtime_ns == before
+
+
+def test_game_commands_never_grow_the_list_past_the_cap(hook_state):
+    path = hook_state(game_sessions=[])
+    for number in range(game_session.SESSIONS_CAP + 3):
+        vague_prompt.react(asked("/jedicoder:start", session_id="S{}".format(number)))
+    kept = game_session.sessions(st.load(path))
+    assert len(kept) == game_session.SESSIONS_CAP
+    assert kept[0] == "S3"
+
+
+def test_a_game_command_over_a_garbage_list_starts_a_clean_one(hook_state):
+    path = hook_state(game_sessions={"мусор": 1})
+    assert vague_prompt.react(asked(VAGUE)) is None, "мусор — пустой список"
+    vague_prompt.react(asked("/jedicoder:start"))
+    assert game_session.sessions(st.load(path)) == [GAME]
+
+
+def test_a_game_command_without_a_session_id_starts_no_save(tmp_path, monkeypatch):
+    path = tmp_path / "jc" / "state.json"
+    path.parent.mkdir()
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
+    assert vague_prompt.react(asked("/jedicoder:start", session_id=None)) is None
+    assert list(path.parent.iterdir()) == []
+
+
+def test_a_foreign_request_starts_no_save(tmp_path, monkeypatch):
+    path = tmp_path / "jc" / "state.json"
+    path.parent.mkdir()
+    monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
+    assert vague_prompt.react(asked(VAGUE, session_id="S", cwd=str(tmp_path))) is None
+    assert list(path.parent.iterdir()) == []
+
+
+def test_a_broken_session_record_leaves_the_request_alone(
+        hook_state, monkeypatch):
+    """Закон хуков: не смогли записать сессию — молчим, запрос идёт дальше."""
+    hook_state(game_sessions=[])
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("сломано")
+
+    monkeypatch.setattr(game_session, "note", boom)
+    assert vague_prompt.react(asked("/jedicoder:start", session_id="S")) is None
+    assert vague_prompt.react(asked(VAGUE, session_id="S")) is None

@@ -709,6 +709,45 @@ def _deny(reason, said, extra):
     }
 
 
+#: Причина отказа на `rm -rf` мимо папки проекта. Её же получает катастрофа
+#: в чужой сессии — одна, без штрафа и без правила Кодекса.
+RM_REASON = (
+    "Это rm -rf мимо папки проекта. Удалённое так не "
+    "возвращается — посмотри путь ещё раз."
+)
+
+# Вне игры папки проекта нет, и слов игры быть не должно: человек не играет.
+# Блок здесь один — корень диска и домашняя папка.
+RM_CATASTROPHE_REASON = (
+    "Это rm -rf корня диска или домашней папки. Удалённое так не "
+    "возвращается — посмотри путь ещё раз."
+)
+
+
+def _decide_outside_the_game(command, cwd):
+    """Чужая сессия: человек работает, а не играет (#97).
+
+    Плагин стоит на всей машине, и хук видит каждую команду Bash. Вне
+    игровой сессии он не судит ничего — ни `.env`, ни удаление мимо папки
+    проекта, ни вход под root — и сохранение не читает и не пишет. Блок
+    остаётся один: катастрофа, `rm -rf` корня или домашней папки. Он не
+    штраф, а защита, поэтому в ответе только причина отказа: ни слова
+    «штраф», ни правила Кодекса.
+    """
+    for tokens, where in located_commands(command, cwd):
+        # Папка проекта не называется: без неё `wipes_outside_project`
+        # отвечает «да» только на катастрофу.
+        if wipes_outside_project(tokens, where, None):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": RM_CATASTROPHE_REASON,
+                },
+            }
+    return None
+
+
 def decide(payload):
     """Решение по одной команде Bash или None, если сказать нечего.
 
@@ -724,6 +763,8 @@ def decide(payload):
     if not isinstance(command, str) or not command.strip():
         return None
     cwd = payload.get("cwd") or os.getcwd()
+    if not _shared.is_game_session(payload):
+        return _decide_outside_the_game(command, cwd)
     # Первое чтение — не под блокировкой: это разведка (нужен project_dir
     # и было ли уже предупреждение), а не запись. Настоящая
     # read-modify-write ниже перечитывает состояние заново под замком —
@@ -780,10 +821,7 @@ def decide(payload):
             "Это отправит .env в индекс git. Ключи, попавшие в историю, "
             "остаются там навсегда — сначала добавь .env в .gitignore."
         )
-        rm_reason = (
-            "Это rm -rf мимо папки проекта. Удалённое так не "
-            "возвращается — посмотри путь ещё раз."
-        )
+        rm_reason = RM_REASON
         env_said = (
             _shared.penalty_line(DARK_ENV, st.DARK_ENV_STAGED)
             + " Игра остановила команду: файл на месте, в сохранение он не"

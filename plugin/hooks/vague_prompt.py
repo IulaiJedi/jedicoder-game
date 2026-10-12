@@ -5,6 +5,11 @@
 раздражает сильнее, чем польза от катсцены, поэтому ловим только явный
 случай: короткая просьба «сделай/напиши мне <вещь>» без единой детали.
 Никогда не блокирует — только показывает правило и зовёт /jedicoder:brainstorm.
+
+Штраф — только в игровой сессии (#97): плагин стоит на всей машине, и хук
+видит каждый запрос человека, в том числе в проектах, где он не играет.
+Этот же хук — единственный, кто видит запрос, поэтому он и записывает
+сессию игровой, когда человек зовёт команду игры.
 """
 import json
 import re
@@ -80,10 +85,17 @@ def is_vague(text):
 
 
 def react(payload):
+    # Раньше всего остального: запрос, зовущий команду игры, делает сессию
+    # игровой — и для этого вызова, и для остальных хуков после него.
+    _shared.note_game_command(payload)
     # Поле разное в версиях Claude Code — читаем оба, это дешевле, чем
     # молча не сработать.
     text = payload.get("prompt") or payload.get("user_prompt")
     if not is_vague(text):
+        return None
+    if not _shared.is_game_session(payload):
+        # Чужая сессия: человек работает, а не играет. Ни штрафа, ни слов
+        # игры, сохранение не тронуто.
         return None
     with _shared.update_state() as state:
         _shared.add_dark_side(state, DARK_VAGUE, st.DARK_VAGUE_PROMPT)
@@ -105,10 +117,14 @@ def main():
         payload = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
             return 0
-        # Раньше разбора запроса и сам по себе: режим пишется на каждом
-        # запросе, а не только на расплывчатом.
-        _shared.record_permission_mode(payload)
-        out = react(payload)
+        try:
+            out = react(payload)
+        finally:
+            # Сам по себе: режим пишется на каждом запросе игровой сессии,
+            # а не только на расплывчатом, — и когда разбор запроса упал.
+            # После `react`: сессию игровой записывает он, и режим первого
+            # запроса игры иначе не записался бы.
+            _shared.record_permission_mode(payload)
         if out:
             print(json.dumps(out, ensure_ascii=False))
     except Exception:

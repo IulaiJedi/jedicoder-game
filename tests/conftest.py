@@ -39,6 +39,10 @@ def isolated_state(tmp_path_factory, monkeypatch):
         "JEDICODER_STATE_PATH",
         str(tmp_path_factory.mktemp("isolated-state") / "state.json"),
     )
+    # Суит, запущенный из Верстака Голокрона, унаследовал бы его метку — и
+    # каждая сессия в тестах хуков стала бы игровой (#97). Тест, которому
+    # нужен Голокрон, ставит метку сам.
+    monkeypatch.delenv("JEDICODER_GOLOKRON", raising=False)
 
 
 @pytest.fixture

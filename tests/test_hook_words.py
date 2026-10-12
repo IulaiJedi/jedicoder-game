@@ -36,6 +36,8 @@ def hook_state(tmp_path, monkeypatch):
 
     def seed(**fields):
         data = st.default_state("local-test")
+        # Сессия, в которой игру уже позвали: штрафы — только в игровой (#97).
+        data["game_sessions"] = [GAME]
         data.update(fields)
         st.save(data, path)
         monkeypatch.setenv("JEDICODER_STATE_PATH", str(path))
@@ -44,10 +46,14 @@ def hook_state(tmp_path, monkeypatch):
     return seed
 
 
+GAME = "S-game"
+
+
 def bash(command, cwd):
     return {
         "hook_event_name": "PreToolUse", "tool_name": "Bash",
         "tool_input": {"command": command}, "cwd": str(cwd),
+        "session_id": GAME,
     }
 
 
@@ -64,7 +70,7 @@ def assert_human(message):
 
 def test_vague_request_names_the_penalty_and_the_way_out(hook_state):
     hook_state()
-    out = vague_prompt.react({"prompt": "сделай мне сайт"})
+    out = vague_prompt.react({"prompt": "сделай мне сайт", "session_id": GAME})
     message = out["systemMessage"]
     assert first_line(out).startswith("Штраф: +1 — запрос без подробностей.")
     assert "«помоги найти идею»" in message

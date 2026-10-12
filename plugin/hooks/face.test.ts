@@ -152,6 +152,7 @@ function engine(on: On, first: Game['answer']): Game {
   })
   bottom('session.cwd', () => ({ value: '/work/project' }))
   bottom('session.start', (_$: unknown, e: unknown) => e)
+  bottom('classic.SessionStart', () => ({}))
   bottom('turn.complete', () => ({ text: '' }))
   bottom('prompt.submit', (_$: unknown, e: { text: string }) => ({ text: e.text }))
   bottom('process.run', (_$: unknown, e: { argv: string[]; init?: { cwd?: string; timeoutMs?: number } }) => {
@@ -980,4 +981,276 @@ test('a session started again declares the tools again', async ($, on) => {
   // Совет идти в терминал — не для инструмента, которого игра не называла.
   expect(failure.includes('terminal')).toBe(false)
   expect(game.runs).toEqual([])
+})
+
+// --- После /clear ---------------------------------------------------------------
+//
+// Замер 2026-10-12, Claude Code 2.1.296. На `/clear` движок зовёт `session.end`
+// с причиной `clear`, затем стирает состояние сессии целиком, затем зовёт
+// прежнее событие старта (`classic.SessionStart`, источник `clear`).
+// `session.start` не приходит. Тестовый движок состояния сам не стирает,
+// поэтому тест держит память сессии своими нижними хуками и стирает её сам.
+
+type Held = { value: unknown; version: number }
+type Address = { plugin: string; key: string; id?: string; value?: unknown; ifVersion?: number }
+
+// Память сессии под модулем: то же, что держит движок, и её можно стереть.
+function memory(on: On) {
+  const held = new Map<string, Held>()
+  let writes = 0
+  const bottom = on as any
+  const name = (e: Address) => `${e.plugin}:${e.key}:${e.id ?? ''}`
+  bottom('state.get', (_$: unknown, e: Address) => ({
+    value: held.get(name(e)) ?? { value: undefined, version: 0 },
+  }))
+  bottom('state.set', (_$: unknown, e: Address) => {
+    const version = held.get(name(e))?.version ?? 0
+    if (e.ifVersion !== undefined && e.ifVersion !== version) return { value: { isSet: false, version } }
+    writes += 1
+    held.set(name(e), { value: e.value, version: writes })
+
+    return { value: { isSet: true, version: writes } }
+  })
+
+  return { wipe: () => held.clear() }
+}
+
+// Движок стёр память; больше ничего не случилось. Конец разговора, который
+// движок объявляет перед этим, модуль не слушает: записанное там стирается.
+const forgot = (mind: { wipe: () => void }) => mind.wipe()
+// `/clear` целиком: за стёртой памятью приходит прежнее событие старта.
+const cleared = async ($: any, mind: { wipe: () => void }, source = 'clear') => {
+  forgot(mind)
+  await $.classic.SessionStart({ source })
+}
+const MODE_TWO = '# THE MARKER LINE\n\nanother mode\n'
+// Что модуль не обслужил: чем кончился вызов, на который он не ответил.
+const unanswered = async ($: any, tool: string) => {
+  try {
+    return (await $.tool.call({ tool })).deny ?? ''
+  } catch (error) {
+    return String(error)
+  }
+}
+
+test('after a clear a tool still answers: the list is asked for again', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  const answer = await $.tool.call({ tool: PLACE, where: '/x' })
+  expect(answer.result).toBe('DONE\n')
+  expect(answer.context).toEqual(['exit code: 0'])
+  expect(game.runs[0].argv.slice(2)).toEqual(['tool', 'place', '/x'])
+  // Перечень спрошен заново один раз, а не на каждый вызов; движку инструменты
+  // второй раз не объявляются — они объявлены этому процессу на старте.
+  await $.tool.call({ tool: PROBE })
+  expect(game.runs.length).toBe(2)
+  expect(game.listCalls.length).toBe(2)
+  expect(game.registered.length).toBe(LISTED.length)
+})
+
+test('after a clear a tool the game does not list is still not answered by the module', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  let failure = ''
+  try {
+    const answer = await $.tool.call({ tool: 'mcp__jedicoder__reset' })
+    failure = answer.deny ?? ''
+  } catch (error) {
+    failure = String(error)
+  }
+  expect(failure).not.toBe('')
+  expect(failure.includes('terminal')).toBe(false)
+  expect(game.runs).toEqual([])
+})
+
+test('after a clear a list that fails is asked for again on the next call', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  game.list = () => ({ exitCode: 1, stdout: 'Traceback' })
+  let failure = ''
+  try {
+    const answer = await $.tool.call({ tool: PROBE })
+    failure = answer.deny ?? ''
+  } catch (error) {
+    failure = String(error)
+  }
+  expect(failure).not.toBe('')
+  expect(game.runs).toEqual([])
+  game.list = () => tools()
+  expect((await $.tool.call({ tool: PROBE })).result).toBe('DONE\n')
+})
+
+test('after a clear the first prompt of a game session has the contract, by a fresh look', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  await typed($, 'go on')
+  expect(await composed($)).toEqual([...ENGINE_SECTIONS, OWN_SECTION])
+  await turn($)
+  await cleared($, mind)
+  await typed($, 'a new conversation')
+  // Режим записан уже после запроса: раздел обязан быть по снимку, взятому позже.
+  game.answer = () => snapshot(STEP, true, { contract: 'stamp-two' })
+  game.voice = () => spoken(MODE_TWO, 'stamp-two')
+  expect(await composed($)).toEqual([...ENGINE_SECTIONS, { ...OWN_SECTION, text: MODE_TWO }])
+})
+
+test('memory gone and no start event: the first prompt still has the contract, by a fresh look', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  await typed($, 'a new conversation')
+  game.answer = () => snapshot(STEP, true, { contract: 'stamp-two' })
+  game.voice = () => spoken(MODE_TWO, 'stamp-two')
+  expect(await composed($)).toEqual([...ENGINE_SECTIONS, { ...OWN_SECTION, text: MODE_TWO }])
+  expect(await guessed($)).toEqual({ isShown: false })
+})
+
+test('a tool called before any prompt after a clear leaves the first prompt its contract', async ($, on) => {
+  const mind = memory(on)
+  engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  expect((await $.tool.call({ tool: PROBE })).result).toBe('DONE\n')
+  await typed($, 'a new conversation')
+  expect(await composed($)).toEqual([...ENGINE_SECTIONS, OWN_SECTION])
+})
+
+test('a game command as the first prompt after a clear is told to the game', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot([], false))
+  await start($)
+  await cleared($, mind)
+  game.answer = () => snapshot(STEP)
+  await typed($, '/jedicoder:start')
+  expect(await composed($)).toEqual([...ENGINE_SECTIONS, OWN_SECTION])
+  expect(game.calls.slice(-1)[0].slice(-1)).toEqual(['--called'])
+})
+
+test('memory gone is looked into once, not on every event', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  game.list = () => ({ exitCode: 1, stdout: 'Traceback' })
+  const before = game.calls.length
+  await $.classic.SessionStart({ source: 'clear' })
+  await $.classic.SessionStart({ source: 'compact' })
+  expect(game.calls.length).toBe(before + 1)
+  await typed($, 'one')
+  await composed($)
+  await typed($, 'two')
+  await composed($)
+  // Снимок — после стирания и на первом запросе; перечень без вызова
+  // инструмента не спрашивается вовсе.
+  expect(game.calls.length).toBe(before + 2)
+  expect(game.listCalls.length).toBe(1)
+  expect(await unanswered($, PROBE)).not.toBe('')
+  expect(await unanswered($, PROBE)).not.toBe('')
+  expect(game.listCalls.length).toBe(3)
+})
+
+test('a conversation replaced under a living process comes back like a cleared one', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  game.answer = () => snapshot(['NEXT: quest two'])
+  await cleared($, mind, 'resume')
+  expect(await texts($, 'terminal')).toEqual([OTHER, 'NEXT: quest two'])
+  expect((await $.tool.call({ tool: PROBE })).result).toBe('DONE\n')
+})
+
+test('a game that lists no tools has none after a clear either', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  game.list = () => tools([])
+  await start($)
+  await cleared($, mind)
+  expect(await unanswered($, PROBE)).not.toBe('')
+  expect(game.runs).toEqual([])
+})
+
+test('after a clear outside a game session the prompt is left as it was', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot([], false))
+  await start($)
+  await cleared($, mind)
+  await typed($, 'just a question')
+  expect(await composed($)).toEqual(ENGINE_SECTIONS)
+  expect(game.voiceCalls).toEqual([])
+  expect(await guessed($)).toEqual({ isShown: true })
+})
+
+test('after a clear the band stands before the first prompt', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  expect(await texts($, 'terminal')).toEqual([OTHER])
+  game.answer = () => snapshot(['NEXT: quest two'])
+  await $.classic.SessionStart({ source: 'clear' })
+  for (const surface of ['terminal', 'desktop']) {
+    expect(await texts($, surface)).toEqual([OTHER, 'NEXT: quest two'])
+  }
+  // И догадка движка снова не встаёт, и инструмент отвечает без второго перечня.
+  expect(await guessed($)).toEqual({ isShown: false })
+  expect((await $.tool.call({ tool: PROBE })).result).toBe('DONE\n')
+  expect(game.listCalls.length).toBe(2)
+})
+
+test('a clear raises nothing about what was closed before it', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => closed(0))
+  await start($)
+  game.answer = () => closed(1)
+  await cleared($, mind)
+  expect(game.toasts).toEqual([])
+  // Дальше Лицо живёт как прежде.
+  game.answer = () => closed(2)
+  await turn($)
+  expect(game.toasts).toEqual([QUEST_DONE])
+})
+
+test('the classic start of a process and a compaction run nothing of their own', async ($, on) => {
+  memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  // Процесс только встал: прежнее событие старта приходит раньше `session.start`.
+  await $.classic.SessionStart({ source: 'startup' })
+  expect(game.calls).toEqual([])
+  expect(game.listCalls).toEqual([])
+  await start($)
+  // Сжатие памяти не стирает: всё на месте, спрашивать нечего.
+  await $.classic.SessionStart({ source: 'compact' })
+  expect(game.calls.length).toBe(1)
+  expect(game.listCalls.length).toBe(1)
+})
+
+test('a failure while coming back after a clear is silence', async ($, on) => {
+  const mind = memory(on)
+  const game = engine(on, () => snapshot(STEP))
+  await start($)
+  forgot(mind)
+  game.answer = () => {
+    throw new Error('no python3')
+  }
+  game.list = () => {
+    throw new Error('no python3')
+  }
+  expect(await $.classic.SessionStart({ source: 'clear' })).toEqual({})
+  expect(await typed($, 'go on')).toEqual({ text: 'go on' })
+  expect(await composed($)).toEqual(ENGINE_SECTIONS)
+  expect(await texts($, 'terminal')).toEqual([OTHER])
+  // Команда ожила — после хода Полоса на месте, и инструмент отвечает.
+  game.answer = () => snapshot(STEP)
+  game.list = () => tools()
+  await turn($)
+  expect(await texts($, 'terminal')).toEqual([OTHER, ...STEP])
+  expect((await $.tool.call({ tool: PROBE })).result).toBe('DONE\n')
 })

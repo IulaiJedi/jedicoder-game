@@ -12,20 +12,28 @@ import json
 
 import pytest
 
-from jedicoder import cli
+from jedicoder import cli, game_session
 from jedicoder import state as st
 from test_bash_guard import run_hook
+
+#: Сессия, в которой игру уже позвали: режим пишется только из игровой (#97).
+GAME = "S-game"
 
 
 @pytest.fixture
 def save(tmp_path):
     path = tmp_path / "state.json"
-    st.save(st.default_state("local-test"), path)
+    data = st.default_state("local-test")
+    data[game_session.SESSIONS_KEY] = [GAME]
+    st.save(data, path)
     return path
 
 
 def prompt(save, **fields):
-    payload = {"hook_event_name": "UserPromptSubmit", "prompt": "начинаем"}
+    payload = {
+        "hook_event_name": "UserPromptSubmit", "prompt": "начинаем",
+        "session_id": GAME,
+    }
     payload.update(fields)
     done = run_hook("vague_prompt.py", payload, {"JEDICODER_STATE_PATH": str(save)})
     assert done.returncode == 0, done.stderr
@@ -68,7 +76,7 @@ def test_bash_hook_records_the_mode_too(save, tmp_path):
     done = run_hook("bash_guard.py", {
         "hook_event_name": "PreToolUse", "permission_mode": "acceptEdits",
         "tool_name": "Bash", "tool_input": {"command": "ls"},
-        "cwd": str(tmp_path),
+        "cwd": str(tmp_path), "session_id": GAME,
     }, {"JEDICODER_STATE_PATH": str(save)})
     assert done.returncode == 0, done.stderr
     assert st.permission_mode(st.load(save)) == "acceptEdits"
@@ -84,6 +92,52 @@ def test_hook_does_not_start_a_game_for_someone_who_is_not_playing(tmp_path):
     )
     assert done.returncode == 0
     assert not path.exists()
+
+
+def test_a_foreign_session_does_not_write_its_mode(save, tmp_path):
+    """Режим соседнего окна игра человеку не назовёт (#97)."""
+    prompt(save, permission_mode="bypassPermissions")
+    before = (save.stat().st_mtime_ns, save.read_bytes())
+    prompt(save, permission_mode="default", session_id="S-work")
+    done = run_hook("bash_guard.py", {
+        "hook_event_name": "PreToolUse", "permission_mode": "plan",
+        "tool_name": "Bash", "tool_input": {"command": "ls"},
+        "cwd": str(tmp_path), "session_id": "S-work",
+    }, {"JEDICODER_STATE_PATH": str(save)})
+    assert done.returncode == 0, done.stderr
+    assert (save.stat().st_mtime_ns, save.read_bytes()) == before
+    assert st.permission_mode(st.load(save)) == "bypassPermissions"
+
+
+def test_the_first_game_command_records_the_mode_of_its_own_request(tmp_path):
+    """Голый терминал, сохранения нет: запрос `/jedicoder:start` и делает
+    сессию игровой, и приносит её режим — контракту он нужен с первого хода."""
+    path = tmp_path / "jc" / "state.json"
+    done = run_hook("vague_prompt.py", {
+        "hook_event_name": "UserPromptSubmit", "prompt": "/jedicoder:start",
+        "session_id": "S-first", "permission_mode": "bypassPermissions",
+        "cwd": str(tmp_path),
+    }, {"JEDICODER_STATE_PATH": str(path)})
+    assert done.returncode == 0 and done.stdout == "", done.stderr
+    assert st.permission_mode(st.load(path)) == "bypassPermissions"
+
+
+@pytest.mark.parametrize("sign", ["голокрон", "папка проекта"])
+def test_the_other_signs_let_the_mode_through(save, tmp_path, sign):
+    env = {"JEDICODER_STATE_PATH": str(save)}
+    payload = {
+        "hook_event_name": "UserPromptSubmit", "prompt": "начинаем",
+        "session_id": "S-new", "permission_mode": "acceptEdits",
+    }
+    if sign == "голокрон":
+        env[game_session.GOLOKRON_MARK] = "1"
+    else:
+        data = st.load(save)
+        data["project"]["path"] = str(tmp_path)
+        st.save(data, save)
+        payload["cwd"] = str(tmp_path)
+    assert run_hook("vague_prompt.py", payload, env).returncode == 0
+    assert st.permission_mode(st.load(save)) == "acceptEdits"
 
 
 def test_unchanged_mode_does_not_rewrite_the_save(save):
