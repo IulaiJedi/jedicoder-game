@@ -540,8 +540,14 @@ def _action_done(data, act, quest_id):
     Только там, где игра знает это из сохранения: папка названа человеком;
     рассказ записан и не стёрт несошедшейся проверкой. Рассказ читает
     `quests.seen` — тот же, по которому проверка решает, идти ли ей.
+
+    Названная папка, которую проверка не приняла, действием не считается:
+    «Дальше — проверка» звала бы ту же проверку снова. Отметку ставит
+    несошедшаяся проверка и снимает `project path`.
     """
     if (act, quest_id) == FOLDER_QUEST:
+        if quests.refused(data, act, quest_id):
+            return None
         return STEP_FOLDER_NAMED if _folder_named(data) else None
     if acts.needs_words(act, quest_id):
         return STEP_WORDS_TAKEN if quests.seen(data, act, quest_id) else None
@@ -1499,6 +1505,10 @@ def _cmd_check(args, state_path, content_root, quests_root):
         # Не сошлось — результат будут переделывать. Рассказ о прежнем к
         # новому не относится: перед следующей проверкой смотреть заново.
         quests.forget_seen(data, act, quest_id)
+        if (act, quest_id) == FOLDER_QUEST:
+            # Названная папка проверку не прошла: строка «Что дальше» снова
+            # просит папку, а не ту же проверку (`_action_done`).
+            quests.mark_refused(data, act, quest_id)
     st.save(data, state_path)
 
     if quests.cannot_check(result):
@@ -1825,6 +1835,8 @@ def _cmd_project(args, state_path, content_root, quests_root):
         # в приложении, который пишет папку молча. Квест «Папка» засчитывает
         # именно названную папку (_env_for).
         data["project"]["path_named"] = str(path)
+        # Папку назвали заново: прежний провал проверки к ней не относится.
+        quests.forget_refused(data, *FOLDER_QUEST)
         st.save(data, state_path)
         # «Записана», а не «установлена»: второе новичок читал как
         # «установили программу» (прогон 2026-10-08).

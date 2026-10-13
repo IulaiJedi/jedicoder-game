@@ -542,6 +542,33 @@ def test_closed_folder_quest_moves_the_step_on(game, project):
     ]
 
 
+def _name_the_home_folder(game, project, monkeypatch):
+    """Назвать папкой проекта домашнюю целиком — её проверка не принимает."""
+    home = project()
+    monkeypatch.setenv("HOME", str(home))
+    game("enter", "1")
+    assert game("project", "path", str(home))[0] == 0
+    assert game("check", "1", "01-folder")[0] == 1
+    return home
+
+
+def test_folder_refused_by_the_check_brings_the_task_back(
+        game, project, monkeypatch):
+    """Проверка не сошлась: «Дальше — проверка» звала бы ту же проверку снова."""
+    _name_the_home_folder(game, project, monkeypatch)
+    assert both(game) == [FOLDER_STEP, FOLDER_TASK]
+
+
+def test_folder_named_again_after_a_failed_check_waits_for_the_check(
+        game, project, monkeypatch):
+    home = _name_the_home_folder(game, project, monkeypatch)
+    inner = home / "proekt"
+    inner.mkdir()
+    assert game("project", "path", str(inner))[0] == 0
+    assert both(game) == [FOLDER_STEP, FOLDER_NAMED]
+    assert game("check", "1", "01-folder")[0] == 0
+
+
 def test_first_request_asks_for_the_first_version_until_the_words(game, project):
     from test_act1_walkthrough import do_first_request
     from test_human_screens import _up_to_first_request

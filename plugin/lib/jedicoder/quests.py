@@ -198,6 +198,39 @@ def seen(state, act, quest_id):
         return False
 
 
+def mark_refused(state, act, quest_id):
+    """Записать: проверка не сошлась, а действие квеста с тех пор не повторяли.
+
+    Нужна там, где сделанное действие остаётся в сохранении и после провала:
+    папка проекта названа, но проверку не прошла. Снимает отметку тот, кто
+    записывает действие заново.
+    """
+    quest = _quest_entry(state, act, quest_id, create=True)
+    quest["refused"] = True
+    return state
+
+
+def forget_refused(state, act, quest_id):
+    """Действие сделали заново: прежний провал к нему не относится."""
+    try:
+        quest = _quest_entry(state, act, quest_id)
+        if quest:
+            quest.pop("refused", None)
+    except (AttributeError, TypeError):
+        # Сохранение правили руками: снимать нечего, а папку записать надо.
+        pass
+    return state
+
+
+def refused(state, act, quest_id):
+    try:
+        quest = _quest_entry(state, act, quest_id)
+        return bool((quest or {}).get("refused"))
+    except (AttributeError, TypeError):
+        # Сохранение правили руками: запись квеста не словарь. Отметки нет.
+        return False
+
+
 def acknowledge(state, act, quest_id):
     """Закрыть квест, у которого нет check.sh (обучающий или самоотчётный).
 
