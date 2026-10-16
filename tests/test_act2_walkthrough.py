@@ -1,222 +1,407 @@
-"""Сквозной тест: Акт 2 проходится целиком на реальном проекте.
+"""Сквозной проход Акта 2 «Память и силы» — той же дверью, что человек (#103).
 
-Это самый ценный тест плана. Он доказывает, что машинерия работает вместе:
-вход в акт выдаёт артефакт, проверки закрывают квесты, закрытие акта
-поднимает ранг.
+Чистое сохранение → Акт 1 командами игры → `enter 2` → хуки с настоящими по
+форме данными → проверки, рассказ, подтверждение → ранг Падаван → памятка.
+Сохранение не засевается нигде: следы пишет хук `plugin/hooks/traces.py`
+процессом, снимок строки состояния — сам скрипт `statusline.py` процессом,
+закрытые квесты — команды игры.
+
+`walk_act2` — общий проход для тестов следующих актов: к закрытому Акту 2
+можно прийти только так. Конец игры сегодня — закрытый Акт 4, его проходит
+`walk_act4` в `tests/test_act4_walkthrough.py`: слова «игра пока кончается»,
+`finale`, трофей на карточке и полоса после конца стережутся там.
 """
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
-from test_act1_walkthrough import ACT1_FILES, close_act1
 
-from jedicoder import acts, quests, ranks, state as st
+from jedicoder import acts, cli, debrief, ranks
+from jedicoder import state as st
+from test_act2_checks import MEMORY_OK
+from test_act2_entry import QUESTS, close_act1, game  # noqa: F401 — фикстура
+from test_human_screens import machine_words
+from test_show_traces import asked
+from test_statusline import EXAMPLE
+from test_traces import clear_end, clear_start, fire, plan_approved, plan_shown
 
-ACT = 2
-SLUG = "act2-chertezh"
-
-# Акт 2 выключен (ranks.MUTED_ACTS, спека #75): войти в него нельзя, значит
-# и пройти его дверью падавана нельзя тоже. Сквозные тесты не удалены и не
-# переписаны под обход: они оживут сами в тот день, когда номер уйдёт из
-# списка. Проверки самого акта гоняются как прежде — tests/test_act2_checks.py.
-muted = pytest.mark.skipif(
-    ranks.is_muted(2),
-    reason="Акт 2 выключен (ranks.MUTED_ACTS): войти в него нельзя, пройти — тем более",
-)
-
-ARCH = "# Архитектура\n\n## Стек\n\n" + ("Python, aiogram, SQLite. " * 40)
-CLAUDE = "# Проект\n\n" + ("Бот присылает цитату по команде /цитата. " * 20)
-DB = "# Схема\n\n## Таблица users\n\nid, tg_id, created_at\n"
+ROOT = Path(__file__).resolve().parents[1]
+STATUSLINE = ROOT / "plugin" / "lib" / "jedicoder" / "statusline.py"
 
 
-def seeded_state():
-    """Состояние с закрытым Актом 1: без него вход во второй акт запрещён."""
-    data = st.default_state("local-test")
-    ranks.enter_act(data, 1)
-    ranks.close_act(data, 1)
-    return data
+def hook(game, payload):  # noqa: F811
+    """Хук той же сессии, что игра: пишет в её сохранение."""
+    return fire(game.state_path, payload)
 
 
-def test_quest_order_declared():
-    assert acts.quest_ids(ACT) == (
-        "01-recipe", "02-claude-md", "03-db-schema",
-        "04-git-init", "05-env-guard", "06-pipeline",
+def statusline_answered(game, data=None):  # noqa: F811
+    """Claude Code ответил и позвал строку состояния: снимок лёг рядом с
+    сохранением игры — туда же, куда его кладёт настоящая установка."""
+    done = subprocess.run(
+        [sys.executable, str(STATUSLINE)],
+        input=json.dumps(EXAMPLE if data is None else data),
+        capture_output=True, text=True, timeout=10,
+        env=dict(os.environ, JEDICODER_STATE_PATH=str(game.state_path)),
     )
+    assert done.returncode == 0, done.stderr
+    return done
 
 
-def test_act1_has_declared_quests():
-    """У Акта 1 «Знакомство» развилки нет: состав отдаётся без трека."""
-    assert acts.quest_ids(1) == (
-        "01-folder", "02-idea", "03-first-request", "04-save", "05-stop-undo",
-    )
-    assert acts.quest_ids(1, acts.TRACK_FOUNDER) == acts.quest_ids(1)
-    assert acts.quest_kind(1, "01-folder") == acts.KIND_SCRIPT
-    assert acts.quest_kind(1, "05-stop-undo") == acts.KIND_ACK
+def do_plan(game, proj):  # noqa: F811
+    """План показан и одобрен: Enter на первой строке."""
+    hook(game, plan_shown(cwd=proj))
+    hook(game, plan_approved(cwd=proj))
 
 
-def test_next_quest_walks_in_order():
-    data = seeded_state()
-    ranks.enter_act(data, ACT)
-    assert acts.next_quest(data, ACT) == "01-recipe"
-    data["acts"]["2"]["quests"]["01-recipe"] = {"status": "done", "attempts": 1}
-    assert acts.next_quest(data, ACT) == "02-claude-md"
+def do_show(game, proj):  # noqa: F811
+    """Файл проекта через `@` и вставленный снимок экрана."""
+    (proj / "notes.txt").write_text("молоко\n", encoding="utf-8")
+    hook(game, asked("что в @notes.txt?", proj))
+    hook(game, asked("[Image #1] что на снимке?", proj))
 
 
-def test_full_walkthrough(tmp_path, quests_root, project):
-    proj = project(
-        files={"ARCHITECTURE.md": ARCH, "CLAUDE.md": CLAUDE, "DB-SCHEMA.md": DB},
-        gitignore=".env\n.venv\n",
-        git=True,
-        commits=1,
-    )
-    state_path = tmp_path / "state.json"
-    data = seeded_state()
-    data["project"] = {"path": str(proj), "has_db": True}
-    ranks.enter_act(data, ACT)
-
-    assert data["artifacts"] == ["brainstorm", "plan"]
-
-    for quest_id in acts.quest_ids(ACT):
-        result = quests.run_check(
-            quests_root, SLUG, quest_id, proj,
-            env_extra={"JEDICODER_HAS_DB": "yes"},
-        )
-        if result.kind == quests.KIND_ACK:
-            quests.acknowledge(data, ACT, quest_id)
-            continue
-        assert result.ok is True, "квест {} не закрылся: {}".format(
-            quest_id, quests.failed_checks(result)
-        )
-        quests.record_attempt(data, ACT, quest_id, result)
-
-    assert acts.all_closed(data, ACT) is True
-    assert acts.next_quest(data, ACT) is None
-
-    ranks.close_act(data, ACT)
-    st.save(data, state_path)
-
-    reloaded = st.load(state_path)
-    assert reloaded["rank"] == "padawan"
-    assert reloaded["first_try"] == {"passed": 5, "attempted": 5}
-    assert "plan" in reloaded["artifacts"]
+def do_memory(game, proj):  # noqa: F811
+    (proj / "CLAUDE.md").write_text(MEMORY_OK, encoding="utf-8")
 
 
-def test_act_not_closed_while_quest_open(tmp_path, quests_root, project):
-    proj = project(files={"CLAUDE.md": CLAUDE}, git=True, commits=1)
-    data = seeded_state()
-    ranks.enter_act(data, ACT)
-    result = quests.run_check(quests_root, SLUG, "02-claude-md", proj)
-    quests.record_attempt(data, ACT, "02-claude-md", result)
-    assert acts.all_closed(data, ACT) is False
-    assert acts.next_quest(data, ACT) == "01-recipe"
+def do_clear(game, proj):  # noqa: F811
+    """`/clear`: прежний разговор кончился, новый начался в папке проекта."""
+    hook(game, clear_end(cwd=proj))
+    hook(game, clear_start(cwd=proj))
 
 
-@muted
-def test_full_walkthrough_via_cli(tmp_path, quests_root, project):
-    """Пройти Акт 2 исключительно через CLI, как реальный падаван.
+def walk_act2(game, proj, screens=None):  # noqa: F811
+    """Пройти Акт 2 от входа до закрытия. Акт 1 к этому времени закрыт.
 
-    Это отличается от test_full_walkthrough тем, что использует cli.main()
-    вместо прямых вызовов ranks.* и quests.*. Это доказывает, что игра
-    подлинно проходима через интерфейс, который видит пользователь.
-
-    Засев Акта 1 записью состояния убран: предпосылка достижима теми же
-    командами, что и всё остальное — Акт 1 проходится по-настоящему.
+    `screens` — список, в который ложится каждый экран пути по порядку.
+    Возвращает экран последней команды — закрытие акта.
     """
-    from jedicoder import cli
+    def step(*argv, **expect):
+        code, out = game(*argv)
+        assert code == expect.get("code", 0), (argv, out)
+        if screens is not None:
+            screens.append(out)
+        return out
 
-    proj = project(
-        files=dict(
-            ACT1_FILES,
-            **{"ARCHITECTURE.md": ARCH, "CLAUDE.md": CLAUDE, "DB-SCHEMA.md": DB}
-        ),
-        gitignore=".env\n.venv\n",
-        git=True,
-        commits=1,
+    step("enter", "2")
+    do_plan(game, proj)
+    step("check", "2", "01-plan")
+    do_show(game, proj)
+    step("check", "2", "02-show")
+    do_memory(game, proj)
+    step("check", "2", "03-memory")
+    do_clear(game, proj)
+    step("seen", "2", "04-clear")
+    step("check", "2", "04-clear")
+    # «Силы»: человек рассказал, модель спрашивает игру, с чем сверить.
+    statusline_answered(game)
+    step("project")
+    return step("ack", "2", "05-powers")
+
+
+def walk_two_acts(game, proj, screens=None):  # noqa: F811
+    """Два вечера командами и хуками: Акт 1, потом Акт 2."""
+    close_act1(game, proj)
+    return walk_act2(game, proj, screens)
+
+
+@pytest.fixture
+def finished(game, project):  # noqa: F811
+    """Акт 2 закрыт, третий не начат. Отдаёт (игра, папка, экраны)."""
+    proj = project()
+    screens = []
+    walk_two_acts(game, proj, screens)
+    return game, proj, screens
+
+
+# --- проход ------------------------------------------------------------------
+
+def test_novice_walks_act2_from_a_clean_save_to_padawan(game, project):  # noqa: F811
+    proj = project()
+    assert not game.state_path.exists()
+    close_act1(game, proj)
+    data = st.load(game.state_path)
+    assert data["rank"] == "seeker"
+    assert data[st.TRACES_KEY] == {}
+
+    walk_act2(game, proj)
+
+    data = st.load(game.state_path)
+    assert data["rank"] == "padawan"
+    assert data["acts"]["2"]["status"] == ranks.STATUS_DONE
+    assert acts.all_closed(data, 2) is True
+    assert sorted(data["acts"]["2"]["quests"]) == sorted(QUESTS)
+    assert data["artifacts"] == ["brainstorm", "handoff"]
+    assert ranks.rank_for(data) == "padawan"
+    # Каждый след акта помечен: действие сделано, пока шёл его акт. Следа
+    # слова хука ещё нет — он из Акта 3.
+    for kind in (st.TRACE_PLAN_APPROVED, st.TRACE_FILE_SHOWN,
+                 st.TRACE_IMAGE_SHOWN, st.TRACE_CLEARED):
+        assert cli._trace_counts(data, kind), kind
+    assert st.trace(data, st.TRACE_HOOK_WORD) is None
+    # Попыток ровно по одной: ни одна проверка по дороге не провалилась.
+    facts = debrief.facts(data)
+    assert facts["acts_completed"] == [1, 2]
+    assert facts["first_try"]["passed"] == facts["first_try"]["attempted"]
+
+
+def test_the_act_stays_open_until_the_last_quest(game, project):  # noqa: F811
+    proj = project()
+    close_act1(game, proj)
+    assert game("enter", "2")[0] == 0
+    do_plan(game, proj)
+    do_show(game, proj)
+    do_memory(game, proj)
+    for quest_id in ("01-plan", "02-show", "03-memory"):
+        assert game("check", "2", quest_id)[0] == 0
+    # `/clear` считается только после записанной памяти проекта.
+    do_clear(game, proj)
+    assert game("seen", "2", "04-clear")[0] == 0
+    code, out = game("check", "2", "04-clear")
+    assert code == 0
+    assert "Акт 2" not in out and "ранг" not in out.lower()
+    data = st.load(game.state_path)
+    assert data["rank"] == "seeker"
+    assert data["acts"]["2"]["status"] == ranks.STATUS_IN_PROGRESS
+
+
+# --- что человек читает на пути закрытия ---------------------------------------
+
+def test_closing_the_act_names_the_rank_and_the_game_goes_on(finished):
+    _, _, screens = finished
+    assert screens[-1].splitlines()[:4] == [
+        "Квест «Силы» закрыт: ты рассказал, что увидел.",
+        "",
+        "Акт 2. Память и силы — закрыт.",
+        "Новый ранг: Падаван.",
+    ]
+    # Впереди Акт 3: о конце игры здесь ни слова.
+    assert "кончается" not in screens[-1] and "ещё не написан" not in screens[-1]
+    assert "finale" not in screens[-1] and "бесплатна" not in screens[-1]
+
+
+def test_before_the_last_quest_the_game_tells_the_model_what_it_sees(finished):
+    """Одним вызовом на пути квеста «Силы» — с чем сверить рассказ."""
+    _, proj, screens = finished
+    assert screens[-2].splitlines() == [
+        "Проект:",
+        "  Папка: {}".format(proj.resolve()),
+        "",
+        "Claude Code — что игра видит сама:",
+        "  Модель: Opus",
+        "  Уровень усилий: high",
+        "  Лимит на пять часов: занято 24%",
+        "  Лимит на неделю: занято 41%",
+    ]
+
+
+def test_the_last_quest_closes_by_words_when_the_game_sees_nothing(
+        game, project):  # noqa: F811
+    """Строки состояния нет — квест всё равно закрывает рассказ."""
+    proj = project()
+    close_act1(game, proj)
+    assert game("enter", "2")[0] == 0
+    do_plan(game, proj)
+    do_show(game, proj)
+    do_memory(game, proj)
+    for quest_id in ("01-plan", "02-show", "03-memory"):
+        assert game("check", "2", quest_id)[0] == 0
+    do_clear(game, proj)
+    assert game("seen", "2", "04-clear")[0] == 0
+    assert game("check", "2", "04-clear")[0] == 0
+    code, out = game("project")
+    assert code == 0 and "игра этого не видит" in out
+    code, out = game("ack", "2", "05-powers")
+    assert code == 0, out
+    assert "Новый ранг: Падаван." in out
+
+
+def test_no_screen_of_act2_speaks_to_the_model(finished):
+    game, _, screens = finished  # noqa: F811
+    screens.append(game("status")[1])
+    for screen in screens:
+        assert machine_words(screen) == [], screen
+        assert "Traceback" not in screen
+
+
+def test_first_screen_after_act2_points_at_act3(finished):
+    game, _, _ = finished  # noqa: F811
+    code, out = game("status")
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0] == "Ранг: Падаван"
+    start = lines.index("Карта:")
+    assert lines[start:start + 6] == [
+        "Карта:",
+        "  Акт 1. Знакомство — пройден",
+        "  Акт 2. Память и силы — пройден",
+        "  Акт 3. Умения — не начат, квестов закрыто: 0/5",
+        "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5",
+        "  Акт 5 ещё не написан",
+    ]
+    head = lines.index("Приёмы: скажи Claude слова в кавычках — он применит приём.")
+    assert lines[head + 1:head + 3] == [
+        "  найти идею — «помоги найти идею»",
+        "  «Передача»: начать следующий разговор с того же места — "
+        "«запиши передачу»",
+    ]
+    assert lines[-2:] == [
+        "Что дальше: начать Акт 3 «Умения» — квестов в нём 5.",
+        "  Скажи Claude: «начинаем».",
+    ]
+
+
+def test_memo_after_act2_carries_the_handoff_and_counts_playable_acts(
+        finished):
+    game, proj, _ = finished  # noqa: F811
+    code, out = game("scroll")
+    assert code == 0, out
+    assert out.splitlines()[0] == "Памятка Падавана: {}/docs/jedicoder".format(
+        proj.name
     )
-    state_path = tmp_path / "state.json"
-
-    # Предпосылка — тоже через CLI: Акт 1 проходится по-настоящему.
-    assert cli.main(["project", "path", str(proj)],
-                    state_path=state_path) == 0
-    close_act1(lambda *argv: cli.main(
-        list(argv), state_path=state_path, quests_root=quests_root
-    ))
-    assert cli.main(["project", "db", "yes"], state_path=state_path) == 0
-
-    # Enter Act 2
-    assert cli.main(["enter", "2"], state_path=state_path) == 0
-
-    # Check all 5 script quests
-    for quest_id in ("01-recipe", "02-claude-md", "03-db-schema", "04-git-init", "05-env-guard"):
-        assert cli.main(
-            ["check", "2", quest_id],
-            state_path=state_path,
-            quests_root=quests_root,
-        ) == 0, "квест {} не закрылся через CLI".format(quest_id)
-
-    # Acknowledge the ack quest
-    assert cli.main(["ack", "2", "06-pipeline"], state_path=state_path) == 0
-
-    # Verify final state
-    reloaded = st.load(state_path)
-    assert reloaded["rank"] == "padawan", "ранг должен быть padawan после закрытия акта"
-    assert reloaded["acts"]["2"]["status"] == "done", "акт 2 должен быть done"
-    # Девять скриптовых квестов: четыре в Акте 1 плюс пять в Акте 2. Квесты,
-    # которые подтверждаются через ack, в счёт не идут.
-    assert reloaded["first_try"] == {"passed": 9, "attempted": 9}
-    assert ranks.can_enter_act(reloaded, 3)[0] is True, "должна быть возможность войти в акт 3"
+    assert machine_words(out) == []
+    folder = proj / "docs" / "jedicoder"
+    names = sorted(path.name for path in folder.iterdir())
+    assert "handoff.md" in names and "brainstorm.md" in names
+    assert "plan.md" not in names and "investigate.md" not in names
+    assert "HANDOFF.md" in (folder / "handoff.md").read_text(encoding="utf-8")
+    razbor = (folder / "razbor.md").read_text(encoding="utf-8")
+    # Счёт актов — по играемым: «2 из 4», а не «2 из 5».
+    assert "- Закрыто актов: 2 из 4" in razbor
+    assert "из 5" not in razbor
+    for quest_id in QUESTS:
+        assert quest_id not in razbor
+    for title in ("План", "Покажи", "Память проекта", "Чистый лист", "Силы"):
+        assert "| 2 | {} | 1 | да |".format(title) in razbor
+    # Фраз третьего вечера в памятке ещё нет: в акт не входили.
+    frazy = (folder / "frazy.md").read_text(encoding="utf-8")
+    assert "ссылка на скилл" not in frazy and "чистка" not in frazy
 
 
-@muted
-def test_fresh_install_reaches_padawan_via_cli_only(tmp_path, quests_root, project):
-    """Путь живого падавана целиком: от чистого состояния до ранга Падаван.
+# --- Полоса, всплывающие и карта в каждом состоянии акта ------------------------
 
-    БЕЗ ЗАСЕВА. Ни одного прямого вызова ranks.* или quests.* — только cli.main.
-    Прежний «сквозной через CLI» тест засевал закрытый Акт 1 записью состояния,
-    и это скрыло, что предпосылка недостижима через интерфейс падавана. Тест,
-    который стартует из состояния, невоспроизводимого на реальной установке,
-    ничего не доказывает.
-    """
-    from jedicoder import cli
+def strip_and_map(game, content_root):  # noqa: F811
+    """Что видит человек: строка «Что дальше» первого экрана, она же в
+    снимке Лица, строка карты об Акте 2 и то, по чему Лицо решает о
+    всплывающих (`quests_closed`, `rank`, подписи)."""
+    code, out = game("status")
+    assert code == 0, out
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("Что дальше:"))
+    step = [line.strip() for line in lines[start:start + 2]]
+    code, raw = game("face", "--called")
+    assert code == 0, raw
+    face = json.loads(raw)
+    assert face["is_game"] is True
+    assert face["next"] == step
+    assert face["toast_quest"] == "Квест закрыт"
+    assert face["toast_rank"] == "Новый ранг: {}".format(face["rank"])
+    act2 = next(line.strip() for line in lines if line.startswith("  Акт 2."))
+    return step[0], step[1], act2, face["quests_closed"], face["rank"], face["say"]
 
-    proj = project(
-        files=dict(
-            ACT1_FILES,
-            **{"ARCHITECTURE.md": ARCH, "CLAUDE.md": CLAUDE, "DB-SCHEMA.md": DB}
-        ),
-        gitignore=".env\n.venv\n",
-        git=True,
-        commits=1,
+
+def test_strip_toasts_and_map_are_true_in_every_state_of_the_act(
+        game, project, content_root):  # noqa: F811
+    proj = project()
+    close_act1(game, proj)
+    tasks = cli._quest_tasks(content_root)
+    quest = "Что дальше: квест «{}» — Акт 2 «Память и силы»."
+    going = "Акт 2. Память и силы — идёт, квестов закрыто: {}/5"
+
+    def see():
+        return strip_and_map(game, content_root)
+
+    # Акт 1 закрыт, во второй не входили.
+    assert see() == (
+        "Что дальше: начать Акт 2 «Память и силы» — квестов в нём 5.",
+        "Скажи Claude: «начинаем».",
+        "Акт 2. Память и силы — не начат, квестов закрыто: 0/5",
+        5, "Искатель", cli.SAY_START,
     )
-    state_path = tmp_path / "state.json"
-    st.save(st.default_state(), state_path)
-    assert st.load(state_path)["rank"] == "youngling"
-    assert st.load(state_path)["acts"] == {}
 
-    def jc(*argv):
-        return cli.main(list(argv), state_path=state_path, quests_root=quests_root)
+    assert game("enter", "2")[0] == 0
+    assert see() == (quest.format("План"), tasks[(2, "01-plan")],
+                     going.format(0), 5, "Искатель", "")
+    hook(game, plan_shown(cwd=proj))
+    assert see()[1] == tasks[(2, "01-plan")]      # показан — не одобрен
+    hook(game, plan_approved(cwd=proj))
+    assert see() == (quest.format("План"), cli.STEP_PLAN_APPROVED,
+                     going.format(0), 5, "Искатель", "")
+    assert game("check", "2", "01-plan")[0] == 0
 
-    assert jc("project", "path", str(proj)) == 0
-    assert jc("project", "db", "yes") == 0
+    assert see() == (quest.format("Покажи"), tasks[(2, "02-show")],
+                     going.format(1), 6, "Искатель", "")
+    do_show(game, proj)
+    assert see() == (quest.format("Покажи"), cli.STEP_SHOWN,
+                     going.format(1), 6, "Искатель", "")
+    assert game("check", "2", "02-show")[0] == 0
 
-    close_act1(jc)
+    assert see() == (quest.format("Память проекта"), tasks[(2, "03-memory")],
+                     going.format(2), 7, "Искатель", "")
+    # Файл записан, проверка ещё не шла: игра этого сама не знает — задание.
+    do_memory(game, proj)
+    assert see()[1] == tasks[(2, "03-memory")]
+    assert game("check", "2", "03-memory")[0] == 0
 
-    assert jc("enter", "2") == 0
-    for quest_id in ("01-recipe", "02-claude-md", "03-db-schema",
-                     "04-git-init", "05-env-guard"):
-        assert jc("check", "2", quest_id) == 0, (
-            "квест {} не закрылся через CLI".format(quest_id)
-        )
-    assert jc("ack", "2", "06-pipeline") == 0
+    assert see() == (quest.format("Чистый лист"), tasks[(2, "04-clear")],
+                     going.format(3), 8, "Искатель", "")
+    do_clear(game, proj)
+    assert see()[1] == cli.STEP_NEW_TALK          # `/clear` был — рассказа нет
+    assert game("seen", "2", "04-clear")[0] == 0
+    assert see() == (quest.format("Чистый лист"), cli.STEP_WORDS_TAKEN,
+                     going.format(3), 8, "Искатель", "")
+    assert game("check", "2", "04-clear")[0] == 0
 
-    reloaded = st.load(state_path)
-    assert reloaded["rank"] == "padawan"
-    assert reloaded["acts"]["1"]["status"] == "done"
-    assert reloaded["acts"]["2"]["status"] == "done"
-    # Акт 3 уже имеет квесты, поэтому вход разрешён.
-    assert ranks.can_enter_act(reloaded, 3)[0] is True
-    assert jc("enter", "3") == 0, "можно пускать в акт, для которого есть квесты"
-    # Акт 3 объявлен и начат, но не закрыт — CLI обязан не пускать дальше по порядку актов.
-    assert ranks.can_enter_act(reloaded, 4)[0] is False
-    assert jc("enter", "4") == 1, "нельзя пускать в акт, если предыдущий не закрыт"
-    assert jc("artifact", "cso") == 1, "и выдавать его артефакт тоже"
-    after = st.load(state_path)
-    assert "4" not in after["acts"], "отказанный вход не начинает акт"
-    assert "cso" not in (after.get("artifacts") or [])
+    assert see() == (quest.format("Силы"), tasks[(2, "05-powers")],
+                     going.format(4), 9, "Искатель", "")
+    # Игра рассказала модели, что видит сама: шаг от этого не меняется.
+    statusline_answered(game)
+    assert game("project")[0] == 0
+    assert see()[1] == tasks[(2, "05-powers")]
+    assert game("ack", "2", "05-powers")[0] == 0
+
+    # Акт закрыт: ранг вырос — Лицо покажет подпись о ранге, а не о квесте;
+    # полоса зовёт в следующий акт.
+    assert see() == (
+        "Что дальше: начать Акт 3 «Умения» — квестов в нём 5.",
+        "Скажи Claude: «начинаем».",
+        "Акт 2. Память и силы — пройден",
+        10, "Падаван", cli.SAY_START,
+    )
+
+
+# --- рассказ, когда проверка не может посмотреть (#103) -------------------------
+
+def test_words_are_not_taken_when_the_project_folder_is_gone(
+        game, project, tmp_path):  # noqa: F811
+    """Папки проекта нет — игра говорит о папке, а не «не видела разговора»:
+    новый разговор был, и просить `/clear` ещё раз значило бы солгать."""
+    proj = project()
+    close_act1(game, proj)
+    assert game("enter", "2")[0] == 0
+    do_memory(game, proj)
+    assert game("check", "2", "03-memory")[0] == 0
+    do_clear(game, proj)
+    proj.rename(tmp_path / "унесли")
+
+    code, out = game("seen", "2", "04-clear")
+
+    assert code == 1
+    assert out.splitlines() == [
+        "Папка проекта не найдена: {}".format(proj.name),
+        "  Рассказ пока не записан: игра не может посмотреть в папку.",
+        "  Скажи Claude, где проект лежит теперь.",
+    ]
+    assert "разговор" not in out and "/clear" not in out
+    assert machine_words(out) == []
+    data = st.load(game.state_path)
+    assert "04-clear" not in data["acts"]["2"]["quests"]
+
+    # Папку вернули — рассказ принимается: след никуда не делся.
+    (tmp_path / "унесли").rename(proj)
+    assert game("seen", "2", "04-clear")[0] == 0
+    assert game("check", "2", "04-clear")[0] == 0
+

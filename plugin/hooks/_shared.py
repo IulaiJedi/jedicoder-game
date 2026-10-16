@@ -172,6 +172,10 @@ def record_permission_mode(payload):
             return
         reported = payload.get("permission_mode")
         path = state_path()
+        if not Path(path).exists():
+            # Игру ещё не начинали: и замок не берётся — он оставил бы на
+            # диске папку игры и свой файл.
+            return
         with update_state(path) as state:
             # Под замком, после чтения: испорченный файл `load` к этому
             # моменту уже унёс в сторону, и писать поверх пустоты нечего.

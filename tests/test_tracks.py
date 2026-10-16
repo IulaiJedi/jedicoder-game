@@ -51,9 +51,9 @@ def test_unknown_track_is_treated_as_absent():
 
 def test_act2_still_works_without_track():
     assert acts.quest_ids(2) == (
-        "01-recipe", "02-claude-md", "03-db-schema",
-        "04-git-init", "05-env-guard", "06-pipeline",
+        "01-plan", "02-show", "03-memory", "04-clear", "05-powers",
     )
+    assert acts.quest_ids(2, acts.TRACK_FOUNDER) == acts.quest_ids(2)
 
 
 def test_track_of_reads_passport():

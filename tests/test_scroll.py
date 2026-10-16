@@ -83,9 +83,9 @@ def texts(files):
 
 
 def test_build_returns_named_files_and_touches_no_disk(tmp_path):
-    files = scroll.build(facts(), instructions("plan", "goal"), today=TODAY)
+    files = scroll.build(facts(), instructions("handoff", "goal"), today=TODAY)
     assert [name for name, _ in files] == [
-        scroll.INDEX_NAME, "plan.md", "goal.md", scroll.DEBRIEF_NAME,
+        scroll.INDEX_NAME, "handoff.md", "goal.md", scroll.DEBRIEF_NAME,
     ]
     assert all(isinstance(text, str) and text for _, text in files)
     assert list(tmp_path.iterdir()) == []
@@ -135,10 +135,10 @@ def test_unknown_rank_falls_back_to_the_title_it_was_given():
 
 
 def test_build_orders_instructions_by_the_engine_registry():
-    given = instructions("goal", "plan", "brainstorm")
+    given = instructions("goal", "handoff", "brainstorm")
     files = scroll.build(facts(), given, today=TODAY)
     names = [name for name, _ in files]
-    assert names[1:4] == ["brainstorm.md", "plan.md", "goal.md"]
+    assert names[1:4] == ["brainstorm.md", "handoff.md", "goal.md"]
 
 
 def test_build_gives_only_the_instructions_it_was_handed():
@@ -176,7 +176,7 @@ def test_debrief_carries_the_numbers_it_was_given():
     assert "Закрыто квестов: 2" in page
     assert "Попыток потрачено: 4" in page
     assert "С первой попытки: 1 из 2" in page
-    assert "XP: 140" in page
+    assert "Очки: 140" in page
     assert "Открыто слов: 7" in page
 
 
@@ -260,7 +260,34 @@ def test_incomplete_dark_side_log_is_said_out_loud():
 
 
 def test_seam_keys_are_named_once():
-    assert scroll.PARTS == ("debrief", "roadmap", "rank_card")
+    assert scroll.PARTS == (
+        "debrief", "roadmap", "rank_card", "phrases", "path",
+    )
+
+
+def test_phrases_page_is_a_table_and_empty_rows_give_no_page():
+    """Страница готовых фраз: заголовок, вводная строка, таблица. Строк нет
+    — страницы нет, и в оглавление она не попадает."""
+    page = scroll.phrases_page(["| Что-то заработало | Сохрани |"])
+    assert page.splitlines() == [
+        "# Готовые фразы для Claude",
+        "",
+        "Говорить можно своими словами: важен смысл, а не точная фраза.",
+        "",
+        "| Когда | Что сказать |",
+        "|---|---|",
+        "| Что-то заработало | Сохрани |",
+    ]
+    assert scroll.phrases_page([]) == "" and scroll.phrases_page(None) == ""
+
+    files = texts(scroll.build(
+        facts(), instructions("goal"), today=TODAY, parts={"phrases": page},
+    ))
+    assert files[scroll.PHRASES_NAME] == page
+    assert "**frazy.md** — Готовые фразы для Claude" in files[scroll.INDEX_NAME]
+    without = texts(scroll.build(facts(), instructions("goal"), today=TODAY))
+    assert scroll.PHRASES_NAME not in without
+    assert "frazy.md" not in without[scroll.INDEX_NAME]
 
 
 def test_magistr_text_lands_under_the_facts():
@@ -362,7 +389,7 @@ def test_new_facts_overwrite_our_own_untouched_file(tmp_path):
     _, prints = issue(target, sample())
     report, prints = issue(target, sample(xp=999), prints)
     assert actions(report)[scroll.DEBRIEF_NAME] == "updated"
-    assert "XP: 999" in (target / scroll.DEBRIEF_NAME).read_text(encoding="utf-8")
+    assert "Очки: 999" in (target / scroll.DEBRIEF_NAME).read_text(encoding="utf-8")
     assert sorted(p.name for p in target.iterdir()) == sorted(
         [scroll.INDEX_NAME, "goal.md", scroll.DEBRIEF_NAME]
     )
@@ -379,7 +406,7 @@ def test_edited_file_survives_and_the_fresh_one_lies_beside_it(tmp_path):
     assert row["action"] == "kept"
     assert row["written"] == "razbor-{}.md".format(TODAY)
     beside = target / row["written"]
-    assert "XP: 999" in beside.read_text(encoding="utf-8")
+    assert "Очки: 999" in beside.read_text(encoding="utf-8")
 
 
 def test_second_edit_on_the_same_day_gets_its_own_name(tmp_path):
@@ -514,7 +541,7 @@ def test_command_lays_the_scroll_into_the_project(paths, capsys, project):
     target = folder / "docs" / "jedicoder"
     assert (target / scroll.INDEX_NAME).exists()
     assert (target / scroll.DEBRIEF_NAME).exists()
-    assert "goal.md" in out
+    assert scroll.DEBRIEF_NAME in out
     # Где лежит памятка — от имени папки проекта, без дороги до неё (#87).
     assert "{}/docs/jedicoder".format(folder.name) in out
     assert str(folder.parent) not in out
@@ -527,7 +554,8 @@ def test_command_gives_only_the_artifacts_that_are_open(paths, capsys, project):
     run(["project", "path", str(folder)], paths, capsys)
     run(["scroll"], paths, capsys)
     target = folder / "docs" / "jedicoder"
-    assert (target / "goal.md").exists()
+    # Приём без замка в памятку не идёт, пока его акт выключен (#114).
+    assert not (target / "goal.md").exists()
     assert not (target / "plan.md").exists()
     with st.update_state(paths["state_path"]) as data:
         ranks.enter_act(data, 1)
@@ -550,7 +578,7 @@ def test_command_keeps_the_edit_and_says_so(paths, capsys, project):
     assert "Оставлено как есть" in out
     beside = list(target.glob("razbor-*.md"))
     assert len(beside) == 1
-    assert "XP: 999" in beside[0].read_text(encoding="utf-8")
+    assert "Очки: 999" in beside[0].read_text(encoding="utf-8")
 
 
 def test_command_repeated_the_same_day_creates_nothing_new(

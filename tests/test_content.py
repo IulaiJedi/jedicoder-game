@@ -2,6 +2,8 @@ import re
 
 import pytest
 
+from conftest import needs_shelf
+
 from jedicoder import content
 
 
@@ -207,10 +209,82 @@ SHELVED_ACT1_TERMS = (
 
 # Шесть слов, уехавших из Акта 1 планом 01.2-05: у Ремесленника было
 # пятнадцать доступных терминов при бюджете девять. Ни одно не удалено —
-# переехали по смыслу, и что они на месте, стережёт
-# test_language.test_relocated_terms_stay_relocated.
-RELOCATED_FROM_ACT1 = ("stack", "script", "git-history", "index", "pipeline",
-                       "interface")
+# переехали по смыслу. Пять из них жили в прежнем Акте 2 «Чертёж» и ушли с
+# ним на полку (SHELVED_ACT2_TERMS ниже); шестое, `interface`, жило в прежнем
+# Акте 3 «Первая кровь» и 2026-10-13 ушло на полку с ним (SHELVED_ACT3_TERMS).
+RELOCATED_FROM_ACT1 = ()
+
+# Слова прежнего Акта 2 «Чертёж», уехавшие на полку вместе с ним 2026-10-13
+# (спека #99): язык выбора стека, первого коммита и пайплайна. В игре их нет
+# — ни карточкой, ни алиасом; вернутся с актом. Седьмое слово прежнего акта,
+# `env`, осталось в игре: квест «Сохранение» Акта 1 стережёт этот файл, и
+# карточка обещана Акту 2.
+SHELVED_ACT2_TERMS = (
+    "stack", "dependencies", "script", "git-history", "index", "pipeline",
+)
+
+
+# Слова прежнего Акта 3 «Первая кровь», уехавшие на полку вместе с ним
+# 2026-10-13 (спека #108): язык запуска, поломки и чужих инструментов. В
+# игре их нет — ни карточкой, ни алиасом. Из десяти слов прежнего акта в игре
+# остались четыре: `skill` и `hook` — слова нового Акта 3 «Умения» (квесты
+# «Скилл» и «Хук»), `compact` и `context-window` — слова второго акта: оба
+# звучат в квесте «Чистый лист» (переехали тикетами #111 и #104).
+SHELVED_ACT3_TERMS = (
+    "port", "localhost", "interface", "traceback", "mcp", "subagent",
+)
+KEPT_FROM_OLD_ACT3 = {
+    "skill": (3, "01-skill"), "hook": (3, "04-hook"), "compact": (2, "04-clear"),
+    "context-window": (2, "04-clear"),
+}
+#: Три слова полок вернулись в игру карточками Акта 4 «Свой продукт» (#120):
+#: сайт там открывается по адресу на своём компьютере (`localhost`, `port` —
+#: из «Первой крови»), первая версия продукта зовётся MVP (`mvp` — из «Поиска
+#: боли»). Карточки написаны заново; на полках остались прежние.
+RETURNED_IN_ACT4 = {
+    "localhost": (4, "04-run"), "port": (4, "04-run"), "mvp": (4, "02-plan"),
+}
+
+
+def test_shelved_act3_terms_left_the_game_and_lie_on_the_shelf(content_root):
+    """Слова прежнего Акта 3 не удалены, а переложены: в игре их нет, на
+    полке — все шесть, и каждый файл по-прежнему читается схемой."""
+    from pathlib import Path
+
+    from jedicoder import content
+
+    by_term = {item.term: item for item in content.load_terms(content_root)}
+    left = set(SHELVED_ACT3_TERMS) - set(RETURNED_IN_ACT4)
+    assert sorted(set(by_term) & left) == []
+    for name, (act, quest) in list(KEPT_FROM_OLD_ACT3.items()) + list(
+            RETURNED_IN_ACT4.items()):
+        assert name in by_term, "слово «{}» пропало из игры".format(name)
+        assert (by_term[name].act, by_term[name].quest) == (act, quest), name
+
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act3-pervaya-krov" / "content"
+    if not shelf.is_dir():
+        # Полка наружу не едет: в выгрузке (`build_release.py`) её нет.
+        pytest.skip("полки прежнего Акта 3 нет в этом дереве")
+    on_shelf = sorted(item.term for item in content.load_terms(shelf))
+    assert on_shelf == sorted(SHELVED_ACT3_TERMS)
+
+
+def test_shelved_act3_holds_its_cutscene():
+    """Катсцена «Первой крови» лежит на полке и читается тем же загрузчиком."""
+    from pathlib import Path
+
+    from jedicoder import content
+
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act3-pervaya-krov" / "content"
+    if not shelf.is_dir():
+        pytest.skip("полки прежнего Акта 3 нет в этом дереве")
+    scenes = list(content.load_acts(shelf))
+    assert [item.slug for item in scenes] == ["act3-pervaya-krov"]
+    assert scenes[0].quests == (
+        "01-launch", "02-feature", "03-break", "04-fix", "05-decisions",
+        "06-context7", "07-git-safety", "08-skill", "09-loop-protocol",
+        "10-boss",
+    )
 
 
 def test_act1_terms_present(content_root):
@@ -248,7 +322,7 @@ def test_shelved_terms_left_the_game_and_lie_on_the_shelf(content_root):
     from jedicoder import content
 
     live = {item.term for item in content.load_terms(content_root)}
-    assert sorted(live & set(SHELVED_ACT1_TERMS)) == []
+    assert sorted(live & (set(SHELVED_ACT1_TERMS) - set(RETURNED_IN_ACT4))) == []
 
     # Тем же загрузчиком, что и живой словарь: полка обязана оставаться
     # читаемой схемой, иначе вернуть слова значило бы сначала их чинить.
@@ -260,8 +334,72 @@ def test_shelved_terms_left_the_game_and_lie_on_the_shelf(content_root):
     assert on_shelf == sorted(SHELVED_ACT1_TERMS)
 
 
+def test_shelved_act2_terms_left_the_game_and_lie_on_the_shelf(content_root):
+    """Слова прежнего Акта 2 не удалены, а переложены: в игре их нет, на
+    полке — все шесть, и каждый файл по-прежнему читается схемой."""
+    from pathlib import Path
+
+    from jedicoder import content
+
+    live = {item.term for item in content.load_terms(content_root)}
+    assert sorted(live & set(SHELVED_ACT2_TERMS)) == []
+    assert "env" in live
+
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act2-chertezh" / "content"
+    if not shelf.is_dir():
+        # Полка наружу не едет: в выгрузке (`build_release.py`) её нет.
+        pytest.skip("полки прежнего Акта 2 нет в этом дереве")
+    on_shelf = sorted(item.term for item in content.load_terms(shelf))
+    assert on_shelf == sorted(SHELVED_ACT2_TERMS)
+
+
+def test_shelved_act2_holds_its_cutscene_and_the_plan_instruction():
+    """Катсцена «Чертежа» и инструкция приёма `plan` лежат на полке и
+    читаются теми же загрузчиками, что живой контент."""
+    from pathlib import Path
+
+    from jedicoder import content
+
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act2-chertezh" / "content"
+    if not shelf.is_dir():
+        pytest.skip("полки прежнего Акта 2 нет в этом дереве")
+    scenes = list(content.load_acts(shelf))
+    assert [item.slug for item in scenes] == ["act2-chertezh"]
+    assert scenes[0].quests == (
+        "01-recipe", "02-claude-md", "03-db-schema", "04-git-init",
+        "05-env-guard", "06-pipeline",
+    )
+    assert sorted(content.instructions_by_artifact(shelf)) == ["plan"]
+
+
+# Слова Актов 1–3, которые не вводит ни один квест. Список именной: второе
+# такое слово попадёт сюда руками, то есть осознанно.
+#
+# `env` (#104): паролей нет ни в первый, ни во второй вечер, и ни один квест
+# Акта 2 этого слова не говорит. Прежняя приписка к квесту «Память проекта»
+# была обещанием, которого никто не выполнял. Карточка открыта с Акта 2 и
+# выпадает, когда слово прозвучит само: защита остановила файл с паролями
+# или проекту понадобился чужой ключ.
+TERMS_WITHOUT_A_QUEST = ("env",)
+
+
+def test_terms_without_a_quest_are_named_and_really_have_none(content_root):
+    """Исключение живое: слово есть, оно в Актах 1–3 и квеста не называет."""
+    from jedicoder import content
+
+    by_term = {item.term: item for item in content.load_terms(content_root)}
+    for name in TERMS_WITHOUT_A_QUEST:
+        assert name in by_term, "термин «{}» пропал из словаря".format(name)
+        assert by_term[name].act in (1, 2, 3)
+        assert not by_term[name].quest, (
+            "«{}» называет квест — убери его из исключений".format(name)
+        )
+
+
 def test_acts_1_to_3_terms_declare_quest(content_root):
     """Каждый термин Актов 1–3 называет квест, и квест — из реестра.
+
+    Исключения перечислены поимённо в `TERMS_WITHOUT_A_QUEST`.
 
     Дубль правила 2 линтера, и дубль намеренный: линтер защищает CI, а тест
     защищает от того, что правило линтера кто-то отключит или обойдёт. Оба
@@ -274,7 +412,7 @@ def test_acts_1_to_3_terms_declare_quest(content_root):
 
     bad = []
     for item in content.load_terms(content_root):
-        if item.act not in (1, 2, 3):
+        if item.act not in (1, 2, 3) or item.term in TERMS_WITHOUT_A_QUEST:
             continue
         known = [q for q, _, _ in acts.QUESTS_BY_ACT[item.act]]
         if not item.quest:
@@ -300,7 +438,11 @@ def test_acts_1_to_3_terms_declare_quest(content_root):
 # Значит разметка Актов 4–5 полем `quest` не имеет сегодня ни одного
 # исключения. Кортеж пуст намеренно; следующее исключение попадёт сюда руками,
 # то есть осознанно.
-ACT4_TERMS_WITH_QUEST = ()
+#
+# Акт 4 «Свой продукт» играется с 2026-10-15, и слова его вечера размечены
+# квестом, как в Актах 1–3 (#120): охват бюджета новизны дорос до Акта 4.
+# Без квеста остаётся «Цель» — приём акта, карточка выпадает на входе.
+ACT4_TERMS_WITH_QUEST = ("mvp", "bot-token", "localhost", "port")
 
 
 def test_acts_4_and_5_terms_have_no_quest(content_root):
@@ -326,13 +468,45 @@ def test_acts_4_and_5_terms_have_no_quest(content_root):
 
 
 def test_act4_terms_present(content_root):
-    """Девять терминов, а не десять: `permission-mode` уехал в Акт 0 (TOOL-05)."""
+    """Акт 4 «Свой продукт» (спека #117, слова — #120): приём «Цель» и четыре
+    слова вечера — MVP («План»), ключ бота («Сборка»), localhost и порт
+    («Работает»). `.env` — карточка Акта 2: открыта раньше и выпадает, когда
+    слово прозвучит.
+
+    Девять слов прежнего «Щита» — на полке: `SHELVED_ACT4_TERMS`.
+    """
     from jedicoder import content
-    terms = {t.term for t in content.load_terms(content_root) if t.act == 4}
-    assert terms == {
-        "push-pull", "remote", "ssh-key", "sudo", "root",
-        "firewall", "fail2ban", "rotation", "2fa",
+    by_term = {t.term: t for t in content.load_terms(content_root) if t.act == 4}
+    assert set(by_term) == {"goal", "mvp", "bot-token", "localhost", "port"}
+    assert {name: by_term[name].quest for name in ACT4_TERMS_WITH_QUEST} == {
+        "mvp": "02-plan", "bot-token": "03-build",
+        "localhost": "04-run", "port": "04-run",
     }
+    assert not by_term["goal"].quest
+
+
+#: Слова прежнего Акта 4 «Щит» — на полке с ним (спека #117, тикет #118).
+SHELVED_ACT4_TERMS = (
+    "push-pull", "remote", "ssh-key", "sudo", "root",
+    "firewall", "fail2ban", "rotation", "2fa",
+)
+
+
+@needs_shelf
+def test_shelved_act4_terms_left_the_game_and_lie_on_the_shelf(content_root):
+    from pathlib import Path
+
+    from jedicoder import content
+
+    live = {item.term for item in content.load_terms(content_root)}
+    assert sorted(live & set(SHELVED_ACT4_TERMS)) == []
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act4-shchit" / "content"
+    on_shelf = sorted(item.term for item in content.load_terms(shelf))
+    assert on_shelf == sorted(SHELVED_ACT4_TERMS)
+    scenes = list(content.load_acts(shelf))
+    assert [(scene.act, scene.slug) for scene in scenes] == [(4, "act4-shchit")]
+    instructions = content.instructions_by_artifact(shelf)
+    assert sorted(instructions) == ["cso"]
 
 
 # Именной список-страж Акта 0 — взамен исключения, снятого выше.
@@ -347,11 +521,13 @@ def test_act4_terms_present(content_root):
 # осознанно, с ответом на вопрос, что именно человек не выдержит в первый
 # вечер, если слов станет четыре.
 #
-# Сегодня их три: одна ручка на две темы — модель с мощностью рассуждения
-# (D-07), лимит запросов и `terminal`, который человек открывает здесь
+# Сегодня их два: лимит и `terminal`, который человек открывает здесь
 # впервые. Режим разрешений с 2026-10-08 — слово Акта 1: его называет и
 # показывает первый квест «Знакомства» (спека #75), а не подготовка.
-ACT0_TERMS = ("model-effort", "terminal", "usage")
+# Карточка «модель и уровень усилий» с 2026-10-13 — слово Акта 2 (#104):
+# экран `/model` человек открывает в квесте «Силы». Лимит остался здесь
+# намеренно: кончиться он может в любой вечер, и карточка обязана выпасть.
+ACT0_TERMS = ("terminal", "usage")
 
 
 def test_act0_terms_named_and_questless(content_root):
@@ -386,9 +562,17 @@ def test_act0_terms_named_and_questless(content_root):
 # `usage` из этой карты ушёл в Акт 0 (2026-09-10, вместе со строкой состояния):
 # в лимит падаван упирается не тогда, когда разговор стал длинным по-настоящему,
 # а когда угодно — и узнать про него обязан до того, а не после.
+# `clear` переехал в Акт 2 (2026-10-13, спека #99): командой `/clear` там
+# закрывается квест «Чистый лист», и его код звучит в самоописании акта.
+# Тем же вечером (#104) к нему переехал `context-window`: слово «контекст»
+# человек слышит в том же квесте, раньше команды. Режим плана, файл
+# `CLAUDE.md` и модель с уровнем усилий — слова своих квестов Акта 2.
 CLAUDE_CODE_TERMS = {
-    "context-window": (3, "01-launch"),
-    "clear": (3, "02-feature"),
+    "plan-mode": (2, "01-plan"),
+    "claude-md": (2, "03-memory"),
+    "context-window": (2, "04-clear"),
+    "clear": (2, "04-clear"),
+    "model-effort": (2, "05-powers"),
 }
 
 
@@ -423,7 +607,7 @@ def test_act5_terms_present(content_root):
     terms = {t.term for t in content.load_terms(content_root) if t.act == 5}
     assert terms == {
         "deploy", "nginx", "reverse-proxy", "dns", "a-record",
-        "ssl", "healthcheck", "ci-cd", "goal", "virality",
+        "ssl", "healthcheck", "ci-cd", "virality",
     }
 
 

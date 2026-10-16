@@ -22,7 +22,7 @@
 4. **Не наказываем и не отчитываем.** Штрафы — счётчик, а не приговор.
    Возражение Магистра — вопрос, а не «Стоп».
 5. **Приём зовётся с приставкой плагина**: `/jedicoder:brainstorm`,
-   `/jedicoder:plan`, `/jedicoder:goal`. Голого `/brainstorm` в Claude Code
+   `/jedicoder:handoff`, `/jedicoder:goal`. Голого `/brainstorm` в Claude Code
    нет — новичок набрал его и не нашёл.
 
 ## Таблица замен

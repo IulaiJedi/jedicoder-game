@@ -1,5 +1,5 @@
 {
-  "description": "Jedicoder: корень плагина и папка проекта из запуска (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit) и серия коммитов (PostToolUse); модуль face.tsx рисует полосу «Что дальше» над полем ввода",
+  "description": "Jedicoder: корень плагина и папка проекта из запуска (SessionStart), словарь-лут (Stop), штрафы (PreToolUse/UserPromptSubmit), серия коммитов (PostToolUse) и следы — одобренный план, /clear, файл через @, картинка и слово «чистка» при записанном хуке (PostToolUse/SessionEnd/SessionStart/UserPromptSubmit/PreToolUse); модуль face.tsx рисует полосу «Что дальше» над полем ввода",
   "modules": ["./face.tsx"],
   "hooks": {
     "SessionStart": [
@@ -10,6 +10,30 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
             "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/traces.py\"",
+            "async": false,
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/traces.py\"",
+            "async": false,
+            "timeout": 15
           }
         ]
       }
@@ -36,6 +60,17 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/traces.py\"",
+            "async": false,
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -49,6 +84,17 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/traces.py\"",
+            "async": false,
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -57,6 +103,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/vague_prompt.py\"",
+            "async": false,
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/traces.py\"",
             "async": false,
             "timeout": 15
           }

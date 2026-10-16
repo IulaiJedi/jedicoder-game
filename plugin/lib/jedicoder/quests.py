@@ -52,6 +52,32 @@ def script_path(quests_root, act_slug, quest_id):
     return Path(quests_root).resolve() / act_slug / quest_id / "check.sh"
 
 
+#: Приставка переменных, которыми проверка получает след (ADR-0020 в
+#: репозитории сайта): `JEDICODER_TRACE_PLAN_APPROVED=yes`.
+TRACE_ENV_PREFIX = "JEDICODER_TRACE_"
+
+#: Переменная квеста «Папка»: папку проекта назвал сам человек. Того же
+#: рода, что след, — её ставит только команда игры.
+NAMED_ENV = "JEDICODER_PROJECT_NAMED"
+
+#: Момент входа в акт, секундами эпохи: квест «Свой скилл» Акта 3 принимает
+#: личный скилл, изменённый не раньше этого момента. Ставит только команда
+#: игры (`cli._env_for`), из записи акта в сохранении (`started_at`).
+STARTED_ENV = "JEDICODER_ACT_STARTED"
+
+#: Тип продукта Акта 4 (`site` или `bot`): по нему квест «Работает» выбирает,
+#: что судить. Ставит только команда игры — из записанного `project type`.
+PRODUCT_ENV = "JEDICODER_PRODUCT_TYPE"
+
+#: Порт проекта из `project port`: по нему «Работает» открывает сайт. Ставит
+#: только команда игры — из записанного порта.
+PORT_ENV = "JEDICODER_PORT"
+
+#: Переменные, которые проверке отдаёт только команда игры: из оболочки они
+#: не наследуются (`run_check`). Следы — по приставке `TRACE_ENV_PREFIX`.
+GAME_ONLY_ENV = (NAMED_ENV, STARTED_ENV, PRODUCT_ENV, PORT_ENV)
+
+
 def cannot_check(result):
     """Скрипт не смог вынести решение: exit-код вне {0, 1}.
 
@@ -73,7 +99,20 @@ def run_check(quests_root, act_slug, quest_id, project_dir,
             checks=(), stderr="", countable=False,
         )
 
-    env = dict(os.environ)
+    # След проверке передаёт только команда игры (`env_extra`). Унаследованный
+    # из оболочки не считается: игру в терминале запускает модель, и одна
+    # приставка `JEDICODER_TRACE_…=yes` перед командой закрыла бы квест без
+    # действия — исход решило бы мнение модели, а не то, что было. То же с
+    # признаком «папку назвал человек»: приставка закрывала квест «Папка».
+    # И с моментом входа в акт: приставка с нулём сделала бы любое старое
+    # сохранение «новее входа». И с типом продукта: приставка `site` увела бы
+    # бота мимо рассказа человека — тот ждёт по записанному типу. И с портом:
+    # приставка с чужим портом закрыла бы «Работает» чужим сервером.
+    env = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith(TRACE_ENV_PREFIX)
+        and name not in GAME_ONLY_ENV
+    }
     env.update(env_extra or {})
     process = subprocess.run(
         ["bash", str(script)],

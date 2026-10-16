@@ -10,7 +10,7 @@ tests/test_act5_checks.py и от входа в акт не зависят.
 """
 import pytest
 
-from test_act4_checks import fake_ssh  # noqa: F401 — фикстура pytest
+from fake_ssh import fake_ssh  # noqa: F401 — фикстура pytest
 from test_act5_checks import fake_web  # noqa: F401 — фикстура pytest
 from jedicoder import cli, ranks, state as st
 

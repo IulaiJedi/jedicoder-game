@@ -19,7 +19,7 @@ ADR-0009 в репозитории сайта.
 сохранении; без него «изменён» не отличить от «просто старый».
 
 Чего здесь нет и быть не должно: вызовов из хуков и проверок. Пишет одна
-команда, которую человек набрал сам (ADR-0009), и запрет «проверка не
+команда игры — по просьбе человека (ADR-0009), и запрет «проверка не
 мутирует проект падавана» этим не задет — у команды его никогда и не было.
 """
 import hashlib
@@ -37,9 +37,10 @@ DEBRIEF_NAME = "razbor.md"
 ROADMAP_NAME = "roadmap.md"
 RANK_CARD_NAME = "rank.md"
 
-# Шов под тексты, которых движок не пишет: разбор пишет Магистр (он приходит
-# командой `debrief write` и ждёт выдачи в сохранении), дорожная карта
-# приезжает из контент-ядра, карточку ранга собирает финал. Ключи названы
+# Шов под тексты, которых сборка не пишет сама: разбор пишет Магистр (он
+# приходит командой `debrief write` и ждёт выдачи в сохранении), дорожная
+# карта приезжает из контент-ядра, карточку ранга собирает финал, страницу о
+# пройденном — `path_page` по слову вызывающего. Ключи названы
 # здесь один раз, чтобы тот, кто их заполняет, сверялся с перечнем, а не с
 # памятью.
 # Пустая строка и пробелы считаются молчанием: Свиток выдаётся и без них
@@ -47,12 +48,42 @@ RANK_CARD_NAME = "rank.md"
 PART_DEBRIEF = "debrief"
 PART_ROADMAP = "roadmap"
 PART_RANK_CARD = "rank_card"
-PARTS = (PART_DEBRIEF, PART_ROADMAP, PART_RANK_CARD)
+PART_PHRASES = "phrases"
+#: Страница «что пройдено и что впереди» (#114). Ложится в тот же файл, что
+#: дорожная карта, и приходит вместо неё, пока акт карты выключен: карта
+#: говорит о продукте и его адресе, а новичка об этом ещё никто не спрашивал.
+#: Какая из двух страниц нужна, решает вызывающий; пришли обе — ляжет эта.
+PART_PATH = "path"
+PARTS = (PART_DEBRIEF, PART_ROADMAP, PART_RANK_CARD, PART_PHRASES, PART_PATH)
+
+#: Подписи страницы `roadmap.md` в оглавлении — по тому, что в ней лежит.
+ROADMAP_NOTE = "три шага, чтобы довести продукт до людей"
+PATH_TITLE = "Что пройдено и что впереди"
+PATH_NOTE = PATH_TITLE[0].lower() + PATH_TITLE[1:]
+
+#: Страница готовых фраз (#104). Лежит рядом с инструкциями и написана так
+#: же, без слов игры: её открывают, когда игры на машине уже нет.
+PHRASES_NAME = "frazy.md"
+PHRASES_TITLE = "Готовые фразы для Claude"
+PHRASES_SUMMARY = "Что сказать, когда не знаешь, как попросить."
+PHRASES_LEAD = (
+    "Говорить можно своими словами: важен смысл, а не точная фраза.",
+)
+PHRASES_HEAD = ("| Когда | Что сказать |", "|---|---|")
 
 # Заголовок, под который ложится текст Магистра. Вынесен константой,
 # потому что на него смотрят два тикета сразу: тот, кто пишет текст, и
 # тот, кто проверяет, что текст встал ПОД фактами, а не вместо них.
 DEBRIEF_HEADING = "## Что это значит"
+
+#: Что считает строка «С первой попытки» (#114). Квест, который закрывает
+#: рассказ, проверки не имеет, и в счёт попыток с первого раза не идёт: при
+#: десяти закрытых квестах строка честно говорит «8 из 8», и без подписи число
+#: читалось как ошибка счёта. Первую половину печатает и первый экран.
+FIRST_TRY_COUNTS = "в счёте только квесты с проверкой"
+FIRST_TRY_LEAVES_OUT = (
+    "Квесты без проверки, которые закрывает рассказ, в этот счёт не входят"
+)
 
 # Гласные — для склонения имени ранга, см. genitive.
 _VOWELS = "аеёиоуыэюя"
@@ -152,6 +183,22 @@ def fingerprint(text):
     return _digest(text.encode("utf-8"))
 
 
+def phrases_page(rows):
+    """Страница готовых фраз: заголовок, вводная строка и таблица.
+
+    `rows` — готовые строки таблицы из контента, уже отобранные вызывающим:
+    какие акты человек начал, знает сохранение, а не сборка. Строк нет —
+    пустая строка, и страницы в памятке не будет.
+    """
+    rows = [row for row in rows or () if isinstance(row, str) and row.strip()]
+    if not rows:
+        return ""
+    lines = ["# {}".format(PHRASES_TITLE), ""]
+    lines += list(PHRASES_LEAD) + [""]
+    lines += list(PHRASES_HEAD) + rows
+    return "\n".join(lines) + "\n"
+
+
 def roadmap_page(card, url=None):
     """Дорожная карта: заголовок, вводная строка и три шага автора.
 
@@ -168,6 +215,45 @@ def roadmap_page(card, url=None):
     return "# {}\n\n{}\n\n{}".format(
         card.title, lead, card.body.strip("\n") + "\n"
     )
+
+
+def path_page(facts, not_written=""):
+    """Страница «что пройдено и что впереди» — из фактов и реестра актов.
+
+    Пройденное — закрытые акты с рангом, который дал каждый. Впереди — акты,
+    в которые можно войти, и строка `not_written` о тех, которых ещё нет: её
+    слова приходят от вызывающего, теми же, какими игра говорит об этом на
+    первом экране. Имён выключенных актов и сроков страница не называет.
+    """
+    facts = facts if isinstance(facts, dict) else {}
+    # Только играемые: закрытый акт, который теперь выключен (сохранение
+    # правили руками), назвал бы по имени то, что «ещё не написано».
+    playable = ranks.playable_acts()
+    done = [number for number in facts.get("acts_completed") or []
+            if number in playable]
+    lines = ["# {}".format(PATH_TITLE), "", "## Пройдено", ""]
+    for number in done:
+        entry = ranks.ACTS[number]
+        rank = ranks.RANK_TITLES.get(entry["rank"], entry["rank"])
+        lines.append("- Акт {} «{}» — ранг {}.".format(
+            number, entry["title"], rank
+        ))
+    if not done:
+        lines.append("Пока ни одного акта.")
+    lines += ["", "## Впереди", ""]
+    open_acts = [number for number in playable if number not in done]
+    for number in open_acts:
+        lines.append("- Акт {} «{}» — ещё не пройден.".format(
+            number, ranks.ACTS[number]["title"]
+        ))
+    if open_acts:
+        lines.append("")
+    if not_written:
+        lines += ["{}. Сроков игра не называет.".format(not_written), ""]
+    lines += [
+        "Проект от игры не зависит: продолжай его с Claude тем, что уже умеешь.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def build(facts, instructions, acts=(), parts=None, today=None):
@@ -206,16 +292,19 @@ def build(facts, instructions, acts=(), parts=None, today=None):
             "{}.md".format(artifact), item.title, item.summary,
         ))
 
+    if parts.get(PART_PHRASES):
+        pages.append((PHRASES_NAME, parts[PART_PHRASES]))
+        listed.append((PHRASES_NAME, PHRASES_TITLE, PHRASES_SUMMARY))
+
     personal = [(
         DEBRIEF_NAME,
         _debrief_page(facts, titles, parts.get(PART_DEBRIEF), today),
         "факты твоего прохождения, посчитанные по сохранению",
     )]
-    if parts.get(PART_ROADMAP):
-        personal.append((
-            ROADMAP_NAME, parts[PART_ROADMAP],
-            "три шага, чтобы довести продукт до людей",
-        ))
+    if parts.get(PART_PATH):
+        personal.append((ROADMAP_NAME, parts[PART_PATH], PATH_NOTE))
+    elif parts.get(PART_ROADMAP):
+        personal.append((ROADMAP_NAME, parts[PART_ROADMAP], ROADMAP_NOTE))
     if parts.get(PART_RANK_CARD):
         personal.append((
             RANK_CARD_NAME, parts[PART_RANK_CARD], "твой трофей",
@@ -433,8 +522,8 @@ def _index_page(facts, instructions, personal, today):
         "",
         "## Откуда это берётся",
         "",
-        "Памятку кладёт сюда одна команда, которую ты набираешь сам. Больше",
-        "ничто в игре в твой проект не пишет.",
+        "Памятку кладёт сюда Claude, когда ты его просишь. Сама, без просьбы,",
+        "игра в твой проект ничего не пишет.",
         "",
         "Твои правки здесь не пропадут. Игра помнит отпечаток каждого",
         "выданного файла и изменённый не переписывает: свежий ложится рядом,",
@@ -512,9 +601,12 @@ def _quests_section(facts, titles):
     lines.append("- Попыток потрачено: {}".format(facts.get("attempts_total") or 0))
     counters = facts.get("first_try") or {}
     if counters.get("attempted"):
-        lines.append("- С первой попытки: {} из {}".format(
+        # Две строки, а не одна: фраза длиннее пятнадцати слов (language.md).
+        lines.append("- С первой попытки: {} из {} — {}".format(
             counters.get("passed") or 0, counters["attempted"],
+            FIRST_TRY_COUNTS,
         ))
+        lines.append("  - {}".format(FIRST_TRY_LEAVES_OUT))
     hardest = facts.get("hardest_quest")
     if hardest:
         lines.append("- Тяжелее всего дался «{}» (Акт {}): попыток {}".format(
@@ -551,10 +643,10 @@ def _streak_section(facts):
 
 def _lexicon_section(facts):
     return [
-        "## Словарь и XP",
+        "## Словарь и очки",
         "",
         "- Открыто слов: {}".format(facts.get("terms_unlocked") or 0),
-        "- XP: {}".format(facts.get("xp") or 0),
+        "- Очки: {}".format(facts.get("xp") or 0),
         "",
     ]
 

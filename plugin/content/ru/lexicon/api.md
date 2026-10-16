@@ -7,7 +7,6 @@ quest: 03-first-request
 rank: seeker
 category: web
 xp: 5
-related: [port]
 example: Окошко в кассе: подал бланк по форме — получил справку, что внутри, неважно.
 ---
 

@@ -1,6 +1,10 @@
 import re
 from pathlib import Path
 
+import pytest
+
+from conftest import needs_shelf
+
 from jedicoder import cli, ranks
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,16 +83,19 @@ def test_every_subcommand_is_documented():
     )
 
 
-def test_db_answer_command_named_in_act2_skill():
+def test_db_answer_command_named_in_the_shelved_act2_skill():
     """Скилл обязан называть команду, а не только ключ состояния.
 
     Квест 03-db-schema без записанного project.has_db — тупик, а состояние
-    разрешено менять только через CLI.
+    разрешено менять только через CLI. Квест и его скилл — прежний Акт 2
+    «Чертёж», с 2026-10-13 на полке (shelf/act2-chertezh/); команда
+    `project db` в игре осталась, и вернувшийся скилл обязан звать её же.
     """
-    text = (PLUGIN / "skills" / "act2-chertezh" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    assert "project db" in text
+    skill = PLUGIN.parent / "shelf" / "act2-chertezh" / "skill" / "SKILL.md"
+    if not skill.is_file():
+        # Полка наружу не едет: в выгрузке (`build_release.py`) её нет.
+        pytest.skip("полки прежнего Акта 2 нет в этом дереве")
+    assert "project db" in skill.read_text(encoding="utf-8")
 
 
 def test_skills_have_frontmatter_with_name_and_description():
@@ -188,10 +195,13 @@ def test_act1_skill_teaches_stop_and_both_ways_back():
     assert "к последнему\nсохранению" in text or "к последнему сохранению" in text
 
 
+@needs_shelf
 def test_act4_skill_no_longer_forbids_naming_the_mode():
     """Запрет «как включить режим без проверок, не рассказывай» снят
     решением 3 спеки #75: Акт 1 называет режим сам."""
-    text = (PLUGIN / "skills" / "act4-shchit" / "SKILL.md").read_text(
+    # Скилл «Щита» с 2026-10-14 на полке (спека #117): запрет не должен
+    # вернуться и оттуда, вместе с актом.
+    text = (PLUGIN.parent / "shelf" / "act4-shchit" / "skill" / "SKILL.md").read_text(
         encoding="utf-8"
     )
     assert "не рассказывай" not in text

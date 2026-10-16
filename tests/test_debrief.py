@@ -311,7 +311,7 @@ def test_facts_agree_with_what_finale_prints(tmp_path, content_root, quests_root
     assert facts["product_url"] in out
     assert _printed(out, "Дней в пути:") == [facts["days_in_path"]]
     assert _printed(out, "Слов открыто:") == [facts["terms_unlocked"]]
-    assert _printed(out, "XP:") == [facts["xp"]]
+    assert _printed(out, "Очки:") == [facts["xp"]]
     assert _printed(out, "Штрафы:") == [facts["dark_side"]["points"]]
 
 

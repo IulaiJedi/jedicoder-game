@@ -387,16 +387,235 @@ def walk_to_the_end(game, proj):
     assert game.tool("ack", STOP)[0] == 0
 
 
-def test_closed_act_is_answered_in_plain_words(game, project):
+def test_between_acts_the_tool_says_the_next_act_is_not_entered(game, project):
+    """Акт 1 закрыт, Акт 2 не начат: инструмент квеста говорит войти в акт."""
     walk_to_the_end(game, project())
     for name in ("check", "seen", "ack"):
         code, out = game.tool(name, STOP)
         assert code == 1, out
-        lines = out.splitlines()
-        assert lines[0] == cli.TOOL_QUEST_CLOSED.format("«{}»".format(STOP))
-        assert lines[1] == cli.TOOL_NO_QUEST
-        assert cli.NOT_WRITTEN in out
+        assert out.splitlines() == [cli.ACT_NOT_STARTED.format(2)]
         assert ACK not in out and "Traceback" not in out
+
+
+#: Названия квестов Акта 2, как их печатает первый экран.
+PLAN, SHOW, MEMORY, CLEAR, POWERS = (
+    cli._quest_titles(PLUGIN / "content" / "ru")[(2, quest_id)]
+    for quest_id in acts.quest_ids(2)
+)
+
+
+def walk_act2_by_tools(game, proj, call=None):
+    """Акт 2 одними инструментами; действия человека видят хуки.
+
+    `call(name, *values)` — как звать инструмент; по умолчанию `game.tool` с
+    проверкой, что команда ответила нулём.
+    """
+    from test_act2_walkthrough import (
+        do_clear, do_memory, do_plan, do_show, statusline_answered,
+    )
+
+    def plain(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        return out
+
+    call = call or plain
+    call("enter")
+    do_plan(game, proj)
+    call("check", PLAN)
+    do_show(game, proj)
+    call("check", SHOW)
+    do_memory(game, proj)
+    call("check", MEMORY)
+    do_clear(game, proj)
+    call("seen", CLEAR)
+    call("check", CLEAR)
+    statusline_answered(game)
+    call("folder")
+    return call("ack", POWERS)
+
+
+def test_whole_act2_is_walked_by_the_tools_alone(game, project):
+    """Акт 2 новых инструментов не требует (спека #99): квест «Силы» берёт
+    то, что игра видит сама, инструментом `folder` без пути."""
+    proj = project()
+    walk_to_the_end(game, proj)
+    screens = []
+
+    def call(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        screens.append(out)
+        return out
+
+    closing = walk_act2_by_tools(game, proj, call)
+
+    assert "Новый ранг: Падаван." in closing
+    assert "Модель: Opus" in screens[-2]
+    data = st.load(game.state_path)
+    assert data["rank"] == "padawan"
+    assert data["acts"]["2"]["status"] == ranks.STATUS_DONE
+    for screen in screens:
+        for quest_id in acts.quest_ids(2):
+            assert quest_id not in screen, screen
+    call("status")
+    call("scroll")
+    assert (proj / "docs" / "jedicoder" / "handoff.md").is_file()
+
+
+#: Названия квестов Акта 3, как их печатает первый экран.
+SKILL, WHERE, OWN_SKILL, HOOK, MOD = (
+    cli._quest_titles(PLUGIN / "content" / "ru")[(3, quest_id)]
+    for quest_id in acts.quest_ids(3)
+)
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """Песочная домашняя папка: в неё смотрят проверки Акта 3."""
+    path = tmp_path / "home"
+    path.mkdir()
+    monkeypatch.setenv("HOME", str(path))
+    return path
+
+
+def walk_act3_by_tools(game, proj, home, call=None):
+    """Акт 3 одними инструментами; что делает Claude по словам человека,
+    кладёт тест — как в `tests/test_act3_walkthrough.py`."""
+    from test_act3_walkthrough import do_hook, do_own_skill
+
+    def plain(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        return out
+
+    call = call or plain
+    call("enter")
+    # «Скилл» и «Где брать» закрывает рассказ: ставить нечего (#116).
+    call("ack", SKILL)
+    call("ack", WHERE)
+    do_own_skill(proj)
+    call("check", OWN_SKILL)
+    do_hook(game, proj)
+    call("check", HOOK)
+    call("folder")
+    return call("ack", MOD)
+
+
+def test_whole_act3_is_walked_by_the_tools_alone(game, project, home):
+    """Акт 3 новых инструментов не требует (#110): то, что игра знает о своём
+    моде, отдаёт тот же `folder` без пути."""
+    proj = project()
+    walk_to_the_end(game, proj)
+    walk_act2_by_tools(game, proj)
+    screens = []
+
+    def call(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        screens.append(out)
+        return out
+
+    closing = walk_act3_by_tools(game, proj, home, call)
+
+    assert "Новый ранг: Рыцарь." in closing
+    assert screens[-2].splitlines()[-1] == cli.MOD_WORKS
+    data = st.load(game.state_path)
+    assert data["rank"] == "knight"
+    assert data["acts"]["3"]["status"] == ranks.STATUS_DONE
+    for screen in screens:
+        for quest_id in acts.quest_ids(3):
+            assert quest_id not in screen, screen
+    call("status")
+    call("scroll")
+    assert (proj / "docs" / "jedicoder" / "investigate.md").is_file()
+    assert tools.NAMES == (
+        "status", "enter", "folder", "check", "seen", "ack", "scroll", "contract",
+    )
+
+
+#: Названия квестов Акта 4, как их печатает первый экран.
+WHAT, PRODUCT_PLAN, BUILD, RUN, ACCEPT = (
+    cli._quest_titles(PLUGIN / "content" / "ru")[(4, quest_id)]
+    for quest_id in acts.quest_ids(4)
+)
+
+
+def walk_act4_by_tools(game, proj, call=None):
+    """Акт 4 одними инструментами, ботом; что делает Claude, кладёт тест —
+    как в `tests/test_act4_walkthrough.py`. Тип продукта записывает команда:
+    инструмента для неё нет, как и для ответа про Книгу."""
+    from test_act4_walkthrough import (
+        BOT, approve_plan, do_build, do_key, do_what,
+    )
+
+    def plain(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        return out
+
+    call = call or plain
+    call("enter")
+    assert game("project", "type", BOT)[0] == 0
+    do_what(proj, BOT)
+    call("check", WHAT)
+    approve_plan(game, proj)
+    call("check", PRODUCT_PLAN)
+    do_build(proj, BOT)
+    call("check", BUILD)
+    do_key(proj)
+    call("seen", RUN)
+    call("check", RUN)
+    return call("ack", ACCEPT)
+
+
+def test_whole_act4_is_walked_by_the_tools_alone(game, project, home):
+    """Акт 4 новых инструментов не требует (#119): рассказ о боте — тот же
+    `seen`, приёмка — тот же `ack`."""
+    proj = project()
+    walk_to_the_end(game, proj)
+    walk_act2_by_tools(game, proj)
+    walk_act3_by_tools(game, proj, home)
+    screens = []
+
+    def call(name, *values):
+        code, out = game.tool(name, *values)
+        assert code == 0, "{}: {}".format(name, out)
+        screens.append(out)
+        return out
+
+    closing = walk_act4_by_tools(game, proj, call)
+
+    assert "Новый ранг: Страж." in closing
+    data = st.load(game.state_path)
+    assert data["rank"] == ranks.FINAL_RANK == "sentinel"
+    assert data["acts"]["4"]["status"] == ranks.STATUS_DONE
+    for screen in screens:
+        for quest_id in acts.quest_ids(4):
+            assert quest_id not in screen, screen
+    call("status")
+    call("scroll")
+    assert (proj / "docs" / "jedicoder" / "goal.md").is_file()
+    assert tools.NAMES == (
+        "status", "enter", "folder", "check", "seen", "ack", "scroll", "contract",
+    )
+
+
+def test_closed_act_is_answered_in_plain_words(game, project, home):
+    """Последний играемый акт закрыт: открытого квеста нет."""
+    proj = project()
+    walk_to_the_end(game, proj)
+    walk_act2_by_tools(game, proj)
+    walk_act3_by_tools(game, proj, home)
+    walk_act4_by_tools(game, proj)
+    for name in ("check", "seen", "ack"):
+        code, out = game.tool(name, ACCEPT)
+        assert code == 1, out
+        lines = out.splitlines()
+        assert lines[0] == cli.TOOL_QUEST_CLOSED.format("«{}»".format(ACCEPT))
+        assert lines[1] == cli.TOOL_NO_QUEST
+        assert cli.preparing_phrase([5]) in out
+        assert "05-accept" not in out and "Traceback" not in out
         code, out = game.tool(name, "Нет такого")
         assert code == 1 and out.splitlines()[0] == cli.TOOL_NO_QUEST
     code, out = game.tool("enter")
@@ -599,20 +818,29 @@ def test_every_way_to_close_a_quest_in_the_skill_is_a_tool(game):
     assert listed - ways == {"contract", "status", "enter", "folder", "scroll"}
 
 
-def test_act_skill_names_a_tool_at_every_game_command_of_the_path():
+ACT2_SKILL = PLUGIN / "skills" / "act2-pamyat-i-sily" / "SKILL.md"
+
+#: Команды без инструмента: вопрос о Книге игра задаёт один раз, после
+#: первого ранга, а ключ от бота называют не все (правило перечня: команд,
+#: которые говорят с ботом, в нём нет).
+NO_TOOL = ("book", "link")
+
+
+@pytest.mark.parametrize("skill", [ACT1_SKILL, ACT2_SKILL],
+                         ids=lambda p: p.parent.name)
+def test_act_skill_names_a_tool_at_every_game_command_of_the_path(skill):
     """Строка с командой в терминале — и рядом инструмент, который её заменяет.
 
     Замер прототипа: где скилл называет только команду, модель её и
-    выполняет. `book` — без инструмента: вопрос о ней игра задаёт один раз,
-    после первого ранга.
+    выполняет.
     """
-    text = ACT1_SKILL.read_text(encoding="utf-8")
+    text = skill.read_text(encoding="utf-8")
     lines = text.splitlines()
     by_command = {command: name for name, command in tools.COMMANDS.items()}
     seen_calls = 0
     for index, line in enumerate(lines):
         call = re.search(r'cli\.py" (\w+)', line)
-        if not call or call.group(1) == "book":
+        if not call or call.group(1) in NO_TOOL:
             continue
         seen_calls += 1
         name = by_command[call.group(1)]

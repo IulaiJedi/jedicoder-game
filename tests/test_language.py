@@ -46,6 +46,13 @@ needs_shelf = pytest.mark.skipif(
     not SHELF_CONTENT.is_dir(),
     reason="полки прежнего Акта 1 нет в этом дереве — она живёт только в рабочем репозитории",
 )
+# Полка прежнего Акта 2 «Чертёж» (спека #99) — тем же порядком.
+SHELF2_CONTENT = ROOT / "shelf" / "act2-chertezh" / "content"
+SHELF3_CONTENT = ROOT / "shelf" / "act3-pervaya-krov" / "content"
+needs_shelf2 = pytest.mark.skipif(
+    not SHELF2_CONTENT.is_dir(),
+    reason="полки прежнего Акта 2 нет в этом дереве — она живёт только в рабочем репозитории",
+)
 sys.path.insert(0, str(PLUGIN_ROOT / "hooks"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -418,32 +425,45 @@ def test_myth_words_are_not_renamed():
 ACT1_POOL = 8
 
 # Плюс Акт 0, который выдаётся с первой же сессии по тому же фильтру:
-# терминал, ручка «модель + мощность рассуждения» и лимит запросов. Режим
-# разрешений с 2026-10-08 считается в Акте 1 — его называет первый квест.
+# терминал и лимит. Режим разрешений с 2026-10-08 считается в Акте 1 — его
+# называет первый квест. Карточка «модель и уровень усилий» с 2026-10-13
+# (#104) — слово Акта 2: экран `/model` человек открывает в квесте «Силы»,
+# а первый вечер стал на слово легче. Лимит остался здесь: кончиться он
+# может в любой вечер.
 #
 # Число стоит отдельным слагаемым, а не растворено в сумме, ровно затем,
 # чтобы четвёртое слово Акта 0 уронило этот тест. Бюджет первого вечера
 # линтер не меряет (D-03), и это второй страж на него — не по именам, как
 # ACT0_TERMS в tests/test_content.py, а по тому, сколько карточек человек
 # реально увидит.
-ACT0_POOL = 3
+ACT0_POOL = 2
 
 # Куда уехали шесть лишних. Переезд именной, по смыслу, а не по счёту:
 # «стек» и «скрипт» — язык квеста «Стек по рецепту», «история git» —
 # первого коммита, «индекс» — защиты .env, «пайплайн» — одноимённого
 # квеста, «интерфейс» — второй фичи.
-RELOCATED_TERMS = {
+#
+# Пять из шести уехали в прежний Акт 2 «Чертёж» и 2026-10-13 ушли с ним на
+# полку (shelf/act2-chertezh/, спека #99); шестое, «интерфейс», ушло туда же
+# с прежним Актом 3 «Первая кровь» (shelf/act3-pervaya-krov/, спека #108). В
+# игре из шести не осталось ни одного: все стережёт на полке
+# test_relocated_terms_wait_on_the_shelf — с тем же номером акта, с которым
+# они вернутся.
+RELOCATED_TERMS = {}
+RELOCATED_TO_SHELF3 = {
+    "interface": 3,
+}
+RELOCATED_TO_THE_SHELF = {
     "stack": 2,
     "script": 2,
     "git-history": 2,
     "index": 2,
     "pipeline": 2,
-    "interface": 3,
 }
 
 
 def test_act1_pool_size():
-    """Новичок в Акте 1 видит ровно одиннадцать слов — восемь своих и три Акта 0.
+    """Новичок в Акте 1 видит ровно десять слов — восемь своих и два Акта 0.
 
     Настоящий рычаг плотности — состав пула акта, а не поле `quest`:
     `lexicon_loot.find_terms` фильтрует по `t.act <= current_act` и про
@@ -469,9 +489,40 @@ def test_act1_pool_size():
     )
 
 
+@needs_shelf2
+@pytest.mark.parametrize("slug,expected_act", sorted(RELOCATED_TO_THE_SHELF.items()))
+def test_relocated_terms_wait_on_the_shelf(slug, expected_act):
+    """Пять слов прежнего Акта 2 не удалены и в Акт 1 не вернулись.
+
+    В игре их нет: карточка «Стек» новичку второго вечера ни к чему. На
+    полке — каждое, тем же загрузчиком, что живой словарь.
+    """
+    live = {item.term for item in content.load_terms(CONTENT_ROOT)}
+    assert slug not in live, (
+        "«{}» вернулся в игру мимо полки — бюджет слов актов не пересчитан".format(slug)
+    )
+    shelved = {item.term: item for item in content.load_terms(SHELF2_CONTENT)}
+    assert slug in shelved, "термин «{}» пропал с полки — его перекладывали, а не удаляли".format(slug)
+    assert shelved[slug].act == expected_act
+
+
+@pytest.mark.parametrize("slug,expected_act", sorted(RELOCATED_TO_SHELF3.items()))
+def test_relocated_term_of_old_act3_waits_on_its_shelf(slug, expected_act):
+    """«Интерфейс» не удалён и в Акт 1 не вернулся: лежит на полке Акта 3."""
+    if not SHELF3_CONTENT.is_dir():
+        pytest.skip("полки прежнего Акта 3 нет в этом дереве")
+    live = {item.term for item in content.load_terms(CONTENT_ROOT)}
+    assert slug not in live, (
+        "«{}» вернулся в игру мимо полки — бюджет слов актов не пересчитан".format(slug)
+    )
+    shelved = {item.term: item for item in content.load_terms(SHELF3_CONTENT)}
+    assert slug in shelved, "термин «{}» пропал с полки — его перекладывали, а не удаляли".format(slug)
+    assert shelved[slug].act == expected_act
+
+
 @pytest.mark.parametrize("slug,expected_act", sorted(RELOCATED_TERMS.items()))
 def test_relocated_terms_stay_relocated(slug, expected_act):
-    """Шесть переехавших слов остаются в своих актах.
+    """Переехавшие слова, оставшиеся в игре, стоят в своих актах.
 
     Сообщение называет слово и акт намеренно: тест читает человек, который
     через полгода не помнит эту фазу, и «2 != 1» ему не скажет ничего.
@@ -524,8 +575,8 @@ LORE_FILES = (
     "plugin/content/ru/lexicon/usage.md",
     "plugin/content/ru/lexicon/permission-mode.md",
     "plugin/content/ru/lexicon/model-effort.md",
-    "plugin/skills/act3-pervaya-krov/SKILL.md",
-    "plugin/skills/act4-shchit/SKILL.md",
+    "plugin/skills/act3-umeniya/SKILL.md",
+    "plugin/skills/act4-svoy-produkt/SKILL.md",
 )
 
 # Акт 0 — про сам Claude Code целиком, от первой строки до последней, и
@@ -565,10 +616,20 @@ def onboarding_lore_files():
 # которая устареет раньше, чем он дойдёт до Акта 4.
 VOLATILE_PATTERNS = (
     ("размер контекстного окна", r"200[\s ]?000|\b200K\b|\b1M\b"),
-    ("номер версии Claude Code", r"\b\d+\.\d+\.\d+\b"),
+    # Ровно три числа через точку: четыре — адрес вроде `127.0.0.1` (сайт
+    # Акта 4 запускается только для своего компьютера), а не версия.
+    ("номер версии Claude Code", r"(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)"),
     ("имя модели", r"\bOpus\b|\bSonnet\b|\bHaiku\b|\bFable\b"),
     ("устаревший адрес документации", r"docs\.claude\.com"),
 )
+
+
+def test_version_pattern_catches_versions_and_not_addresses():
+    version = dict(VOLATILE_PATTERNS)["номер версии Claude Code"]
+    for text in ("версия 2.1.200 и новее", "до 2.1.203.", "(2.1.296)"):
+        assert re.search(version, text), text
+    for text in ("--bind 127.0.0.1", "адрес 192.168.1.20", "порт 8000"):
+        assert not re.search(version, text), text
 
 
 def test_no_volatile_numbers_in_lore():

@@ -6,7 +6,7 @@ act: 5
 rank: master
 category: security
 xp: 5
-related: [rotation]
+related: [deploy]
 example: Как письмо в конверте вместо открытки: по дороге никто не прочитает.
 ---
 **SSL** — шифрование между браузером и сервером: замочек и `https` в

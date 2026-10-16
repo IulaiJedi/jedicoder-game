@@ -1,311 +1,352 @@
-import hashlib
+"""Проверки Акта 2 «Память и силы» на фикстурах.
+
+Гоняются через quests.run_check — тем же путём, каким их запускает CLI.
+На каждый квест три исхода: прошёл, не прошёл, не смог проверить.
+
+Три квеста из четырёх судят то, чего нет в папке проекта: одобренный план,
+показанный файл и снимок, новый разговор. Их проверкам след приходит готовым,
+переменной окружения `JEDICODER_TRACE_*` (ADR-0020 в репозитории сайта).
+Здесь переменную подаёт сам тест: кто её ставит в игре — хук и команда —
+проверяется не здесь. Без неё проверка отвечает честным провалом с
+подсказкой, а не «не смог проверить».
+"""
+import json
+import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
-from conftest import _git
 from jedicoder import quests
 
-ACT = "act2-chertezh"
+SLUG = "act2-pamyat-i-sily"
 
-ARCH_GOOD = "# Архитектура\n\n## Стек\n\n" + ("Python и aiogram. " * 40)
-CLAUDE_GOOD = "# Проект\n\n" + ("Бот присылает цитаты по команде. " * 20)
-DB_GOOD = "# Схема\n\n## Таблица users\n\nid, tg_id, created_at\n"
+MEMORY_OK = """# Расписание кружка
 
+## Что это
+Страница с расписанием кружка для родителей нашей группы.
 
-def check(quests_root, quest, project_dir, env=None):
-    return quests.run_check(quests_root, ACT, quest, project_dir, env_extra=env)
+## Как открыть
+Открыть файл index.html в браузере.
 
+## Не трогать
+Файл IDEA.md и цвета на странице.
 
-def test_recipe_requires_architecture(quests_root, project):
-    assert check(quests_root, "01-recipe", project()).ok is False
+## Правила
+После важных изменений сохраняй сам.
+"""
 
-
-def test_recipe_requires_stack_section(quests_root, project):
-    proj = project(files={"ARCHITECTURE.md": "# Архитектура\n\n" + "текст " * 100})
-    result = check(quests_root, "01-recipe", proj)
-    assert result.ok is False
-    assert "arch_has_stack" in [c["id"] for c in quests.failed_checks(result)]
-
-
-def test_recipe_rejects_stub(quests_root, project):
-    proj = project(files={"ARCHITECTURE.md": "# Архитектура\n\n## Стек\n\nпитон\n"})
-    result = check(quests_root, "01-recipe", proj)
-    assert result.ok is False
-    assert "arch_substantial" in [c["id"] for c in quests.failed_checks(result)]
-
-
-def test_recipe_passes_on_good_file(quests_root, project):
-    proj = project(files={"ARCHITECTURE.md": ARCH_GOOD})
-    assert check(quests_root, "01-recipe", proj).ok is True
+#: Квест → след, который закрывает его строки. Имена переменных — договор с
+#: командой игры (`cli._env_for`): менять только с обеих сторон сразу.
+TRACES = {
+    "01-plan": {"JEDICODER_TRACE_PLAN_APPROVED": "yes"},
+    "02-show": {"JEDICODER_TRACE_FILE_SHOWN": "yes",
+                "JEDICODER_TRACE_IMAGE_SHOWN": "yes"},
+    "04-clear": {"JEDICODER_TRACE_CLEARED": "yes"},
+}
+SCRIPTED = ("01-plan", "02-show", "03-memory", "04-clear")
+ALL_TRACES = {name: "yes" for env in TRACES.values() for name in env}
 
 
-def test_claude_md_missing_and_stub(quests_root, project):
-    assert check(quests_root, "02-claude-md", project()).ok is False
-    stub = project(files={"CLAUDE.md": "проект\n"})
-    result = check(quests_root, "02-claude-md", stub)
-    assert "claude_md_substantial" in [c["id"] for c in quests.failed_checks(result)]
+def check(quests_root, quest, project_dir, env=None, recorded=True):
+    """Запустить проверку так, как её запускает CLI после `project path`.
+
+    `recorded=False` — папка не названа: движок переменную не ставит вовсе.
+    """
+    extra = {}
+    if recorded:
+        extra = {"JEDICODER_PROJECT_PATH": str(project_dir)}
+    extra.update(env or {})
+    return quests.run_check(quests_root, SLUG, quest, project_dir, env_extra=extra)
 
 
-def test_claude_md_passes(quests_root, project):
-    assert check(quests_root, "02-claude-md", project(files={"CLAUDE.md": CLAUDE_GOOD})).ok is True
+def failed(result):
+    return [item["id"] for item in quests.failed_checks(result)]
 
 
-def test_db_schema_bails_when_unknown(quests_root, project):
-    result = check(quests_root, "03-db-schema", project())
+def memory_project(project, text=MEMORY_OK, name="CLAUDE.md"):
+    return project(files={name: text})
+
+
+# --- квесты со следом: 01-plan, 02-show, 04-clear ---
+
+@pytest.mark.parametrize("quest_id", sorted(TRACES))
+def test_trace_quest_passes_when_the_trace_is_given(quests_root, project, quest_id):
+    result = check(quests_root, quest_id, project(), env=TRACES[quest_id])
+    assert result.ok is True, quests.failed_checks(result)
+
+
+@pytest.mark.parametrize("quest_id,rows", [
+    ("01-plan", ["plan_approved"]),
+    ("02-show", ["file_shown", "image_shown"]),
+    ("04-clear", ["cleared"]),
+])
+def test_trace_quest_fails_honestly_without_the_trace(
+        quests_root, project, quest_id, rows):
+    """След никто не поставил — провал, а не «не смог»: попытка считается."""
+    result = check(quests_root, quest_id, project())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert result.countable is True
+    assert failed(result) == rows
+
+
+@pytest.mark.parametrize("quest_id", sorted(TRACES))
+def test_trace_quest_bails_when_folder_not_recorded(quests_root, project, quest_id):
+    result = check(quests_root, quest_id, project(), env=TRACES[quest_id],
+                   recorded=False)
     assert result.exit_code == quests.EXIT_CANNOT_CHECK
     assert result.countable is False
+    assert "папка проекта не названа" in result.stderr
 
 
-def test_db_schema_skipped_when_no_db(quests_root, project):
-    result = check(quests_root, "03-db-schema", project(), env={"JEDICODER_HAS_DB": "no"})
-    assert result.ok is True
+@pytest.mark.parametrize("value", ["", "no", "1", "true", "YES", "yes "])
+@pytest.mark.parametrize("quest_id", sorted(TRACES))
+def test_trace_counts_only_as_the_exact_word_yes(quests_root, project, quest_id, value):
+    """След — ровно `yes`: всё остальное читается как «следа нет»."""
+    env = {name: value for name in TRACES[quest_id]}
+    assert check(quests_root, quest_id, project(), env=env).ok is False
 
 
-def test_db_schema_required_when_has_db(quests_root, project):
-    env = {"JEDICODER_HAS_DB": "yes"}
-    assert check(quests_root, "03-db-schema", project(), env=env).ok is False
-    proj = project(files={"DB-SCHEMA.md": DB_GOOD})
-    assert check(quests_root, "03-db-schema", proj, env=env).ok is True
+def test_show_judges_file_and_picture_separately(quests_root, project):
+    """Показан файл, а картинки не было — не сошлась одна строка, а не обе."""
+    proj = project()
+    only_file = check(quests_root, "02-show", proj,
+                      env={"JEDICODER_TRACE_FILE_SHOWN": "yes"})
+    assert failed(only_file) == ["image_shown"]
+    only_image = check(quests_root, "02-show", proj,
+                       env={"JEDICODER_TRACE_IMAGE_SHOWN": "yes"})
+    assert failed(only_image) == ["file_shown"]
 
 
-def test_git_init_without_repo(quests_root, project):
-    result = check(quests_root, "04-git-init", project())
-    assert result.ok is False
-    assert "repo_exists" in [c["id"] for c in quests.failed_checks(result)]
+def test_a_trace_of_another_quest_closes_nothing(quests_root, project):
+    """Чужой след квест не закрывает: у каждой проверки своя переменная."""
+    proj = project()
+    for quest_id, own in sorted(TRACES.items()):
+        foreign = {name: "yes" for name in ALL_TRACES if name not in own}
+        assert check(quests_root, quest_id, proj, env=foreign).ok is False, quest_id
 
 
-def test_git_init_repo_without_commits(quests_root, project):
-    result = check(quests_root, "04-git-init", project(git=True, commits=0))
-    assert result.ok is False
-    assert [c["id"] for c in quests.failed_checks(result)] == ["has_commit"]
+def test_trace_hints_name_the_action_to_repeat(quests_root, project):
+    """Подсказка говорит словами, какое действие сделать в игре."""
+    proj = project()
+    expected = {
+        "01-plan": ["/plan", "Enter"],
+        "02-show": ["@", "снимок экрана"],
+        "04-clear": ["/clear"],
+    }
+    for quest_id, words in expected.items():
+        result = check(quests_root, quest_id, proj)
+        hints = " ".join(item["hint"] for item in quests.failed_checks(result))
+        assert "Игра не видела" in hints, quest_id
+        for word in words:
+            assert word in hints, (quest_id, word)
 
 
-def test_git_init_passes_with_commit(quests_root, project):
-    assert check(quests_root, "04-git-init", project(git=True, commits=1)).ok is True
+# --- 03-memory ---
+
+def test_memory_passes(quests_root, project):
+    result = check(quests_root, "03-memory", memory_project(project))
+    assert result.ok is True, quests.failed_checks(result)
 
 
-def test_env_guard_bails_outside_repo(quests_root, project):
-    result = check(quests_root, "05-env-guard", project())
+def test_memory_passes_from_the_dot_claude_folder(quests_root, project):
+    """Claude Code читает и `.claude/CLAUDE.md` — проверка принимает оба места."""
+    proj = memory_project(project, name=".claude/CLAUDE.md")
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_empty_root_file_does_not_hide_the_written_one(quests_root, project):
+    proj = project(files={"CLAUDE.md": "", ".claude/CLAUDE.md": MEMORY_OK})
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_fails_without_file(quests_root, project):
+    result = check(quests_root, "03-memory", project())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == [
+        "memory_exists", "memory_what", "memory_open", "memory_keep",
+        "memory_rules",
+    ]
+
+
+def test_memory_in_another_subfolder_does_not_count(quests_root, project):
+    proj = memory_project(project, name="docs/CLAUDE.md")
+    assert "memory_exists" in failed(check(quests_root, "03-memory", proj))
+
+
+@pytest.mark.parametrize("heading,row", [
+    ("## Что это", "memory_what"),
+    ("## Как открыть", "memory_open"),
+    ("## Не трогать", "memory_keep"),
+    ("## Правила", "memory_rules"),
+])
+def test_memory_fails_without_a_section(quests_root, project, heading, row):
+    text = MEMORY_OK.replace(heading, "## Другое", 1)
+    proj = memory_project(project, text)
+    assert failed(check(quests_root, "03-memory", proj)) == [row]
+
+
+@pytest.mark.parametrize("heading,row", [
+    ("## Что это", "memory_what"),
+    ("## Как открыть", "memory_open"),
+    ("## Не трогать", "memory_keep"),
+    ("## Правила", "memory_rules"),
+])
+@pytest.mark.parametrize("body", ["", "TODO", "-", "…", "   "])
+def test_memory_fails_on_an_empty_section(quests_root, project, heading, row, body):
+    """Заголовок без тела и заглушка вместо тела — раздел пуст."""
+    lines, out, skipping = MEMORY_OK.splitlines(), [], False
+    for line in lines:
+        if line.startswith("## "):
+            skipping = line == heading
+            out.append(line)
+            if skipping:
+                out.append(body)
+            continue
+        if not skipping:
+            out.append(line)
+    proj = memory_project(project, "\n".join(out) + "\n")
+    assert failed(check(quests_root, "03-memory", proj)) == [row]
+
+
+def test_memory_one_word_is_a_body(quests_root, project):
+    text = MEMORY_OK.replace("Файл IDEA.md и цвета на странице.", "Цвета")
+    proj = memory_project(project, text)
+    assert check(quests_root, "03-memory", proj).ok is True
+
+
+def test_memory_accepts_lowercase_and_longer_headings(quests_root, project):
+    """Регистр первой буквы — любой; «Что это за проект» — тоже «Что это»."""
+    text = (MEMORY_OK
+            .replace("## Что это", "## что это за проект")
+            .replace("## Как открыть", "### как открыть проект")
+            .replace("## Не трогать", "## не трогать без спроса"))
+    proj = memory_project(project, text)
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_section_does_not_borrow_from_its_neighbour(quests_root, project):
+    text = MEMORY_OK.replace("Открыть файл index.html в браузере.\n", "")
+    proj = memory_project(project, text)
+    assert failed(check(quests_root, "03-memory", proj)) == ["memory_open"]
+
+
+def test_memory_title_with_the_same_words_is_not_the_section(quests_root, project):
+    """Заголовок документа «# Что это» не заслоняет раздел «## Что это»."""
+    text = MEMORY_OK.replace("# Расписание кружка", "# Что это", 1)
+    proj = memory_project(project, text)
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_bails_when_folder_not_recorded(quests_root, project):
+    result = check(quests_root, "03-memory", memory_project(project),
+                   recorded=False)
     assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+    assert "папка проекта не названа" in result.stderr
 
 
-def test_env_guard_requires_gitignore_rule(quests_root, project):
-    proj = project(gitignore="node_modules\n", git=True, commits=1)
-    result = check(quests_root, "05-env-guard", proj)
-    assert result.ok is False
-    assert "env_ignored" in [c["id"] for c in quests.failed_checks(result)]
+@pytest.mark.skipif(os.geteuid() == 0, reason="root читает любой файл")
+def test_memory_bails_on_unreadable_file(quests_root, project):
+    proj = memory_project(project)
+    (proj / "CLAUDE.md").chmod(0o000)
+    try:
+        result = check(quests_root, "03-memory", proj)
+    finally:
+        (proj / "CLAUDE.md").chmod(0o644)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert "не могу прочитать CLAUDE.md" in result.stderr
 
 
-def test_env_guard_catches_tracked_env(quests_root, project):
-    proj = project(gitignore=".env\n", git=True, commits=1, commit_env=True)
-    result = check(quests_root, "05-env-guard", proj)
-    failed = [c["id"] for c in quests.failed_checks(result)]
-    assert "env_not_tracked" in failed
-
-
-def test_env_guard_catches_token_in_history(quests_root, project):
-    proj = project(gitignore=".env\n", git=True, commits=1, leak_token=True)
-    result = check(quests_root, "05-env-guard", proj)
-    assert "no_secrets_in_history" in [c["id"] for c in quests.failed_checks(result)]
-
-
-def test_env_guard_catches_github_pat_in_history(quests_root, project):
-    # Fine-grained-токены GitHub (github_pat_…) — второй живой формат
-    # после ghp_; регексп обязан ловить оба.
-    proj = project(gitignore=".env\n", git=True, commits=1)
-    (proj / "conf.py").write_text(
-        'TOKEN = "github_pat_11ABCDE2Y0hooeAETqYIsl_'
-        'zXhCRT1jzGlGnkH8T9yWuGPnDCXi9NuIkKcXjIRFvR3EHXYIDGE"\n',
-        encoding="utf-8",
-    )
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "-m", "конфиг")
-    result = check(quests_root, "05-env-guard", proj)
-    assert result.ok is False
-    ids = [c["id"] for c in result.checks if not c["ok"]]
-    assert ids == ["no_secrets_in_history"]
-
-
-def test_env_guard_catches_anthropic_key_in_history(quests_root, project):
-    # sk-ant-… (Anthropic) — hyphenated-формат, ускользавший от старого
-    # sk-[A-Za-z0-9]{16,}: дефисы после sk-ant- рвут алфанумерик-класс.
-    proj = project(gitignore=".env\n", git=True, commits=1)
-    (proj / "conf.py").write_text(
-        'ANTHROPIC_API_KEY = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx-'
-        '1234567890AbCdEfGh"\n',
-        encoding="utf-8",
-    )
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "-m", "конфиг")
-    result = check(quests_root, "05-env-guard", proj)
-    assert result.ok is False
-    ids = [c["id"] for c in result.checks if not c["ok"]]
-    assert ids == ["no_secrets_in_history"]
-
-
-def test_env_guard_catches_openai_project_key_in_history(quests_root, project):
-    # sk-proj-… (новый OpenAI) — тот же класс пропуска, что и sk-ant-.
-    proj = project(gitignore=".env\n", git=True, commits=1)
-    (proj / "conf.py").write_text(
-        'OPENAI_API_KEY = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890"\n',
-        encoding="utf-8",
-    )
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "-m", "конфиг")
-    result = check(quests_root, "05-env-guard", proj)
-    assert result.ok is False
-    ids = [c["id"] for c in result.checks if not c["ok"]]
-    assert ids == ["no_secrets_in_history"]
-
-
-def _leak(quests_root, project, line):
-    """Строка попала в коммит: чем кончится проверка Акта 2."""
-    proj = project(gitignore=".env\n", git=True, commits=1)
-    (proj / "conf.py").write_text(line + "\n", encoding="utf-8")
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "-m", "конфиг")
-    return check(quests_root, "05-env-guard", proj)
-
-
-# Второй заход по паттерну (2026-09-10, прогон игры по CLI): три самых
-# частых утечки уходили мимо. Все три — у падавана, который довёл продукт до
-# денег и до чужой инфраструктуры, то есть ровно у того, кому Акт 4 и нужен.
-# Ключи собраны из двух кусков нарочно: цельный литерал вида sk_live_… или xoxb-…
-# защита GitHub принимает за настоящий секрет и отклоняет push публичной
-# выгрузки (проверено 2026-09-12). Проверке плагина это безразлично — в
-# файл падавана попадает уже склеенная строка.
-_STRIPE_TAIL = "51HAbCdEfGhIjKlMnOpQrStUv"
-
-
-@pytest.mark.parametrize("line", [
-    'STRIPE_SECRET = "sk_live_' + _STRIPE_TAIL + '"',
-    'STRIPE_TEST = "sk_test_' + _STRIPE_TAIL + '"',
-    'STRIPE_RESTRICTED = "rk_live_' + _STRIPE_TAIL + '"',
-    'AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"',
-    'SLACK_BOT_TOKEN = "xoxb-' + "123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx" + '"',
-])
-def test_env_guard_catches_common_leaks(quests_root, project, line):
-    result = _leak(quests_root, project, line)
-    assert [c["id"] for c in quests.failed_checks(result)] == ["no_secrets_in_history"]
-
-
-# Обратная сторона: паттерн, который ловит лишнее, учит неправде. Публикуемый
-# ключ Stripe живёт в коде страницы по замыслу, «risk-» — обычное слово, а
-# `*_test_` встречается в именах функций чаще, чем в ключах.
-@pytest.mark.parametrize("line", [
-    'STRIPE_PUBLISHABLE = "pk_live_' + _STRIPE_TAIL + '"',
-    'DOC = "risk-assessment-document-2026-quarter"',
-    'def task_test_helper_function(): pass',
-    'NOTE = "AKIASHORT"',
-])
-def test_env_guard_ignores_things_that_only_look_like_keys(quests_root, project, line):
-    assert _leak(quests_root, project, line).ok is True
-
-
-def test_env_guard_passes_when_clean(quests_root, project):
-    proj = project(gitignore=".env\n.venv\n", git=True, commits=1)
-    assert check(quests_root, "05-env-guard", proj).ok is True
-
-
-def test_pipeline_quest_has_no_script(quests_root, project):
-    result = check(quests_root, "06-pipeline", project())
+def test_powers_quest_has_no_script(quests_root, project):
+    result = check(quests_root, "05-powers", project())
     assert result.kind == quests.KIND_ACK
 
 
-def test_size_labels_say_bytes_not_chars(quests_root):
-    """wc -c считает байты; в кириллице это вдвое меньше символов, чем обещано."""
-    for quest, label in (("01-recipe", "400"), ("02-claude-md", "300")):
-        text = (quests_root / ACT / quest / "check.sh").read_text(encoding="utf-8")
-        assert "{} байт".format(label) in text
-        assert "{} символов".format(label) not in text
+# --- общий контракт ---
+
+def test_act2_checks_survive_hostile_locale(quests_root, project):
+    """Заголовки CLAUDE.md кириллицей обязаны находиться и при LC_ALL=C."""
+    proj = memory_project(project)
+    env = dict(ALL_TRACES, LC_ALL="C")
+    for quest_id in SCRIPTED:
+        result = check(quests_root, quest_id, proj, env=env)
+        assert result.ok is True, (quest_id, quests.failed_checks(result))
 
 
-def test_db_schema_bails_on_garbage_answer(quests_root, project):
-    """Не «yes» — не значит «БД есть»: мусор уходил в ветку с проверкой файла."""
-    result = check(quests_root, "03-db-schema", project(), env={"JEDICODER_HAS_DB": "мaybe"})
-    assert result.exit_code == quests.EXIT_CANNOT_CHECK
-    assert result.countable is False
-    assert "project db yes|no" in result.stderr
-
-
-def test_check_stderr_reaches_caller(quests_root, project):
-    """Диагностика команды не должна глотаться: иначе «нет git» неотличимо
-    от невыполненного условия.
-    """
-    result = check(quests_root, "04-git-init", project(git=False))
-    assert result.ok is False
-    assert "git" in result.stderr.lower()
+def test_act2_checks_survive_mawk(quests_root, project):
+    """mawk — awk по умолчанию в WSL Ubuntu; суит на gawk его болезней не видит."""
+    if shutil.which("mawk") is None:
+        pytest.skip("mawk недоступен")
+    proj = memory_project(project)
+    bin_dir = proj.parent / "mawkbin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "awk"
+    stub.write_text('#!/bin/sh\nexec mawk "$@"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = dict(ALL_TRACES, LC_ALL="C",
+               PATH="{}:{}".format(bin_dir, os.environ["PATH"]))
+    for quest_id in SCRIPTED:
+        result = check(quests_root, quest_id, proj, env=env)
+        assert result.ok is True, (quest_id, quests.failed_checks(result))
+    stubs = ("## Что это\nTODO\n\n## Как открыть\n\n## Не трогать\nЦвета\n"
+             "\n## Правила\nСохраняй сам.\n")
+    (proj / "CLAUDE.md").write_text(stubs, encoding="utf-8")
+    assert failed(check(quests_root, "03-memory", proj, env=env)) == [
+        "memory_what", "memory_open",
+    ]
 
 
 def _snapshot(root):
-    """Слепок проекта: путь + хеш содержимого каждого файла.
-
-    Сравнивать имена недостаточно: скрипт, дописавший в существующий файл,
-    прошёл бы такую проверку незамеченным. Хеш ловит и это.
-    """
-    snapshot = {}
-    for path in sorted(root.rglob("*")):
-        if ".git" in path.parts or not path.is_file():
-            continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        snapshot[str(path.relative_to(root))] = digest
-    return snapshot
+    seen = {}
+    for folder, _, names in os.walk(str(root)):
+        for name in names:
+            path = os.path.join(folder, name)
+            with open(path, "rb") as handle:
+                seen[os.path.relpath(path, str(root))] = handle.read()
+    return seen
 
 
-def test_checks_do_not_mutate_project(quests_root, project):
-    proj = project(files={"ARCHITECTURE.md": ARCH_GOOD, "CLAUDE.md": CLAUDE_GOOD},
-                   gitignore=".env\n", git=True, commits=1)
+def test_every_check_is_read_only(quests_root, project):
+    """check.sh никогда не мутирует проект падавана."""
+    proj = memory_project(project)
+    (proj / "черновик.txt").write_text("не сохранён\n", encoding="utf-8")
     before = _snapshot(proj)
-    for quest in ("01-recipe", "02-claude-md", "04-git-init", "05-env-guard"):
-        check(quests_root, quest, proj)
-    after = _snapshot(proj)
-    assert before == after
+    for quest_id in SCRIPTED:
+        check(quests_root, quest_id, proj, env=ALL_TRACES)
+        check(quests_root, quest_id, proj)
+    assert _snapshot(proj) == before
 
 
-def test_env_guard_rejects_env_example_as_protection(quests_root, project):
-    """Регрессия: .env.example в .gitignore НЕ защищает .env."""
-    proj = project(gitignore=".env.example\n", git=True, commits=1)
-    result = check(quests_root, "05-env-guard", proj)
-    assert result.ok is False
-    assert "env_ignored" in [c["id"] for c in quests.failed_checks(result)]
+def test_checks_print_only_json_on_stdout(quests_root, project):
+    """Провал и проход печатают в stdout один объект JSON и ничего больше."""
+    for proj, extra in ((memory_project(project), ALL_TRACES), (project(), {})):
+        for quest_id in SCRIPTED:
+            script = quests.script_path(quests_root, SLUG, quest_id)
+            done = subprocess.run(
+                ["bash", str(script)], cwd=str(proj), capture_output=True,
+                text=True,
+                env=dict(os.environ, JEDICODER_PROJECT_PATH=str(proj), **extra),
+            )
+            assert done.returncode == (0 if extra else 1), (quest_id, done.stderr)
+            payload = json.loads(done.stdout)
+            assert payload["quest"] == "act2/" + quest_id
+            assert payload["ok"] is (done.returncode == 0)
 
 
-def test_env_guard_accepts_wildcard_env_rule(quests_root, project):
-    """И не даёт ложного отказа: .env* тоже реально защищает .env."""
-    proj = project(gitignore=".env*\n", git=True, commits=1)
-    result = check(quests_root, "05-env-guard", proj)
-    assert "env_ignored" not in [c["id"] for c in quests.failed_checks(result)]
-
-
-@pytest.mark.parametrize(
-    "heading",
-    ["## Стек", "## СТЕК", "## стек", "## СтЕк",
-     "## Stack", "## STACK", "## stack", "### Стек", "# Стек"],
-)
-def test_recipe_finds_stack_heading_in_any_case(quests_root, heading, project):
-    """Регистр складывается классами, а не `grep -i`.
-
-    Классу нужно только многобайтовое сопоставление; `grep -i` требует ещё
-    и многобайтового СЛОЖЕНИЯ регистра — ровно то, на чём спотыкается BSD
-    grep из macOS, а macOS заявлена целевой платформой. Ставка тут не край,
-    а основной путь: подсказка велит писать «## Стек» с заглавной.
-    """
-    proj = project(files={"ARCHITECTURE.md": ARCH_GOOD.replace("## Стек", heading, 1)})
-    result = check(quests_root, "01-recipe", proj)
-    assert "arch_has_stack" not in [c["id"] for c in quests.failed_checks(result)]
-
-
-@pytest.mark.parametrize(
-    "word",
-    ["Таблица users", "ТАБЛИЦА USERS", "таблица users", "ТаБлИца users",
-     "Table users", "TABLE users", "table users"],
-)
-def test_db_schema_finds_table_word_in_any_case(quests_root, word, project):
-    """То же самое для «таблиц»/«table» в 03-db-schema."""
-    proj = project(files={"DB-SCHEMA.md": DB_GOOD.replace("Таблица users", word, 1)})
-    result = check(quests_root, "03-db-schema", proj, env={"JEDICODER_HAS_DB": "yes"})
-    assert result.ok is True, quests.failed_checks(result)
+def test_trace_checks_do_not_read_the_save(quests_root):
+    """Проверка сохранения не читает: след ей передаёт команда игры."""
+    for quest_id in sorted(TRACES):
+        text = quests.script_path(quests_root, SLUG, quest_id).read_text(
+            encoding="utf-8"
+        )
+        code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+        assert "state.json" not in code and ".jedicoder" not in code, quest_id
 
 
 def test_no_check_folds_case_with_grep_i(quests_root):
@@ -315,53 +356,191 @@ def test_no_check_folds_case_with_grep_i(quests_root):
     кириллицу складывает. Ломается он на BSD grep из macOS, заявленной
     целевой платформой, — поэтому сторожит правило, а не симптом. Правило
     записано в CLAUDE.md: регистр задаётся классом. Тест заодно закрывает
-    «новых таких не заводить» для будущих актов.
+    «новых таких не заводить» для будущих актов. Проверки на полке стережёт
+    тот же тест в tests/test_shelf_act2_checks.py.
     """
+    scripts = sorted(quests_root.rglob("check.sh"))
+    assert scripts, "проверок не найдено — страж смотрит не туда"
     offenders = []
-    for script in sorted(quests_root.rglob("check.sh")):
+    for script in scripts:
         for number, line in enumerate(
                 script.read_text(encoding="utf-8").splitlines(), 1):
             code = line.split("#", 1)[0]
             if re.search(r"grep\s+(-\w*\s+)*-\w*i", code):
-                offenders.append("{}:{}".format(script.name, number))
+                offenders.append("{}:{}".format(script.parent.name, number))
     assert offenders == [], "регистр складывается классом, а не grep -i: {}".format(
         ", ".join(offenders)
     )
 
 
-def test_recipe_still_rejects_unrelated_heading(quests_root, project):
-    """Классы не должны заодно расширить, что считается разделом про стек."""
-    proj = project(
-        files={"ARCHITECTURE.md": ARCH_GOOD.replace("## Стек", "## Стены", 1)}
-    )
-    result = check(quests_root, "01-recipe", proj)
-    assert "arch_has_stack" in [c["id"] for c in quests.failed_checks(result)]
+# --- находки ревью: унаследованный след, подразделы, пустой файл -------------
 
+@pytest.mark.parametrize("quest_id", sorted(TRACES))
+def test_a_trace_inherited_from_the_shell_does_not_count(
+        quests_root, project, quest_id, monkeypatch):
+    """След передаёт команда игры, а не оболочка, из которой её позвали.
 
-def test_act2_checks_survive_hostile_locale(quests_root, project):
-    """Проверки Акта 2 обязаны работать при LC_ALL=C.
-
-    Локаль падавана — лотерея: у свежего WSL Ubuntu LANG нередко вообще не
-    задан, а LC_ALL=C приезжает из чужих скриптов и CI. В C-локали кириллица
-    режется на байты, и «## Стек» перестаёт находиться. Акт 1 это переживал
-    сам (подбор UTF-8-локали жил в md.sh), а Акт 2 md.sh не сорсит и вставал
-    намертво на двух квестах из шести. Подбор локали переехал в emit.sh —
-    его сорсят все проверки всех актов.
+    Иначе приставка `JEDICODER_TRACE_…=yes` перед командой закрывала бы
+    квест без действия: исход решал бы тот, кто набрал команду.
     """
-    proj = project(files={"ARCHITECTURE.md": ARCH_GOOD, "DB-SCHEMA.md": DB_GOOD})
-    hostile = {"LC_ALL": "C"}
-    recipe = check(quests_root, "01-recipe", proj, env=hostile)
-    assert recipe.ok is True, quests.failed_checks(recipe)
-    db = check(quests_root, "03-db-schema", proj,
-               env=dict(hostile, JEDICODER_HAS_DB="yes"))
-    assert db.ok is True, quests.failed_checks(db)
+    for name in ALL_TRACES:
+        monkeypatch.setenv(name, "yes")
+    result = check(quests_root, quest_id, project())
+    assert result.exit_code == quests.EXIT_FAIL, quests.failed_checks(result)
+    # Переданный командой — считается, как прежде.
+    assert check(quests_root, quest_id, project(), env=TRACES[quest_id]).ok is True
 
 
-def test_env_guard_no_false_positive_on_hyphenated_words(quests_root, project):
-    """Регрессия: 'task-management...' содержит 'sk-' и ловился как секрет."""
-    proj = project(files={"notes.md": "task-management1234567890abcdef\n"},
-                   gitignore=".env\n", git=True, commits=1)
-    result = check(quests_root, "05-env-guard", proj)
-    assert "no_secrets_in_history" not in [
-        c["id"] for c in quests.failed_checks(result)
+def test_memory_subsections_belong_to_their_section(quests_root, project):
+    """«## Не трогать», под ним «### Файлы» и список — раздел не пуст."""
+    text = MEMORY_OK.replace(
+        "Файл IDEA.md и цвета на странице.",
+        "### Файлы\n- IDEA.md\n\n### Решения\n- цвета на странице",
+    )
+    result = check(quests_root, "03-memory", memory_project(project, text))
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_section_of_bare_subheadings_is_empty(quests_root, project):
+    text = MEMORY_OK.replace(
+        "Открыть файл index.html в браузере.", "### В браузере\n\n### В терминале"
+    )
+    proj = memory_project(project, text)
+    assert failed(check(quests_root, "03-memory", proj)) == ["memory_open"]
+
+
+def test_memory_deep_section_stops_at_the_next_section(quests_root, project):
+    """Подраздел соседа разделу не засчитывается."""
+    text = (
+        "## Что это\nСтраница кружка.\n\n## Как открыть\n\n"
+        "## Не трогать\n### Файлы\n- IDEA.md\n\n## Правила\nСохраняй сам.\n"
+    )
+    proj = memory_project(project, text)
+    assert failed(check(quests_root, "03-memory", proj)) == ["memory_open"]
+
+
+@pytest.mark.parametrize("blank", ["\n", "  \n\n", "\t\n"])
+def test_memory_blank_root_file_does_not_hide_the_written_one(
+        quests_root, project, blank):
+    proj = project(files={"CLAUDE.md": blank, ".claude/CLAUDE.md": MEMORY_OK})
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_memory_blank_file_is_not_written_memory(quests_root, project):
+    proj = project(files={"CLAUDE.md": "\n\n  \n"})
+    assert "memory_exists" in failed(check(quests_root, "03-memory", proj))
+
+
+def test_memory_with_crlf_and_without_final_newline(quests_root, project):
+    proj = memory_project(project)
+    (proj / "CLAUDE.md").write_bytes(
+        MEMORY_OK.rstrip("\n").replace("\n", "\r\n").encode("utf-8")
+    )
+    result = check(quests_root, "03-memory", proj)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root читает любую папку")
+def test_memory_bails_on_unreadable_dot_claude_folder(quests_root, project):
+    proj = memory_project(project, name=".claude/CLAUDE.md")
+    (proj / ".claude").chmod(0o000)
+    try:
+        result = check(quests_root, "03-memory", proj)
+    finally:
+        (proj / ".claude").chmod(0o755)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+
+
+# --- перешло из #100: «Чего не трогать», BOM и неразрывный пробел -------------
+
+def test_memory_accepts_the_heading_the_check_itself_speaks(quests_root, project):
+    """Строка проверки говорит «чего не трогать» — и заголовок такой годится."""
+    for heading in ("## Чего не трогать", "## чего не трогать в проекте"):
+        text = MEMORY_OK.replace("## Не трогать", heading)
+        result = check(quests_root, "03-memory", memory_project(project, text))
+        assert result.ok is True, (heading, quests.failed_checks(result))
+
+
+def test_memory_file_with_a_bom_keeps_its_first_section(quests_root, project):
+    """Блокнот Windows ставит в начало файла невидимую метку."""
+    text = "\ufeff" + MEMORY_OK.split("\n\n", 1)[1]
+    assert text.startswith("\ufeff## Что это")
+    proj = memory_project(project, text)
+    for env in (None, {"LC_ALL": "C"}):
+        result = check(quests_root, "03-memory", proj, env=env)
+        assert result.ok is True, (env, quests.failed_checks(result))
+
+
+@pytest.mark.parametrize("heading,broken", [
+    ("## Что это", "##\u00a0Что\u00a0это"),
+    ("## Как открыть", "## Как\u00a0открыть"),
+    ("## Не трогать", "## Не\u00a0трогать"),
+    ("## Не трогать", "## Чего\u00a0не\u00a0трогать"),
+])
+def test_memory_heading_with_a_non_breaking_space_is_the_same_heading(
+        quests_root, project, heading, broken):
+    proj = memory_project(project, MEMORY_OK.replace(heading, broken))
+    for env in (None, {"LC_ALL": "C"}):
+        result = check(quests_root, "03-memory", proj, env=env)
+        assert result.ok is True, (broken, env, quests.failed_checks(result))
+
+
+def test_memory_in_another_encoding_does_not_break_the_check(quests_root, project):
+    """Файл не в UTF-8 (cp1251 из Блокнота): разделы не найдены — честный
+    провал строками, а не сорванная проверка."""
+    proj = project()
+    (proj / "CLAUDE.md").write_bytes(MEMORY_OK.encode("cp1251"))
+    result = check(quests_root, "03-memory", proj)
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == [
+        "memory_what", "memory_open", "memory_keep", "memory_rules",
     ]
+
+
+def test_memory_non_breaking_spaces_alone_are_not_a_body(quests_root, project):
+    """Раздел из одних неразрывных пробелов пуст, как и из обычных."""
+    text = MEMORY_OK.replace("Файл IDEA.md и цвета на странице.", "\u00a0\u00a0")
+    proj = memory_project(project, text)
+    assert failed(check(quests_root, "03-memory", proj)) == ["memory_keep"]
+
+
+def test_memory_with_bom_and_nbsp_survives_mawk(quests_root, project):
+    if shutil.which("mawk") is None:
+        pytest.skip("mawk недоступен")
+    text = "\ufeff" + MEMORY_OK.split("\n\n", 1)[1].replace(
+        "## Не трогать", "##\u00a0Чего\u00a0не трогать")
+    proj = memory_project(project, text)
+    bin_dir = proj.parent / "mawkbin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "awk"
+    stub.write_text('#!/bin/sh\nexec mawk "$@"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {"LC_ALL": "C", "PATH": "{}:{}".format(bin_dir, os.environ["PATH"])}
+    result = check(quests_root, "03-memory", proj, env=env)
+    assert result.ok is True, quests.failed_checks(result)
+
+
+# --- четвёртый раздел: правило работы (#104, по шпаргалке оператора) -----------
+
+def test_memory_rules_section_takes_any_rule_of_the_person(quests_root, project):
+    """Правило человек называет своё: судится раздел, а не его слова."""
+    for heading, body in (
+        ("## Правила", "После важных изменений сохраняй сам."),
+        ("## правила работы", "Спрашивай перед большой правкой."),
+        ("## Правило", "- коммит после каждой рабочей версии"),
+    ):
+        text = MEMORY_OK.split("## Правила")[0] + "{}\n{}\n".format(heading, body)
+        proj = memory_project(project, text, name="CLAUDE.md")
+        result = check(quests_root, "03-memory", proj)
+        assert result.ok is True, (heading, quests.failed_checks(result))
+
+
+def test_memory_without_rules_fails_on_that_line_alone(quests_root, project):
+    proj = memory_project(project, MEMORY_OK.split("## Правила")[0])
+    result = check(quests_root, "03-memory", proj)
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == ["memory_rules"]
+    hint = quests.failed_checks(result)[0]["hint"]
+    assert "сохраняй сам после важных изменений" in hint and "«Правила»" in hint

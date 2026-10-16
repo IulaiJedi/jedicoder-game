@@ -577,13 +577,23 @@ def test_prefixed_command_passes():
 
 def test_bare_command_in_code_span_detected():
     """Обратные кавычки не спасают: падаван копирует команду из них."""
-    assert lint_content.bare_commands("Набери `/plan` сам.") == ["/plan"]
+    assert lint_content.bare_commands("Набери `/handoff` сам.") == ["/handoff"]
+
+
+def test_commands_of_claude_code_itself_are_not_bare_artifacts():
+    """`/plan` и `/clear` — команды самого Claude Code: им учит Акт 2, и
+    приставки плагина у них нет. Приём `plan` ушёл на полку с прежним
+    Актом 2 (спека #99); вернётся приёмом — вернётся и под правило, сам,
+    через реестр."""
+    assert "plan" not in lint_content.PREFIXED_COMMANDS
+    text = "Набери `/plan` и своё дело. Потом `/clear`, `/model` и `/usage`."
+    assert lint_content.bare_commands(text) == []
 
 
 def test_urls_and_paths_are_not_commands():
     text = (
-        "Адрес https://домен/deploy и файл docs/jedicoder/plan.md, "
-        "ручка `artifact plan`, квест `01-deploy`, Telegram-команда /start."
+        "Адрес https://домен/deploy и файл docs/jedicoder/handoff.md, "
+        "ручка `artifact handoff`, квест `01-deploy`, Telegram-команда /start."
     )
     assert lint_content.bare_commands(text) == []
 
@@ -604,7 +614,7 @@ def test_bare_command_in_rule_detected(tmp_path):
 def test_bare_command_in_skill_detected(tmp_path):
     content_dir = tmp_path / "content"
     skills_dir = skills_with(
-        tmp_path / "skills", [("act1", "# Скилл\n\nПозови /plan.\n")],
+        tmp_path / "skills", [("act1", "# Скилл\n\nПозови /handoff.\n")],
     )
     build(
         content_dir,
@@ -613,7 +623,7 @@ def test_bare_command_in_skill_detected(tmp_path):
         recipes=[("p.md", RECIPE.format(recipe="ppp"))],
     )
     problems = lint_synth(content_dir, skills_root=skills_dir, legacy={})
-    assert any("SKILL act1" in p and "/plan" in p for p in problems)
+    assert any("SKILL act1" in p and "/handoff" in p for p in problems)
 
 
 def test_language_doc_names_the_prefix():
@@ -633,8 +643,8 @@ def test_instructions_and_roadmaps_are_language_units(content_root):
         lint_content.content.load_roadmaps(content_root),
     )
     labels = {label: rules for label, _, _, _, rules in units}
-    assert "инструкция plan" in labels and "карта founder" in labels
-    for label in ("инструкция plan", "карта founder"):
+    assert "инструкция handoff" in labels and "карта founder" in labels
+    for label in ("инструкция handoff", "карта founder"):
         assert lint_content.RULE_SENTENCE in labels[label]
         assert lint_content.RULE_EARLY not in labels[label]
 

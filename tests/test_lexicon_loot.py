@@ -88,6 +88,18 @@ ACT1_LIVE_SPEECH = [
 # Фразы того же прогона, чьи слова уехали в другие акты планом 01.2-05.
 # Тройка: (фраза, термин, акт, в котором термин теперь живёт).
 #
+# Все четыре слова жили в прежнем Акте 2 «Чертёж» и 2026-10-13 ушли с ним на
+# полку (shelf/act2-chertezh/, спека #99). Фразы проверяются на словаре полки:
+# вернувшись в игру, слова обязаны слышать ту же речь. В живом словаре их
+# нет — test_shelved_speech_is_silent_in_the_game.
+SHELF2_CONTENT = (
+    Path(__file__).resolve().parents[1] / "shelf" / "act2-chertezh" / "content"
+)
+needs_shelf2 = pytest.mark.skipif(
+    not SHELF2_CONTENT.is_dir(),
+    reason="полки прежнего Акта 2 нет в этом дереве — она живёт только в рабочем репозитории",
+)
+#
 # Уехали они не по счёту, а по смыслу: «стек» и «скрипт» — язык квеста
 # 01-recipe Акта 2, «индекс» — квеста 05-env-guard, «пайплайн» — квеста
 # 06-pipeline. Фраза при этом не изменилась ни на букву: проверяем, что
@@ -141,6 +153,19 @@ def test_act1_speech_unlocks_act1_terms(content_root, text, expected):
 
 
 @pytest.mark.parametrize("text,expected,act", RELOCATED_LIVE_SPEECH)
+def test_shelved_speech_is_silent_in_the_game(content_root, text, expected, act):
+    """Слова на полке карточкой не выпадают — ни в каком акте живой игры."""
+    terms = content.load_terms(content_root)
+    for current in ranks.playable_acts():
+        found = [
+            t.term for t in
+            lexicon_loot.find_terms(text, terms, fresh_state(current_act=current))
+        ]
+        assert expected not in found, (current, found)
+
+
+@needs_shelf2
+@pytest.mark.parametrize("text,expected,act", RELOCATED_LIVE_SPEECH)
 def test_relocated_speech_unlocks_on_its_own_act(content_root, text, expected, act):
     """Страж того же LOOP-03 после переезда 01.2-05: слово слышно на своём шаге.
 
@@ -149,7 +174,9 @@ def test_relocated_speech_unlocks_on_its_own_act(content_root, text, expected, a
     правка тела задела бы список форм, — эта проверка упала бы, и молчание
     словаря не выдало бы себя за «так задумано».
     """
-    terms = content.load_terms(content_root)
+    terms = list(content.load_terms(content_root)) + list(
+        content.load_terms(SHELF2_CONTENT)
+    )
     found = [
         t.term
         for t in lexicon_loot.find_terms(text, terms, fresh_state(current_act=act))
@@ -157,6 +184,7 @@ def test_relocated_speech_unlocks_on_its_own_act(content_root, text, expected, a
     assert expected in found, "«{}» не открыла {}: {}".format(text, expected, found)
 
 
+@needs_shelf2
 @pytest.mark.parametrize("text,expected,act", RELOCATED_LIVE_SPEECH)
 def test_relocated_speech_stays_silent_in_act1(content_root, text, expected, act):
     """Обратная сторона переезда: в Акте 1 этих карточек больше нет.
@@ -172,7 +200,9 @@ def test_relocated_speech_stays_silent_in_act1(content_root, text, expected, act
     могут по разным причинам.
     """
     assert act > 1
-    terms = content.load_terms(content_root)
+    terms = list(content.load_terms(content_root)) + list(
+        content.load_terms(SHELF2_CONTENT)
+    )
     found = [t.term for t in lexicon_loot.find_terms(text, terms, fresh_state())]
     assert expected not in found, (
         "«{}» открыла {} ещё в Акте 1 — переезд не сработал: {}".format(
@@ -297,6 +327,8 @@ ACT1_AND_FIRST_SCREEN = (
     "model-effort", "usage", "terminal",
     "project-folder", "permission-mode", "tool", "prompt", "api",
     "commit", "repository", "env", "rollback",
+    # Слова второго вечера (#104).
+    "plan-mode", "claude-md", "context-window", "clear",
 )
 
 

@@ -18,7 +18,8 @@ PLUGIN = Path(__file__).resolve().parents[1] / "plugin"
 HOOKS = PLUGIN / "hooks"
 
 CLASSIC_EVENTS = (
-    "SessionStart", "Stop", "PreToolUse", "PostToolUse", "UserPromptSubmit",
+    "SessionStart", "SessionEnd", "Stop", "PreToolUse", "PostToolUse",
+    "UserPromptSubmit",
 )
 
 

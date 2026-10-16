@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jedicoder import cli
+from jedicoder import cli, ranks
 from jedicoder import state as st
 
 EMPTY = {
@@ -157,7 +157,11 @@ def test_strip_and_phrase_cannot_drift_apart(game, monkeypatch):
 
 
 def test_after_entering_the_act_there_is_nothing_to_say(game, project):
-    """На вопросы квестов человек отвечает сам: поле ввода пустое на всём пути."""
+    """На вопросы квестов человек отвечает сам: поле ввода пустое на всём пути.
+
+    Акт закрыт, следующий ждёт — фраза возвращается: она зовёт в Акт 2 так
+    же, как звала в первый.
+    """
     from test_act1_walkthrough import ACK, do_first_request, do_idea, do_save
 
     proj = project()
@@ -185,7 +189,10 @@ def test_after_entering_the_act_there_is_nothing_to_say(game, project):
     say()
     assert game("ack", "1", ACK)[0] == 0
     say()
-    assert said == [""] * 8
+    assert said == [""] * 7 + [cli.SAY_START]
+    assert game("enter", "2")[0] == 0
+    say()
+    assert said[-1] == ""
 
 
 def test_outside_a_game_session_there_is_nothing_to_say(game, tmp_path):
@@ -218,7 +225,14 @@ def test_phrase_is_offered_before_the_act_and_not_inside_it():
     assert cli.phrase_to_say(st.default_state()) == cli.SAY_START
     started = {"acts": {"1": {"status": "in_progress", "quests": {}}}}
     assert cli.phrase_to_say(started) == ""
-    assert cli.phrase_to_say({"acts": {"1": {"status": "done"}}}) == ""
+    # Первый акт закрыт, второй не начат — фраза зовёт во второй.
+    between = {"acts": {"1": {"status": "done"}}}
+    assert cli.phrase_to_say(between) == cli.SAY_START
+    inside = {"acts": {"1": {"status": "done"},
+                       "2": {"status": "in_progress", "quests": {}}}}
+    assert cli.phrase_to_say(inside) == ""
+    done = {"acts": {str(n): {"status": "done"} for n in ranks.playable_acts()}}
+    assert cli.phrase_to_say(done) == ""
 
 
 def test_no_save_and_a_broken_save_offer_nothing(game):

@@ -23,32 +23,31 @@ def test_ranks_order():
 def test_acts_table_complete():
     assert sorted(ranks.ACTS) == [1, 2, 3, 4, 5]
     assert [ranks.ACTS[n]["artifact"] for n in sorted(ranks.ACTS)] == [
-        "brainstorm", "plan", "investigate", "cso", "deploy",
+        "brainstorm", "handoff", "investigate", "goal", "deploy",
     ]
     assert [ranks.ACTS[n]["rank"] for n in sorted(ranks.ACTS)] == [
         "seeker", "padawan", "knight", "sentinel", "master",
     ]
 
 
-def test_all_artifacts_include_the_lock_free_one():
+def test_all_artifacts_are_one_list_and_goal_has_a_lock():
     """Полный список имён артефактов — один, и он здесь.
 
-    В `ACTS` лежат только те, у кого есть замок: артефакт выдаётся на входе
-    в акт. У `goal` акта-владельца нет — он открыт с первого дня, — поэтому
-    в `ACTS` его нет и быть не может. Читателям же (линтер состава
-    инструкций, будущая сборка Свитка) нужен список целиком, и заводить его
-    у себя им нельзя: два списка имён разойдутся молча.
+    До 2026-10-14 `goal` был без замка и жил в `UNLOCKED_ARTIFACTS`. Теперь
+    его выдают на входе в Акт 4 «Свой продукт» (спека #117): он в `ACTS`, а
+    приёмов без замка нет. Читателям (линтер состава инструкций, сборка
+    памятки) нужен список целиком, и заводить его у себя им нельзя: два
+    списка имён разойдутся молча.
     """
     assert ranks.ALL_ARTIFACTS == (
-        "brainstorm", "plan", "investigate", "cso", "deploy", "goal",
+        "brainstorm", "handoff", "investigate", "goal", "deploy",
     )
-    assert ranks.UNLOCKED_ARTIFACTS == ("goal",)
+    assert ranks.UNLOCKED_ARTIFACTS == ()
     # Производный, а не переписанный: акт добавят — список вырастет сам.
     from_acts = tuple(ranks.ACTS[n]["artifact"] for n in sorted(ranks.ACTS))
     assert ranks.ALL_ARTIFACTS == from_acts + ranks.UNLOCKED_ARTIFACTS
-    # Замок остаётся только у тех, кто выдаётся актом: `artifact goal` —
-    # неизвестное имя для команды-замка, и это не дефект, а его отсутствие.
-    assert "goal" not in from_acts
+    # Приём «Щита» ушёл с ним на полку: имени нет ни в одном перечне.
+    assert "cso" not in ranks.ALL_ARTIFACTS
 
 
 def test_rank_starts_at_youngling():
@@ -94,13 +93,25 @@ def test_unknown_act_raises():
 
 def test_artifact_given_on_entry_not_on_close():
     data = st.default_state("abc123")
-    assert ranks.artifact_unlocked(data, "plan") is False
+    assert ranks.artifact_unlocked(data, "handoff") is False
     ranks.enter_act(data, 1)
     assert ranks.artifacts_for(data) == ["brainstorm"]
-    assert ranks.artifact_unlocked(data, "plan") is False
+    assert ranks.artifact_unlocked(data, "handoff") is False
     ranks.close_act(data, 1)
+    assert ranks.artifact_unlocked(data, "handoff") is False
     ranks.enter_act(data, 2)
-    assert ranks.artifact_unlocked(data, "plan") is True
+    assert ranks.artifact_unlocked(data, "handoff") is True
+    assert ranks.artifacts_for(data) == ["brainstorm", "handoff"]
+
+
+def test_shelved_artifact_is_not_given_by_any_act():
+    """Приём `plan` ушёл на полку с прежним Актом 2 (shelf/act2-chertezh/)."""
+    data = st.default_state("abc123")
+    for act in sorted(ranks.ACTS):
+        ranks.enter_act(data, act)
+        ranks.close_act(data, act)
+    assert "plan" not in ranks.ALL_ARTIFACTS
+    assert ranks.artifact_unlocked(data, "plan") is False
 
 
 def test_enter_act_sets_current_and_status():

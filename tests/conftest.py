@@ -55,13 +55,82 @@ def quests_root():
     return QUESTS_ROOT
 
 
-@pytest.fixture
-def old_acts_open(monkeypatch):
-    """Акты 2–4 открыты, как до 2026-10-08: выключен один Акт 5.
+SHELF_ACT4 = ROOT / "shelf" / "act4-shchit"
 
-    Игра сегодня кончается Актом 1 (`ranks.MUTED_ACTS`, спека #75), но
-    механика поздних актов — порядок входа, развилка по пути деплоя, Книга на
-    входе, хэш `CLAUDE.md` для босса — живёт в движке и вернётся с актами.
+#: Полка в выгрузку не едет (`build_release.SHIP_TOP`): тесту, которому она
+#: нужна, в выгрузке нечего проверять — пропуск, а не красный.
+needs_shelf = pytest.mark.skipif(
+    not (ROOT / "shelf").is_dir(), reason="полки нет: выгрузка без shelf/"
+)
+
+
+@pytest.fixture
+def shield_on_act4(monkeypatch):
+    """Прежний Акт 4 «Щит» — с полки на место Акта 4, как до 2026-10-14.
+
+    Развилка по пути деплоя живёт в движке (`acts.ACT_AXIS`,
+    `filter_by_deploy`, `project deploy`), но ни один играемый акт сегодня по
+    ней не ветвится (спека #117). Юнит-тесты этой механики ставят «Щит» на его
+    прежний номер сами: состав и ветки берутся из катсцены на полке, вид
+    квеста — по тому, лежит ли там его проверка. Отдаёт корень квестов полки:
+    проверки «Щита» лежат там.
+    """
+    from jedicoder import acts, content, quests, ranks
+
+    if not SHELF_ACT4.is_dir():
+        pytest.skip("полки нет: выгрузка без shelf/")
+    scene = next(iter(content.load_acts(SHELF_ACT4 / "content")))
+    root = SHELF_ACT4 / "quests"
+    registry = tuple(
+        (
+            quest_id,
+            quests.KIND_SCRIPT
+            if (root / scene.slug / quest_id / "check.sh").is_file()
+            else quests.KIND_ACK,
+            branch,
+        )
+        for quest_id, branch in zip(scene.quests, scene.quest_branches)
+    )
+    monkeypatch.setitem(ranks.ACTS, 4, {
+        "slug": scene.slug, "title": scene.title,
+        "artifact": scene.artifact, "rank": scene.rank,
+    })
+    monkeypatch.setitem(acts.QUESTS_BY_ACT, 4, registry)
+    monkeypatch.setattr(acts, "ACT_AXIS", {4: acts.AXIS_DEPLOY})
+    return root
+
+
+@pytest.fixture
+def shield_content(tmp_path_factory):
+    """Копия живого контента, где на месте катсцены Акта 4 — катсцена «Щита».
+
+    Для тестов, которым на входе в «Щит» (`shield_on_act4`) нужны его
+    названия квестов: живой контент описывает уже «Свой продукт».
+    """
+    import shutil
+
+    if not SHELF_ACT4.is_dir():
+        pytest.skip("полки нет: выгрузка без shelf/")
+    root = tmp_path_factory.mktemp("shield-content") / "ru"
+    shutil.copytree(str(CONTENT_ROOT), str(root))
+    for scene in (root / "acts").glob("act4-*.md"):
+        scene.unlink()
+    shutil.copy(
+        str(SHELF_ACT4 / "content" / "acts" / "act4-shchit.md"),
+        str(root / "acts" / "act4-shchit.md"),
+    )
+    return root
+
+
+@pytest.fixture
+def old_acts_open(monkeypatch, shield_on_act4):
+    """Акты 3–4 открыты, как до 2026-10-08: выключен один Акт 5, а на месте
+    Акта 4 стоит прежний «Щит» с развилкой по пути деплоя (`shield_on_act4`).
+
+    Игра сегодня кончается Актом 4 «Свой продукт» (`ranks.MUTED_ACTS`, спеки
+    #75, #99, #108 и #117), но механика поздних актов — порядок входа,
+    развилка по пути деплоя, Книга на входе, хэш `CLAUDE.md` для босса —
+    живёт в движке и вернётся с актами.
     Юнит-тесты этой механики открывают дверь сами, чтобы она не сгнила молча
     к тому дню, когда номер уйдёт из списка.
 

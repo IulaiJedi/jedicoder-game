@@ -4,6 +4,7 @@
 Скиллы — markdown, поэтому вся логика вызывается отсюда одной командой,
 а скилл только пересказывает вывод падавану по правилам контракта.
 """
+import calendar
 import json
 import os
 import shutil
@@ -14,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jedicoder import acts, content, contract, debrief, frontmatter, game_session, quests, ranks, scroll, sync, tools  # noqa: E402
+from jedicoder import acts, content, contract, debrief, frontmatter, game_session, quests, ranks, scroll, statusline, sync, tools  # noqa: E402
 from jedicoder import state as st  # noqa: E402
 
 SUBCOMMANDS = (
@@ -271,16 +272,63 @@ def artifact_command(name):
 # Команду знает модель (скилл акта); на экране — слова.
 ARTIFACT_WORDS = {
     "brainstorm": ("найти идею", "помоги найти идею"),
-    "plan": ("спланировать работу", "помоги составить план"),
-    "investigate": ("разобраться в поломке", "помоги разобраться, почему сломалось"),
-    "cso": ("проверить ключи", "проверь, не утекают ли ключи"),
+    "handoff": ("начать следующий разговор с того же места", "запиши передачу"),
+    "investigate": ("найти причину, когда что-то сломалось", "помоги разобраться, почему сломалось"),
+    "goal": ("довести дело до работы и вовремя остановиться",
+             "поставь цель: доведи до работы, не больше пяти попыток"),
     "deploy": ("выложить продукт", "помоги выложить"),
+}
+
+
+#: Имя приёма на экране — у приёма, которому имя утвердил оператор (#104).
+#: То же имя носит приём в приложении (таблица `TECHNIQUES` Голокрона) и
+#: в словаре сайта (CONTEXT.md, «Передача»). Приём без записи зовётся тем,
+#: что он делает.
+ARTIFACT_NAMES = {
+    "handoff": "Передача",
+    "investigate": "Разбор поломки",
+    # Имя рабочее (спека #117): утвердит оператор вместе с текстами Акта 4.
+    "goal": "Цель",
 }
 
 
 def artifact_words(name):
     """(что делает, что сказать) или None — у приёма без записи."""
     return ARTIFACT_WORDS.get(name)
+
+
+def artifact_label(name):
+    """Приём одной подписью: «„Передача“: начать…» или просто «найти идею».
+
+    None — у приёма без слов: печатающий тогда называет команду.
+    """
+    words = artifact_words(name)
+    if words is None:
+        return None
+    title = ARTIFACT_NAMES.get(name)
+    return "«{}»: {}".format(title, words[0]) if title else words[0]
+
+
+#: Строка приёма на входе в акт. Две формы: приём с именем и без него.
+ACT_ARTIFACT_NAMED = "Приём этого акта — «{}»: помогает {}. Скажи Claude: «{}»."
+ACT_ARTIFACT_PLAIN = "Приём этого акта помогает {}. Скажи Claude: «{}»."
+
+#: Приёмы на первом экране, когда их больше одного: строка на приём. Одной
+#: строкой назвать можно только одну фразу — и первый приём оставался без
+#: своей (#104).
+ARTIFACTS_HEAD = "Приёмы: скажи Claude слова в кавычках — он применит приём."
+ARTIFACTS_ROW = "  {} — «{}»"
+
+
+def act_artifact_line(name):
+    """Строка приёма на входе в акт — или None, у приёма без слов."""
+    words = artifact_words(name)
+    if words is None:
+        return None
+    title = ARTIFACT_NAMES.get(name)
+    if title:
+        return ACT_ARTIFACT_NAMED.format(title, *words)
+    return ACT_ARTIFACT_PLAIN.format(*words)
 
 
 # Штраф словами человека, по типу из журнала. Те же слова говорит хук в
@@ -442,12 +490,18 @@ def render_status(data, project_exists, recipe):
     ]
     if artifacts:
         worded = [artifact_words(name) for name in artifacts]
-        if all(worded):
+        if all(worded) and len(artifacts) == 1:
             tail_lines.append(
                 "Приёмы: {}. Скажи Claude: «{}» — он применит приём.".format(
-                    ", ".join(does for does, _ in worded), worded[-1][1],
+                    artifact_label(artifacts[0]), worded[0][1],
                 )
             )
+        elif all(worded):
+            tail_lines.append(ARTIFACTS_HEAD)
+            tail_lines += [
+                ARTIFACTS_ROW.format(artifact_label(name), say)
+                for name, (_, say) in zip(artifacts, worded)
+            ]
         else:
             tail_lines.append(
                 "Приёмы: {} — готовые способы работы, каждый зовётся своей "
@@ -464,9 +518,14 @@ def render_status(data, project_exists, recipe):
         )
     counters = data.get("first_try") or {}
     if counters.get("attempted"):
+        # Подпись говорит, что в счёте: квест, который закрывает рассказ,
+        # сюда не входит, и «8 из 8» при десяти закрытых читалось как ошибка
+        # (#114). Слова о счёте — те же, что в строке Разбора.
         tail_lines.append(
-            "С первой попытки: {} из {} — квесты, где проверка сошлась "
-            "сразу".format(counters.get("passed", 0), counters.get("attempted", 0))
+            "С первой попытки: {} из {} — проверка сошлась сразу; {}".format(
+                counters.get("passed", 0), counters.get("attempted", 0),
+                scroll.FIRST_TRY_COUNTS,
+            )
         )
     if tail_lines:
         lines.append("")
@@ -519,6 +578,40 @@ FOLDER_QUEST = (1, "01-folder")
 #: прохождения, и знает его только сохранение.
 STEP_FOLDER_NAMED = "Папка названа. Дальше — проверка квеста."
 STEP_WORDS_TAKEN = "Рассказ записан. Дальше — проверка квеста."
+STEP_PLAN_APPROVED = "План одобрен. Дальше — проверка квеста."
+STEP_SHOWN = "Файл и снимок экрана показаны. Дальше — проверка квеста."
+#: Квест «Чистый лист» после `/clear` (#114): новый разговор начат, рассказа
+#: ещё нет. Задание «Запиши передачу…» просило бы уже сделанное — и первым,
+#: что человек видит на опустевшем экране.
+STEP_NEW_TALK = "Новый разговор начат. Дальше — вопрос «на чём остановились?» и рассказ об ответе Claude."
+STEP_WORD_SAID = "Слово «чистка» сказано. Дальше — проверка квеста."
+
+#: Квесты, действие которых видно по следам (ADR-0020 в репозитории сайта):
+#: квест → (следы, которых ждёт его проверка; вторая форма строки). Квеста
+#: «Чистый лист» здесь нет: у него слова раньше проверки, и вторых форм две —
+#: см. `WORDS_AFTER_TRACE`.
+TRACE_STEPS = {
+    (2, "01-plan"): ((st.TRACE_PLAN_APPROVED,), STEP_PLAN_APPROVED),
+    # Следов два, и строка меняется, только когда есть оба: показан один
+    # файл — задание «покажи файл и снимок» ещё не сделано.
+    (2, "02-show"): (
+        (st.TRACE_FILE_SHOWN, st.TRACE_IMAGE_SHOWN), STEP_SHOWN,
+    ),
+    # След говорит только, что слово сказано при записанном хуке. Записана
+    # ли после него передача, видно на диске — это судит проверка.
+    acts.HOOK_QUEST: ((st.TRACE_HOOK_WORD,), STEP_WORD_SAID),
+    # План Акта 4: годится только одобренный после входа в акт — см.
+    # `_trace_since_entry`.
+    acts.PRODUCT_PLAN_QUEST: ((st.TRACE_PLAN_APPROVED,), STEP_PLAN_APPROVED),
+}
+
+
+#: Квесты «слова раньше проверки», у которых до рассказа есть действие,
+#: видное по следу: квест → (след; строка, пока рассказа нет). После рассказа
+#: — общая «Рассказ записан».
+WORDS_AFTER_TRACE = {
+    (2, "04-clear"): (st.TRACE_CLEARED, STEP_NEW_TALK),
+}
 
 
 def _folder_named(data):
@@ -534,12 +627,43 @@ def _folder_named(data):
     return recorded
 
 
+def _trace_counts(data, kind):
+    """Есть ли след, который вправе получить проверка.
+
+    Считается только помеченный (`state.TRACE_MARK`): `/clear` — сделанный
+    после записи памяти проекта; план, файл и картинка — сделанные, пока
+    идёт их акт. Пометку ставит хук в момент действия; закрытый позже квест
+    или начатый позже акт прежнему следу её не добавляют — действие
+    повторяют.
+    """
+    entry = st.trace(data, kind)
+    if entry is None:
+        return False
+    return entry.get(st.TRACE_MARK[kind]) is True
+
+
+def _trace_since_entry(data, kind, act):
+    """Сделан ли след после входа в акт — для квестов «свежего следа».
+
+    Пометку `in_act` у плана поставил ещё второй вечер; Акту 4 нужен план,
+    одобренный в нём самом (`acts.FRESH_TRACE_QUESTS`). Момент последнего
+    одобрения пишет хук, момент входа — `_act_started_epoch`. Нет одного из
+    двух — следа после входа нет.
+    """
+    if not _trace_counts(data, kind):
+        return False
+    moment = st.trace_moment(data, kind)
+    started = _act_started_epoch(data, act)
+    return moment is not None and started is not None and moment >= started
+
+
 def _action_done(data, act, quest_id):
     """Вторая форма задания — или None, когда действие квеста ещё не сделано.
 
     Только там, где игра знает это из сохранения: папка названа человеком;
-    рассказ записан и не стёрт несошедшейся проверкой. Рассказ читает
-    `quests.seen` — тот же, по которому проверка решает, идти ли ей.
+    рассказ записан и не стёрт несошедшейся проверкой; хук записал след.
+    Рассказ читает `quests.seen` — тот же, по которому проверка решает, идти
+    ли ей; след — `_trace_counts`, тот же, по которому он уходит проверке.
 
     Названная папка, которую проверка не приняла, действием не считается:
     «Дальше — проверка» звала бы ту же проверку снова. Отметку ставит
@@ -549,8 +673,22 @@ def _action_done(data, act, quest_id):
         if quests.refused(data, act, quest_id):
             return None
         return STEP_FOLDER_NAMED if _folder_named(data) else None
-    if acts.needs_words(act, quest_id):
-        return STEP_WORDS_TAKEN if quests.seen(data, act, quest_id) else None
+    if acts.needs_words(act, quest_id, data):
+        if quests.seen(data, act, quest_id):
+            return STEP_WORDS_TAKEN
+        kind, words = WORDS_AFTER_TRACE.get((act, quest_id), (None, None))
+        return words if kind and _trace_counts(data, kind) else None
+    if (act, quest_id) == acts.HOOK_QUEST and quests.refused(data, act, quest_id):
+        # Слово сказано, а проверка не сошлась: «Дальше — проверка» звала бы
+        # её же снова. Строка возвращается к заданию, пока слово не повторят.
+        return None
+    kinds, words = TRACE_STEPS.get((act, quest_id), ((), None))
+    if (act, quest_id) in acts.FRESH_TRACE_QUESTS:
+        counts = lambda kind: _trace_since_entry(data, kind, act)  # noqa: E731
+    else:
+        counts = lambda kind: _trace_counts(data, kind)  # noqa: E731
+    if kinds and all(counts(kind) for kind in kinds):
+        return words
     return None
 
 
@@ -691,9 +829,12 @@ def render_next_step(data, quest_titles, quest_tasks=None):
         if task:
             step.append("  {}".format(task))
         return step
-    if ranks.muted_after(ranks.FINAL_ACT):
+    ahead = ranks.muted_after(ranks.FINAL_ACT)
+    if ahead:
+        # Впереди может быть один акт: «следующие акты ещё не написаны» во
+        # множественном числе обещало бы человеку несколько (#120).
         return [
-            "Что дальше: следующие акты {}.".format(NOT_WRITTEN),
+            "Что дальше: {}.".format(preparing_phrase(ahead)),
             "  " + MEMO_INVITE,
         ]
     return [
@@ -713,7 +854,7 @@ MEMO_INVITE = "Памятку в папку проекта положит Claude
 
 
 def preparing_phrase(numbers):
-    """«Акты 2–5 ещё не написаны» — про выключенные акты, без прежних имён.
+    """«Акты 4–5 ещё не написаны» — про выключенные акты, без прежних имён.
 
     Имён нет намеренно: выключенные акты перестраиваются, их состав и
     названия изменятся (спека #75), и обещать человеку «Первую кровь» значит
@@ -1034,6 +1175,23 @@ def _act_rank_line(data, act_rank):
     )
 
 
+#: Блок о Книге на экране входа в акт — человеку и словами (#103). Имён
+#: ручек здесь нет: ответ и ключ человек говорит Claude, а чем их записать,
+#: модель знает из скилла акта и скилла `core`. `/link` — команда бота в
+#: Телеграме: её человек набирает сам.
+#:
+#: Имя — из словаря сайта (CONTEXT.md, «Книга»): «Голокрон» там — десктопное
+#: приложение, и звать так же браузерную книгу нельзя.
+BOOK_KEY_HINT = (
+    "Пройденные квесты появятся в Книге, когда игра узнает ключ. Ключ выдаёт бот {} "
+    "командой /link — назови его Claude."
+)
+BOOK_QUESTION = (
+    "Открывать Книгу в браузере на входе в каждый акт? Ответь Claude: да "
+    "или нет."
+)
+
+
 def _cmd_enter(args, state_path, content_root, quests_root):
     if not args:
         print("Укажи номер акта: enter 1")
@@ -1177,9 +1335,9 @@ def _cmd_enter(args, state_path, content_root, quests_root):
     _print_quest_list(data, act, content_root)
     print("")
     print(_act_rank_line(data, info["rank"]))
-    words = artifact_words(info["artifact"])
-    if words:
-        print("Приём этого акта помогает {}. Скажи Claude: «{}».".format(*words))
+    artifact_line = act_artifact_line(info["artifact"])
+    if artifact_line:
+        print(artifact_line)
     else:
         print(
             "Приём этого акта: {} — готовый способ работы, зовётся этой "
@@ -1200,22 +1358,14 @@ def _cmd_enter(args, state_path, content_root, quests_root):
         )
     )
     if not data.get("link_key"):
-        print(
-            "Прогресс попадёт туда после привязки: ключ выдаёт бот {} "
-            "командой /link, записывает — link <ключ>.".format(BOT_URL)
-        )
+        print(BOOK_KEY_HINT.format(BOT_URL))
     if not asked_before:
         # input() здесь невозможен: cli.py запускается инструментом Bash из
         # bash-блока скилла, TTY нет, и input() либо повиснет, либо бросит
         # EOFError. Тот же приём, что у project db / track / project deploy:
         # печатает вопрос CLI, задаёт его падавану модель, пишет ответ ручка.
         print("")
-        # Имя — из словаря сайта (CONTEXT.md, «Книга»): «Голокрон» там —
-        # десктопное приложение, и звать так же браузерную книгу нельзя —
-        # падаван внутри Голокрона читал бы «открыть Голокрон в браузере?».
-        print("Открывать Книгу на входе в каждый акт?")
-        print("  book yes — открывать вкладку самому")
-        print("  book no — не открывать, зайду по ссылке сам")
+        print(BOOK_QUESTION)
     if data.get("book_open") is True:
         _open_in_browser(_book_url(data, act))
     return 0
@@ -1276,9 +1426,10 @@ def _maybe_close_act(state, act, state_path):
         # Туда же и приглашение: пока акты готовятся, финала нет — ни
         # карточки с адресом страницы, ни клуба. Зовём только за памяткой.
         print("")
-        if ranks.muted_after(act):
+        ahead = ranks.muted_after(act)
+        if ahead:
             print(
-                "На этом игра пока кончается: следующие акты {}.".format(NOT_WRITTEN)
+                "На этом игра пока кончается: {}.".format(preparing_phrase(ahead))
             )
             print(MEMO_INVITE)
         else:
@@ -1355,6 +1506,23 @@ def _claude_md_sha(project_dir):
     return done.stdout.strip()
 
 
+def _act_started_epoch(data, act):
+    """Момент входа в акт секундами эпохи или None.
+
+    В сохранении он лежит строкой UTC (`ranks._stamp_started_at`). Записи
+    нет или она правлена руками и не читается — None: переменная не
+    ставится, и «Свой скилл» судит одну папку проекта, без личных скиллов.
+    """
+    entry = (data.get("acts") or {}).get(str(act))
+    stamp = entry.get("started_at") if isinstance(entry, dict) else None
+    if not isinstance(stamp, str):
+        return None
+    try:
+        return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return None
+
+
 def _env_for(data, act):
     """Окружение check.sh. Ключ без значения не ставится вовсе: скрипт
     отличает «не назван порт» (jc_bail, попытка не в счёт) от «назван
@@ -1371,7 +1539,23 @@ def _env_for(data, act):
         # Папку назвал сам человек, а не приложение на старте сессии; как
         # это сверяется — `_folder_named`.
         if _folder_named(data):
-            env["JEDICODER_PROJECT_NAMED"] = "yes"
+            env[quests.NAMED_ENV] = "yes"
+    # Следы (ADR-0020 в репозитории сайта): что записал хук, то и уходит
+    # проверке — все имена перечня, чей бы квест их ни судил. Следа нет —
+    # ключа нет: проверка отличает ровно `yes`.
+    for kind in st.TRACE_KINDS:
+        if _trace_counts(data, kind):
+            env[quests.TRACE_ENV_PREFIX + kind.upper()] = "yes"
+            # Момент следа — тем же именем с хвостом: квест «Хук» сверяет с
+            # ним время записи передачи.
+            moment = st.trace_moment(data, kind)
+            if moment is not None:
+                env[quests.TRACE_ENV_PREFIX + kind.upper() + "_AT"] = str(moment)
+    # Когда человек вошёл в акт: по нему квест «Свой скилл» Акта 3 отличает
+    # личный скилл, сделанный в этом акте, от стоявшего до игры.
+    started = _act_started_epoch(data, act)
+    if started is not None:
+        env[quests.STARTED_ENV] = str(started)
     has_db = project.get("has_db")
     if has_db is True:
         env["JEDICODER_HAS_DB"] = "yes"
@@ -1379,7 +1563,12 @@ def _env_for(data, act):
         env["JEDICODER_HAS_DB"] = "no"
     port = project.get("port")
     if isinstance(port, int) and 1 <= port <= 65535:
-        env["JEDICODER_PORT"] = str(port)
+        env[quests.PORT_ENV] = str(port)
+    # Тип продукта Акта 4: по нему «Работает» выбирает, что судить. Имя
+    # рецепта прежней игры здесь не годится — ключа нет, проверка скажет.
+    kind = acts.product_of(data)
+    if kind is not None:
+        env[quests.PRODUCT_ENV] = kind
     alias = project.get("ssh_alias")
     # Ведущий «-» отсекается и здесь, а не только в ручке: state.json
     # правится руками, а алиас уходит аргументом в ssh.
@@ -1419,20 +1608,105 @@ LOOP_HINT = (
 
 #: Акты, которым общий протокол не по словам. В Акте 1 новичок ещё не слышал
 #: ни про откат на коммит, ни про новый чат — первое он узнаёт в последнем
-#: квесте акта, второе не узнаёт вовсе. Ему говорится одно: остановись и
-#: позови наставника.
+#: квесте акта, второе — только в четвёртом квесте Акта 2, а «дай ошибку
+#: целиком» — в Акте 3. Ему говорится одно: остановись и позови наставника.
+_LOOP_HINT_NOVICE = (
+    "Третья попытка. Остановись: в четвёртый раз тем же способом не "
+    "пробуй. Позови Магистра — он наставник и посмотрит заново: "
+    "/jedicoder:magistr"
+)
 LOOP_HINTS = {
-    1: (
-        "Третья попытка. Остановись: в четвёртый раз тем же способом не "
-        "пробуй. Позови Магистра — он наставник и посмотрит заново: "
-        "/jedicoder:magistr"
-    ),
+    1: _LOOP_HINT_NOVICE, 2: _LOOP_HINT_NOVICE, 3: _LOOP_HINT_NOVICE,
+    4: _LOOP_HINT_NOVICE,
 }
+
+#: Слова ворот «рассказ раньше проверки» — по квесту (acts.WORDS_FIRST). Три
+#: фразы на квест: что сделать до проверки; почему рассказ пока не принят (две
+#: строки); что записано. Слова свои у каждого квеста, потому что смотрят в
+#: них на разное: в «Первом запросе» — на первую версию, в «Чистом листе» —
+#: на ответ Claude в новом разговоре. Квест без записи говорит словами
+#: первого: ворота от этого не ломаются, только звучат общо.
+WORDS_FIRST_SCREENS = {
+    (1, "03-first-request"): {
+        "ask": "Сначала посмотри на то, что получилось, и расскажи Claude, "
+               "что увидел.",
+        "not_ready": (
+            "Смотреть пока не на что: в папке проекта ещё нет первой версии.",
+            "Сначала попроси Claude её сделать.",
+        ),
+        "taken": "Записано: ты посмотрел на то, что получилось в квесте {}, "
+                 "и рассказал, что увидел.",
+    },
+    (2, "04-clear"): {
+        "ask": "Сначала начни новый разговор и спроси Claude, на чём "
+               "остановились. Потом расскажи, что он ответил.",
+        "not_ready": (
+            "Рассказывать пока не о чем: игра не видела нового разговора.",
+            "Сначала запиши передачу и набери /clear. Потом спроси Claude, "
+            "на чём остановились.",
+        ),
+        "taken": "Записано: в квесте {} ты начал новый разговор и "
+                 "рассказал, что ответил Claude.",
+        # Новый разговор был, но раньше, чем записана память проекта.
+        # Вторая строка — по тому, закрыт ли уже квест «Память проекта».
+        "early": "Рассказывать пока не о чем: новый разговор был раньше "
+                 "записи памяти проекта.",
+        "early_then_memory": "Сначала закрой квест {}. Потом набери /clear "
+                             "и спроси Claude, на чём остановились.",
+        "early_then_clear": "Набери /clear ещё раз и спроси Claude, на чём "
+                            "остановились.",
+    },
+    # «Работает» с ботом (acts.WORDS_FIRST_FOR): рассказ — что бот ответил в
+    # Telegram. Проверка до рассказа судит ключ, и причин не сойтись у неё
+    # несколько — поэтому под двумя строками идут её собственные (`lines`).
+    acts.RUN_QUEST: {
+        "ask": "Сначала напиши своему боту в Telegram. Потом расскажи Claude, "
+               "что он ответил.",
+        "not_ready": (
+            "Рассказ пока не записан: с ключом бота не всё на месте.",
+            "Вот что поправить:",
+        ),
+        "taken": "Записано: в квесте {} ты написал боту и рассказал, что он "
+                 "ответил.",
+        "lines": True,
+    },
+}
+
+
+def _words_first_screen(act, quest_id):
+    """Слова ворот квеста; у квеста без своей записи — слова первого."""
+    return WORDS_FIRST_SCREENS.get(
+        (act, quest_id), WORDS_FIRST_SCREENS[(1, "03-first-request")]
+    )
+
+
+def _not_ready_lines(data, act, quest_id, content_root):
+    """Почему рассказ пока не принят — две строки.
+
+    У «Чистого листа» причин две, и лечатся они по-разному: нового разговора
+    не было вовсе — или он был раньше, чем записана память проекта. Во
+    втором случае «набери /clear» человек уже сделал, и та же строка
+    звучала бы как «игра не видит».
+    """
+    screen = _words_first_screen(act, quest_id)
+    early = (
+        (act, quest_id) == acts.CLEAR_QUEST
+        and st.trace(data, st.TRACE_CLEARED) is not None
+        and not _trace_counts(data, st.TRACE_CLEARED)
+    )
+    if not early:
+        return screen["not_ready"]
+    if acts.is_closed(data, *acts.MEMORY_QUEST):
+        return (screen["early"], screen["early_then_clear"])
+    memory = quest_name(
+        acts.MEMORY_QUEST[0], acts.MEMORY_QUEST[1], _quest_titles(content_root)
+    )
+    return (screen["early"], screen["early_then_memory"].format(memory))
 
 
 def _cmd_check(args, state_path, content_root, quests_root):
     if len(args) < 2:
-        print("Укажи акт и квест: check 2 04-git-init [путь-к-проекту]")
+        print("Укажи акт и квест: check 1 04-save [путь-к-проекту]")
         return 1
     data = _load(state_path)
     try:
@@ -1460,14 +1734,14 @@ def _cmd_check(args, state_path, content_root, quests_root):
         return 1
     # Папка не названа — ворота молчат: скрипт сам скажет «сначала квест
     # „Папка“», а «открой то, что получилось» было бы советом не о том.
-    if (acts.needs_words(act, quest_id) and _project_path(data) is not None
+    if (acts.needs_words(act, quest_id, data) and _project_path(data) is not None
             and not quests.seen(data, act, quest_id)
             and not acts.is_closed(data, act, quest_id)):
         # Раньше скрипта и мимо счётчика попыток: человек ничего не провалил,
         # он ещё не посмотрел. Скрипт не знает, открывал ли кто-то результат,
         # а «готово» без взгляда — ровно то, чему квест учит не верить.
         print("Квест {} пока не проверяю.".format(name))
-        print("Сначала посмотри на то, что получилось, и расскажи Claude, что увидел.")
+        print(_words_first_screen(act, quest_id)["ask"])
         return 1
     project_dir = Path(args[2]) if len(args) > 2 else Path(
         (data.get("project") or {}).get("path") or "."
@@ -1505,9 +1779,11 @@ def _cmd_check(args, state_path, content_root, quests_root):
         # Не сошлось — результат будут переделывать. Рассказ о прежнем к
         # новому не относится: перед следующей проверкой смотреть заново.
         quests.forget_seen(data, act, quest_id)
-        if (act, quest_id) == FOLDER_QUEST:
+        if (act, quest_id) in (FOLDER_QUEST, acts.HOOK_QUEST):
             # Названная папка проверку не прошла: строка «Что дальше» снова
-            # просит папку, а не ту же проверку (`_action_done`).
+            # просит папку, а не ту же проверку (`_action_done`). То же у
+            # квеста «Хук»: слово сказано, а передачи после него нет —
+            # отметку снимает хук следов, когда слово скажут заново.
             quests.mark_refused(data, act, quest_id)
     st.save(data, state_path)
 
@@ -1542,9 +1818,21 @@ def _cmd_check(args, state_path, content_root, quests_root):
     return 1
 
 
+#: Квест закрыт рассказом: человек сделал и рассказал, что увидел.
+ACK_SCREEN_DEFAULT = "Квест {} закрыт: ты рассказал, что увидел."
+
+#: Квесты, чей рассказ — не об увиденном. «Где брать» Акта 3 ничего не
+#: показывает: человек пересказывает правило (#116).
+ACK_SCREENS = {
+    (3, "02-where"): "Квест {} закрыт: ты пересказал правило своими словами.",
+    # «Приёмка» Акта 4: человек прошёл продукт сам и сказал «да» (#119).
+    (4, "05-accept"): "Квест {} закрыт: ты проверил продукт сам и сказал «да».",
+}
+
+
 def _cmd_ack(args, state_path, content_root, quests_root):
     if len(args) < 2:
-        print("Укажи акт и квест: ack 2 06-pipeline")
+        print("Укажи акт и квест: ack 1 05-stop-undo")
         return 1
     data = _load(state_path)
     try:
@@ -1575,9 +1863,13 @@ def _cmd_ack(args, state_path, content_root, quests_root):
         return 1
     quests.acknowledge(data, act, quest_id)
     st.save(data, state_path)
-    print("Квест {} закрыт: ты рассказал, что увидел.".format(name))
+    print(ACK_SCREENS.get((act, quest_id), ACK_SCREEN_DEFAULT).format(name))
     _maybe_close_act(data, act, state_path)
     return 0
+
+
+#: Рассказ не записан не по вине человека: проверка не смогла посмотреть.
+SEEN_NOT_TAKEN = "Рассказ пока не записан — это не твоя ошибка."
 
 
 def _cmd_seen(args, state_path, content_root, quests_root):
@@ -1607,7 +1899,7 @@ def _cmd_seen(args, state_path, content_root, quests_root):
         print(problem)
         return 1
     name = quest_name(act, quest_id, _quest_titles(content_root))
-    if not acts.needs_words(act, quest_id):
+    if not acts.needs_words(act, quest_id, data):
         print(
             "Квест {} рассказа не ждёт: его закрывает проверка или "
             "подтверждение.".format(name)
@@ -1617,24 +1909,56 @@ def _cmd_seen(args, state_path, content_root, quests_root):
     # заранее, и проверка закрыла бы квест в ту же секунду, как появится
     # файл, — ровно то, от чего ворота стоят. Скрипт здесь только смотрит:
     # попытка не считается, исход квеста он по-прежнему решает в `check`.
+    #
+    # Папки проекта на диске нет — смотреть некуда, и сказать надо о папке:
+    # «нечего открывать» и «игра не видела нового разговора» были бы неправдой
+    # и звали бы повторить уже сделанное (#103). Первая и последняя строки —
+    # те же, что на первом экране (`_project_lines`).
+    recorded = _project_path(data)
+    if recorded is not None and not Path(recorded).is_dir():
+        print("Папка проекта не найдена: {}".format(folder_name(recorded)))
+        print("  Рассказ пока не записан: игра не может посмотреть в папку.")
+        print("  Скажи Claude, где проект лежит теперь.")
+        return 1
     try:
         result = quests.run_check(
             quests_root, ranks.ACTS[act]["slug"], quest_id,
-            Path(_project_path(data) or "."), env_extra=_env_for(data, act),
+            Path(recorded or "."), env_extra=_env_for(data, act),
         )
-        ready = result.kind == quests.KIND_SCRIPT and result.ok
-    except (OSError, quests.QuestError, subprocess.SubprocessError):
-        ready = False
+    except subprocess.TimeoutExpired:
+        print("Проверка выполнялась слишком долго и была прервана. Не смог проверить.")
+        print(SEEN_NOT_TAKEN)
+        return 1
+    except (OSError, quests.QuestError, subprocess.SubprocessError) as error:
+        # Проверка не запустилась или ответила не по форме: это не «нечего
+        # смотреть», и звать человека повторить сделанное нельзя.
+        print("Проверка сломана, это баг игры: {}".format(error))
+        print(SEEN_NOT_TAKEN)
+        return 1
+    if quests.cannot_check(result):
+        # Тот же ответ, что у `check`: причину называет сама проверка.
+        print("Не смог проверить: {}".format(
+            result.stderr
+            or "проверка завершилась с кодом {}".format(result.exit_code)
+        ))
+        print(SEEN_NOT_TAKEN)
+        return 1
+    ready = result.kind == quests.KIND_SCRIPT and result.ok
     if not ready:
-        print("Смотреть пока не на что: в папке проекта ещё нет первой версии.")
-        print("Сначала попроси Claude её сделать.")
+        for line in _not_ready_lines(data, act, quest_id, content_root):
+            print(line)
+        if _words_first_screen(act, quest_id).get("lines"):
+            # Что именно не сошлось, называет сама проверка — те же строки,
+            # что напечатал бы `check`. Попытка при этом не считается.
+            for check in quests.failed_checks(result):
+                print("  [ ] {}".format(check.get("label", check.get("id"))))
+                hint = check.get("hint")
+                if hint:
+                    print("      {}".format(hint))
         return 1
     quests.mark_seen(data, act, quest_id)
     st.save(data, state_path)
-    print(
-        "Записано: ты посмотрел на то, что получилось в квесте {}, и "
-        "рассказал, что увидел.".format(name)
-    )
+    print(_words_first_screen(act, quest_id)["taken"].format(name))
     return 0
 
 
@@ -1704,12 +2028,26 @@ def _cmd_recipe(args, state_path, content_root, quests_root):
         print("Рецепты не читаются — похоже, плагин установлен не полностью.")
         return 1
     name = args[0] if args else (_load(state_path).get("project") or {}).get("type")
+    if name in acts.PRODUCT_RECIPES and not args:
+        # Тип Акта 4 — сайт или бот на своём компьютере (#120). Рецепт
+        # печатается без пути деплоя: выкладки в этом акте нет.
+        item = _recipe_by_name(content_root, acts.PRODUCT_RECIPES[name])
+        if item is None:
+            print("Рецепт для типа продукта «{}» не читается — похоже, плагин "
+                  "установлен не полностью.".format(acts.PRODUCT_WORDS[name]))
+            return 1
+        print("{} — рецепт для типа продукта «{}»".format(
+            item.title, acts.PRODUCT_WORDS[name]))
+        print("Стек: {}".format(", ".join(item.stack)))
+        print("")
+        print(_readable(item.body))
+        return 0
     if not name:
         print("Тип продукта не выбран. Вот из чего выбирают:")
         for item in recipes:
             print("  {} — {} (деплой: {})".format(item.recipe, item.title, item.deploy_path))
         print("")
-        print("Назови свой: project type <имя>. Посмотреть чужой: recipe <имя>.")
+        print("Назови свой: project type site|bot. Посмотреть чужой: recipe <имя>.")
         return 0
     item = _recipe_by_name(content_root, name)
     if item is None:
@@ -1741,14 +2079,97 @@ def _readable(body):
 
 #: Акт, в котором игра спрашивает поле проекта: до него пустая строка о
 #: поле на экране `project` не печатается. Номера — из того, какой акт
-#: называет ручку: `project db` и тип продукта — Акт 2, порт — Акт 3, путь
-#: деплоя — Акт 4, адрес продукта — Акт 5.
+#: называет ручку: путь деплоя — Акт 4, адрес продукта — Акт 5.
+#:
+#: Порт называла прежняя «Первая кровь»; она на полке
+#: (shelf/act3-pervaya-krov/), а Акт 3 «Умения» о порте не спрашивает — поле
+#: приписано четвёртому, как поля «Чертежа».
+#:
+#: `project db` и тип продукта называл прежний Акт 2 «Чертёж»; он на полке
+#: (shelf/act2-chertezh/) и вернётся будущим Актом 4. Номер 2 занят Актом
+#: «Память и силы», который о базе и типе не спрашивает, поэтому поля
+#: привязаны к четвёртому: иначе второй вечер новичка открывался бы строкой
+#: «База данных: неизвестно».
+#:
+#: С 2026-10-14 Акт 4 — «Свой продукт» (спека #117): сайт или бот на своём
+#: компьютере. Ему нужны тип продукта и порт сайта: по типу квест «Работает»
+#: выбирает, что судить, по порту открывает сайт (#119). Тип он записывает
+#: словами `site` или `bot` (`acts.PRODUCT_KINDS`), а не именем рецепта:
+#: у рецепта есть путь деплоя, а выкладки в интернет в этом акте нет. Базы
+#: данных и пути деплоя Акт 4 не спрашивает — оба поля ждут Акта 5.
 PROJECT_FIELD_ACTS = {
-    "has_db": 2, "type": 2, "port": 3, "deploy_path": 4, "url": 5,
+    "has_db": 5, "type": 4, "port": 4, "deploy_path": 5, "url": 5,
 }
 
 
-def _cmd_project(args, state_path, content_root, quests_root):
+
+#: Что игра сама видит в Claude Code — для квеста «Силы» (#103). Человек
+#: рассказывает, какая модель стоит и сколько осталось до лимита; модель
+#: сверяет рассказ с этими строками. Имён моделей и чисел в словах игры нет:
+#: печатается то, что Claude Code передал строке состояния.
+POWERS_HEAD = "Claude Code — что игра видит сама:"
+POWERS_UNSEEN = "игра этого не видит"
+POWERS_NOTHING = (
+    "  Модель, уровень усилий и лимиты: {}.".format(POWERS_UNSEEN),
+    "  Свежих данных от строки состояния Claude Code нет.",
+)
+#: Окна лимита по порядку: (ключ снимка, как окно зовётся на экране).
+POWERS_LIMITS = (
+    ("five_hour", "Лимит на пять часов"),
+    ("seven_day", "Лимит на неделю"),
+)
+
+
+def render_powers(seen):
+    """Строки о модели, уровне усилий и лимитах. Чистая функция.
+
+    `seen` — ответ `statusline.seen_powers`: None, когда свежего снимка нет
+    (строка состояния не включена или давно молчит), иначе словарь, где None
+    значит «Claude Code этого не передал». Чего игра не видит, то так и
+    названо: выдумать модель или лимит значило бы сверять рассказ человека
+    с неправдой. Квест от этого не зависит — его закрывает рассказ.
+    """
+    lines = [POWERS_HEAD]
+    if seen is None:
+        return lines + list(POWERS_NOTHING)
+    for label, value in (("Модель", seen["model"]),
+                         ("Уровень усилий", seen["effort"])):
+        lines.append("  {}: {}".format(label, value) if value
+                     else "  {}: {}.".format(label, POWERS_UNSEEN))
+    if all(seen[key] is None for key, _ in POWERS_LIMITS):
+        # Лимиты приходят не всем и не с первого ответа: одна строка на оба.
+        lines.append(
+            "  Лимиты: {} — Claude Code их не передал.".format(POWERS_UNSEEN)
+        )
+        return lines
+    for key, label in POWERS_LIMITS:
+        lines.append(
+            "  {}: {}.".format(label, POWERS_UNSEEN) if seen[key] is None
+            else "  {}: занято {:.0f}%".format(label, seen[key])
+        )
+    return lines
+
+
+#: Что игра знает о своём моде (квест «Мод», #110). Своими глазами она мод
+#: не видит: его исполняет Claude Code. Знает одно — чем позван этот экран.
+#: Инструменты игры объявляет её мод, поэтому экран, позванный инструментом,
+#: значит, что мод в этой сессии работает. Позван командой в терминале —
+#: игра о моде не знает ничего, и так и говорит: квест закрывает рассказ.
+MOD_WORKS = (
+    "  Мод игры: работает — игра сейчас отвечает через него."
+)
+MOD_UNSEEN = (
+    "  Мод игры: {} — сейчас она отвечает не через "
+    "мод.".format(POWERS_UNSEEN)
+)
+
+
+def render_mod(via_tool):
+    """Строка о моде игры для экрана `project`. Чистая функция."""
+    return MOD_WORKS if via_tool else MOD_UNSEEN
+
+
+def _cmd_project(args, state_path, content_root, quests_root, via_tool=False):
     data = _load(state_path)
     if not args:
         project = data.get("project") or {}
@@ -1767,8 +2188,11 @@ def _cmd_project(args, state_path, content_root, quests_root):
         # неизвестно / Порт: не назван / Путь деплоя: не назван» новичку
         # первого вечера — экран из незнакомых слов о том, чего у него не
         # спросят (второй прогон 2026-10-08). Названное печатается всегда.
+        # С 2026-10-14 акт, который спрашивает порт и тип, играется (Акт 4,
+        # спека #117): пустая строка ждёт ещё и входа в него — иначе новичок
+        # первого вечера снова читал бы «Порт: не назван».
         asked = {
-            field: not ranks.is_muted(act)
+            field: not ranks.is_muted(act) and _act_started(data, act)
             for field, act in PROJECT_FIELD_ACTS.items()
         }
         if has_db is True:
@@ -1783,7 +2207,10 @@ def _cmd_project(args, state_path, content_root, quests_root):
             lines.append("  Порт: не назван")
         kind = project.get("type")
         item = _recipe_by_name(content_root, kind) if kind else None
-        if kind:
+        if kind in acts.PRODUCT_WORDS:
+            # Тип Акта 4 — словами человека; рецепта с путём деплоя за ним нет.
+            lines.append("  Тип продукта: {}".format(acts.PRODUCT_WORDS[kind]))
+        elif kind:
             lines.append("  Тип продукта: {}".format(item.title if item else kind))
         elif asked["type"]:
             lines.append("  Тип продукта: не назван")
@@ -1814,6 +2241,19 @@ def _cmd_project(args, state_path, content_root, quests_root):
         post = project.get("post_url")
         if post:
             lines.append("  Публикация: {}".format(post))
+        if _act_started(data, acts.POWERS_QUEST[0]):
+            # Здесь же — что игра видит в Claude Code: экран читает модель,
+            # и в квесте «Силы» ей нужно, с чем сверить рассказ. До входа в
+            # акт строк нет: о модели и лимите человек ещё не слышал. Снимок
+            # лежит рядом с сохранением, с которым работает эта команда.
+            lines.append("")
+            lines += render_powers(statusline.seen_powers(
+                statusline.read_snapshot(statusline.snapshot_path(state_path))
+            ))
+        if _act_started(data, acts.MOD_QUEST[0]):
+            # С входа в Акт 3 — строка о моде: в квесте «Мод» модели нужно,
+            # с чем сверить рассказ о строке `1 mod active`.
+            lines.append(render_mod(via_tool))
         print("\n".join(lines))
         return 0
     if args[0] == "path":
@@ -1880,14 +2320,26 @@ def _cmd_project(args, state_path, content_root, quests_root):
     if args[0] == "type":
         names = _recipe_names(content_root)
         if len(args) < 2:
-            print("Укажи тип продукта: project type {}".format("|".join(names) or "<имя>"))
+            print("Укажи тип продукта: project type {}".format(
+                "|".join(acts.PRODUCT_KINDS)
+            ))
             return 1
+        if args[1] in acts.PRODUCT_KINDS:
+            # Сайт или бот Акта 4 «Свой продукт». Путь деплоя не называется:
+            # продукт этого акта живёт на компьютере человека.
+            data["project"] = data.get("project") or {}
+            data["project"]["type"] = args[1]
+            data["passport"] = data.get("passport") or {}
+            data["passport"]["product_type"] = args[1]
+            st.save(data, state_path)
+            print("Тип продукта: {}.".format(acts.PRODUCT_WORDS[args[1]]))
+            return 0
         item = _recipe_by_name(content_root, args[1])
         if item is None:
             # Состояние не трогаем: мусор не должен затирать выбор.
             print(
                 "Не знаю тип продукта {!r}. Допустимые: {}.".format(
-                    args[1], ", ".join(names)
+                    args[1], ", ".join(list(acts.PRODUCT_KINDS) + names)
                 )
             )
             return 1
@@ -1983,7 +2435,7 @@ def _cmd_project(args, state_path, content_root, quests_root):
         st.save(data, state_path)
         print("Публикация: {}".format(args[1]))
         return 0
-    print("Неизвестная подкоманда 'project {}'. Используй: project [path <путь>|type <тип>|db yes|no|port <номер>|deploy managed|vps|ssh <алиас>|url <адрес>|service <юнит>|post <ссылка>]".format(
+    print("Неизвестная подкоманда 'project {}'. Используй: project [path <путь>|type site|bot|db yes|no|port <номер>|deploy managed|vps|ssh <алиас>|url <адрес>|service <юнит>|post <ссылка>]".format(
         args[0]
     ))
     return 1
@@ -2200,6 +2652,30 @@ def _debrief_for(data, facts_page):
     return text if written.get("facts") == scroll.fingerprint(facts_page) else ""
 
 
+#: Акт, которому принадлежит дорожная карта «довести продукт до людей»: тот,
+#: что спрашивает адрес продукта. Пока он выключен, карта в памятку не идёт
+#: — вместо неё ложится страница «что пройдено и что впереди» (#114).
+ROADMAP_ACT = PROJECT_FIELD_ACTS["url"]
+
+#: Приём без замка и акт, в котором игра о нём рассказывает. Пока акт
+#: выключен, инструкции приёма в памятке нет: человеку его никто не давал.
+#: Сегодня приёмов без замка нет: `goal` стал приёмом Акта 4 (спека #117) и
+#: идёт в памятку, как остальные, когда его выдали на входе в акт.
+UNLOCKED_ARTIFACT_ACTS = {}
+
+
+def _path_page(facts):
+    """Страница «что пройдено и что впереди» — пока акт дорожной карты выключен.
+
+    Слова о ненаписанных актах — те же, что на первом экране и в ответе
+    `finale` (`preparing_phrase`).
+    """
+    if not ranks.is_muted(ROADMAP_ACT):
+        return ""
+    ahead = ranks.muted_after(ranks.FINAL_ACT)
+    return scroll.path_page(facts, preparing_phrase(ahead) if ahead else "")
+
+
 def _roadmap_page(facts, content_root):
     """Дорожная карта под трек падавана — из контента, не от модели.
 
@@ -2218,7 +2694,12 @@ def _roadmap_page(facts, content_root):
     Трек и адрес берутся из фактов, а не из сохранения второй раз: адрес
     печатается в Свитке дважды — в Разборе и здесь, — и добывать его двумя
     способами значило бы завести второй источник правды об одном числе.
+
+    Карта принадлежит акту, который спрашивает адрес продукта (`ROADMAP_ACT`).
+    Пока он выключен — молчание: о треке и адресе новая игра не спрашивала.
     """
+    if ranks.is_muted(ROADMAP_ACT):
+        return ""
     try:
         cards = content.roadmaps_by_track(content_root)
     except (OSError, content.ContentError):
@@ -2229,9 +2710,28 @@ def _roadmap_page(facts, content_root):
     return scroll.roadmap_page(card, facts.get("product_url"))
 
 
+def _phrases_page(data, content_root):
+    """Страница готовых фраз — из контента, по актам, в которые человек вошёл.
+
+    Фраза акта, которого он не начинал, ему ничего не говорит: «запиши
+    передачу» до входа в Акт 2 — слова без приёма. Раздел не читается —
+    молчание, как у дорожной карты: страница часть памятки, а не её условие.
+    """
+    try:
+        items = content.load_phrases(content_root)
+    except (OSError, UnicodeDecodeError, content.ContentError,
+            frontmatter.FrontmatterError):
+        return ""
+    rows = []
+    for item in items:
+        if _act_started(data, item.act):
+            rows += list(item.rows)
+    return scroll.phrases_page(rows)
+
+
 def _scroll_parts(data, content_root, facts=None, facts_page=None,
                   commits=None):
-    """Тексты Свитка, которых движок не пишет: см. scroll.PARTS.
+    """Тексты Свитка, которые сборке приносит вызывающий: см. scroll.PARTS.
 
     Карточку ранга пишет финал — тем же текстом, что печатает в терминале
     (render_rank_card); коммиты для неё считает git в папке проекта, поэтому
@@ -2267,6 +2767,12 @@ def _scroll_parts(data, content_root, facts=None, facts_page=None,
     card = _roadmap_page(facts, content_root)
     if card:
         parts[scroll.PART_ROADMAP] = card
+    path = _path_page(facts)
+    if path:
+        parts[scroll.PART_PATH] = path
+    phrases = _phrases_page(data, content_root)
+    if phrases:
+        parts[scroll.PART_PHRASES] = phrases
     return parts
 
 
@@ -2275,10 +2781,16 @@ def _scroll_instructions(content_root, data):
 
     Отбор здесь, а не в сборке: «отдаёт то, что открыто» — вопрос к
     сохранению, а сборка о сохранении не знает вовсе. Артефакт без замка
-    (goal) открыт с первого дня, поэтому он не в artifacts_for.
+    открыт с первого дня, поэтому он не в artifacts_for; в памятку он идёт,
+    когда играется акт, в котором о нём рассказывают
+    (`UNLOCKED_ARTIFACT_ACTS`). Сегодня таких нет: `goal` выдаётся на входе
+    в Акт 4.
     """
     unlocked = list(ranks.artifacts_for(data))
     for name in ranks.UNLOCKED_ARTIFACTS:
+        act = UNLOCKED_ARTIFACT_ACTS.get(name)
+        if act is not None and ranks.is_muted(act):
+            continue
         if name not in unlocked:
             unlocked.append(name)
     known = content.instructions_by_artifact(content_root)
@@ -2460,7 +2972,12 @@ def _project_commit_count(data):
 #: 2026-10-08 — Искатель одного вечера прочёл «сервер твой»).
 TROPHY_LINES = {
     1: "Первый вечер сделан: результат виден, сохранён, и лишнее ты умеешь отменять.",
-    4: "Щит поставлен: ключи твои, сервер твой, и чужому в него не войти.",
+    2: "Второй вечер сделан: план раньше правки, память проекта в файле, "
+       "лимит ты умеешь смотреть.",
+    3: "Третий вечер сделан: у Claude появились новые умения, и одно из "
+       "них придумал ты.",
+    4: "Четвёртый вечер сделан: твой продукт работает на твоём компьютере, "
+       "и принял его ты сам.",
     5: "Клинок собран, и он режет.",
 }
 
@@ -2518,7 +3035,7 @@ def _rank_card_numbers(facts, commits):
     dark = dark if isinstance(dark, dict) else {}
     return lines + [
         "Слов открыто: {}".format(facts.get("terms_unlocked") or 0),
-        "XP: {}".format(facts.get("xp") or 0),
+        "Очки: {}".format(facts.get("xp") or 0),
         "Штрафы: {}".format(dark.get("points") or 0),
     ]
 
@@ -2823,7 +3340,7 @@ def _cmd_reset(args, state_path, content_root, quests_root):
     rank = data.get("rank", st.RANK_YOUNGLING)
     summary = [
         "Ранг: {}".format(ranks.RANK_TITLES.get(rank, rank)),
-        "XP: {}".format(data.get("xp", 0)),
+        "Очки: {}".format(data.get("xp", 0)),
         "Папка проекта: {}".format((data.get("project") or {}).get("path") or "не назначена"),
         "Ключ привязки к боту: {}".format("есть" if data.get("link_key") else "нет"),
         "Событий, не отправленных боту: {}".format(len(data.get("pending_sync") or [])),
@@ -3175,6 +3692,12 @@ def _cmd_tool(args, state_path, content_root, quests_root):
             path = values[0].strip() if values else ""
             if path:
                 words = ["path", os.path.expanduser(path)]
+        if handler is _cmd_project:
+            # Команду `tool` зовёт только мод игры: экран о проекте вправе
+            # сказать, что позван инструментом.
+            return handler(
+                words, state_path, content_root, quests_root, via_tool=True
+            )
         return handler(words, state_path, content_root, quests_root)
     except Exception as error:
         # Ответ инструмента человек видит под вызовом: трейсбек там — стена

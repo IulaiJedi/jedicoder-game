@@ -80,7 +80,7 @@ def test_master_card_names_the_rank_and_every_number():
     assert "Дней в пути: 18" in card
     assert "Коммитов: 42" in card
     assert "Слов открыто: 30" in card
-    assert "XP: 620" in card
+    assert "Очки: 620" in card
     assert "Штрафы: 3" in card
 
 
@@ -126,7 +126,7 @@ def test_youngling_card_stands_on_an_empty_save():
     assert "Дней в пути" not in card
     assert "Продукт:" not in card
     assert "Коммитов" not in card
-    assert "XP: 0" in card
+    assert "Очки: 0" in card
 
 
 # Шесть имён рангов в родительном падеже, выписанные руками. Руками —
@@ -299,7 +299,7 @@ def test_the_finale_prints_a_card_it_did_not_count_itself(paths, capsys, tmp_pat
     code, out = run(["finale"], paths, capsys)
     assert code == 0
     assert "Слов открыто: 2" in out
-    assert "XP: 620" in out
+    assert "Очки: 620" in out
     assert "Штрафы: 2" in out
     assert "Коммитов" not in out
 

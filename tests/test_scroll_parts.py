@@ -54,7 +54,7 @@ def test_debrief_prints_the_facts_the_engine_counted(paths, capsys):
     # Без слага: эта же страница ложится Разбором в проект падавана (#73).
     assert "- Ранг: Юнлинг\n" in out
     assert "(youngling)" not in out
-    assert "- XP: 0" in out
+    assert "- Очки: 0" in out
 
 
 def test_debrief_names_every_number_the_facts_carry(paths, capsys):
@@ -69,7 +69,7 @@ def test_debrief_names_every_number_the_facts_carry(paths, capsys):
         data["lexicon_unlocked"] = ["boль", "commit", "deploy"]
     _, out = run(["debrief"], paths, capsys)
     numbers = debrief.facts(st.load(paths["state_path"]))
-    assert "- XP: {}".format(numbers["xp"]) in out
+    assert "- Очки: {}".format(numbers["xp"]) in out
     assert "- Текущая: {}".format(numbers["streak"]["current"]) in out
     assert "- Лучшая: {}".format(numbers["streak"]["best"]) in out
     assert "- Открыто слов: {}".format(numbers["terms_unlocked"]) in out
@@ -237,7 +237,7 @@ def test_roadmap_page_survives_braces_in_the_body():
 
 @pytest.mark.parametrize("track", ("craftsman", "founder"))
 def test_scroll_carries_the_card_of_the_chosen_track(
-    paths, capsys, project, track
+    paths, capsys, project, track, all_acts_open
 ):
     folder = project()
     run(["project", "path", str(folder)], paths, capsys)
@@ -252,7 +252,7 @@ def test_scroll_carries_the_card_of_the_chosen_track(
 
 
 def test_scroll_without_a_track_carries_the_common_card(
-    paths, capsys, project
+    paths, capsys, project, all_acts_open
 ):
     """Свиток выдаётся на любом ранге, в том числе до выбора трека: дыра
     вместо карты не заметна никому, а общая карта работает у всех."""
@@ -266,7 +266,8 @@ def test_scroll_without_a_track_carries_the_common_card(
     assert common.title in page
 
 
-def test_scroll_names_the_product_address_in_the_card(paths, capsys, project):
+def test_scroll_names_the_product_address_in_the_card(
+        paths, capsys, project, all_acts_open):
     folder = project()
     run(["project", "path", str(folder)], paths, capsys)
     run(["track", "founder"], paths, capsys)
@@ -283,7 +284,7 @@ def test_scroll_names_the_product_address_in_the_card(paths, capsys, project):
 
 
 def test_missing_roadmap_section_does_not_sink_the_scroll(
-    paths, capsys, project, tmp_path
+    paths, capsys, project, tmp_path, all_acts_open
 ):
     """Карта — часть Свитка, а не его условие: раздела нет вовсе (плагин
     установлен не целиком), а факты и инструкции падаван всё равно уносит."""

@@ -524,10 +524,15 @@ def test_hooks_json_registers_all_three():
         "vague_prompt.py" in h["command"]
         for entry in events["UserPromptSubmit"] for h in entry["hooks"]
     )
-    # Матчер Bash обязателен: без него хук звался бы на каждый Read.
-    for event in ("PreToolUse", "PostToolUse"):
+    # Матчер Bash обязателен: без него хук звался бы на каждый Read. У хука
+    # следов матчер свой (`tests/test_traces.py`), но без матчера на этих
+    # событиях не стоит никто.
+    for event, name in (("PreToolUse", "bash_guard.py"),
+                        ("PostToolUse", "commit_pulse.py")):
+        assert all(entry.get("matcher") for entry in events[event]), event
         assert all(
             entry.get("matcher") == "Bash" for entry in events[event]
+            if any(name in h["command"] for h in entry["hooks"])
         ), event
 
 

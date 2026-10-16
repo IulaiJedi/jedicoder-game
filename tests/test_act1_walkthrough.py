@@ -213,15 +213,47 @@ def test_stop_and_undo_has_no_script(game):
     assert "У квеста «Стоп и отмена» нет проверки." in out
 
 
-def test_game_ends_with_act1_and_rank_seeker():
-    assert ranks.playable_acts() == [1]
-    assert ranks.FINAL_ACT == 1
-    assert ranks.FINAL_RANK == "seeker"
+def test_game_ends_with_act4_and_rank_sentinel():
+    """С 2026-10-14 играются четыре акта (спеки #99, #108 и #117)."""
+    assert ranks.playable_acts() == [1, 2, 3, 4]
+    assert ranks.FINAL_ACT == 4
+    assert ranks.FINAL_RANK == "sentinel"
 
 
-@pytest.mark.parametrize("act", [2, 3, 4, 5])
+# Конец игры проходится командами и хуками в tests/test_act4_walkthrough.py
+# (`walk_act4`, обеими ветками): там и слова «игра пока кончается», и
+# `finale`, и карточка ранга, и строка «Что дальше» после конца.
+
+
+def test_act4_asks_for_act3_first(game, project):
+    """Акт 4 открыт, но не раньше третьего: отказ называет, что закрыть."""
+    proj = project()
+    assert game("project", "path", str(proj))[0] == 0
+    assert game("enter", "1")[0] == 0
+    walk_scripted(game, proj)
+    assert game("ack", "1", ACK)[0] == 0
+    code, out = game("enter", "4")
+    assert code == 1
+    assert "Сначала закрой Акт 3" in out
+    assert "4" not in st.load(game.state_path)["acts"]
+
+
+def test_act3_asks_for_act2_first(game, project):
+    """Акт 3 открыт, но не раньше второго: отказ называет, что закрыть."""
+    proj = project()
+    assert game("project", "path", str(proj))[0] == 0
+    assert game("enter", "1")[0] == 0
+    walk_scripted(game, proj)
+    assert game("ack", "1", ACK)[0] == 0
+    code, out = game("enter", "3")
+    assert code == 1
+    assert "Сначала закрой Акт 2" in out
+    assert "3" not in st.load(game.state_path)["acts"]
+
+
+@pytest.mark.parametrize("act", [5])
 def test_later_acts_refuse_entry_in_plain_words(game, project, act):
-    """Закрывший Акт 1 слышит «готовится», а не трейсбек и не «выбери трек»."""
+    """Закрывший Акт 1 слышит «ещё не написан», а не трейсбек и не «выбери трек»."""
     proj = project()
     assert game("project", "path", str(proj))[0] == 0
     assert game("enter", "1")[0] == 0
@@ -233,7 +265,7 @@ def test_later_acts_refuse_entry_in_plain_words(game, project, act):
 
     assert code == 1
     assert out.strip() == (
-        "Акт {} ещё не написан. Игра пока заканчивается Актом 1.".format(act)
+        "Акт {} ещё не написан. Игра пока заканчивается Актом 4.".format(act)
     )
     # Прежнее имя акта не звучит: состав и имена изменятся. И к финалу отказ
     # не отсылает — финала, пока акты готовятся, нет.
@@ -245,77 +277,24 @@ def test_later_acts_refuse_entry_in_plain_words(game, project, act):
     assert after["artifacts"] == ["brainstorm"]
 
 
-def test_closing_act1_says_the_game_ends_here(game, project):
-    proj = project()
-    assert game("project", "path", str(proj))[0] == 0
-    assert game("enter", "1")[0] == 0
-    walk_scripted(game, proj)
-    code, out = game("ack", "1", ACK)
-    assert "Акт 1. Знакомство — закрыт." in out
-    # Игра не кончилась — значит, ни финала, ни карточки: только памятка.
-    # Словами: кладёт её Claude, ручку `scroll` он знает из скилла.
-    assert "finale" not in out
-    assert "Памятку в папку проекта положит Claude — попроси его." in out
-    # Честно про то, что дальше: акты впереди есть, они готовятся. Прежняя
-    # строка — «конец игры — той, что бесплатна» — читалась бы как «дальше
-    # платно», а это неправда: Акты 2–5 остаются в бесплатной игре.
-    assert "На этом игра пока кончается: следующие акты ещё не написаны." in out
-    assert "бесплатна" not in out
+def test_seeker_card_carries_no_trophy_of_another_act(game, project):
+    """Трофей — строка последнего играемого акта, и получает её тот, кто его
+    закрыл. Искателю одного вечера карточка чужой победы не приписывает
+    (прогон 2026-10-08: она говорила «сервер твой»)."""
+    from jedicoder import debrief
 
-
-
-def closed_act1(game, project):
     proj = project()
     assert game("project", "path", str(proj))[0] == 0
     assert game("enter", "1")[0] == 0
     walk_scripted(game, proj)
     assert game("ack", "1", ACK)[0] == 0
-    return proj
-
-
-def test_finale_is_not_a_finale_while_acts_are_in_preparation(game, project):
-    """Один вечер — не конец игры: ни страницы финала, ни клуба, ни события."""
-    closed_act1(game, project)
-    code, out = game("finale")
-
-    assert code == 1
-    assert "Игра ещё не кончилась: Акты 2–5 ещё не написаны." in out
-    # Счёт «1 из 1» рядом с «акты готовятся» звучал бы как «всё пройдено».
-    assert "Твой ранг сейчас — Искатель." in out
-    assert "закрыто актов" not in out
-    assert "/finale" not in out and "http" not in out
-    assert "клуб" not in out.lower()
-    assert "=== Карточка" not in out
-    assert "scroll" in out
-    data = st.load(game.state_path)
-    assert not data.get("finale_announced")
-    assert [e for e in data["pending_sync"] if e["type"] == "finale"] == []
-
-
-def test_seeker_card_carries_its_own_trophy_and_no_finale_page(game, project):
-    """Карточка ложится в памятку. Трофей — про этот акт (прогон 2026-10-08:
-    Искателю одного вечера она говорила «сервер твой»), а двери в финал нет."""
-    from jedicoder import debrief
-
-    closed_act1(game, project)
     card = cli.render_rank_card(debrief.facts(st.load(game.state_path)))
     assert "Карточка Искателя" in card
-    assert "Закрыто актов: 1 из 1." in card
-    assert cli.TROPHY_LINES[1] in card
+    assert "Закрыто актов: 1 из 4." in card
+    for trophy in cli.TROPHY_LINES.values():
+        assert trophy not in card
     assert "сервер" not in card and "Щит" not in card
     assert "finale" not in card and "http" not in card
-
-
-
-def test_next_step_after_act1_offers_only_the_memo(game, project):
-    closed_act1(game, project)
-    _, out = game("status")
-    assert out.rstrip().splitlines()[-2:] == [
-        "Что дальше: следующие акты ещё не написаны.",
-        "  Памятку в папку проекта положит Claude — попроси его.",
-    ]
-    assert "finale" not in out
-
 
 
 def test_map_names_acts_in_preparation_by_one_line(game):
@@ -323,9 +302,9 @@ def test_map_names_acts_in_preparation_by_one_line(game):
     code, out = game("status")
     assert code == 0
     lines = out.splitlines()
-    assert "  Акты 2–5 ещё не написаны" in lines
+    assert "  Акт 5 ещё не написан" in lines
     assert len([line for line in lines if "не написан" in line]) == 1
-    for act in (2, 3, 4, 5):
+    for act in (5,):
         assert ranks.ACTS[act]["title"] not in out
 
 

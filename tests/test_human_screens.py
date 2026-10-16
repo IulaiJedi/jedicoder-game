@@ -12,6 +12,7 @@
 
 Каждый тест ходит через CLI, той же дверью, что человек.
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -72,7 +73,10 @@ def test_first_screen_of_a_clean_install_word_for_word(game):
         "\n"
         "Карта:\n"
         "  Акт 1. Знакомство — не начат, квестов закрыто: 0/5\n"
-        "  Акты 2–5 ещё не написаны\n"
+        "  Акт 2. Память и силы — не начат, квестов закрыто: 0/5\n"
+        "  Акт 3. Умения — не начат, квестов закрыто: 0/5\n"
+        "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5\n"
+        "  Акт 5 ещё не написан\n"
         "\n"
         "Что дальше: начать Акт 1 «Знакомство» — квестов в нём 5.\n"
         "  Скажи Claude: «начинаем».\n"
@@ -122,7 +126,8 @@ def test_counters_are_explained_where_they_first_appear(game, project):
         "Приёмы: найти идею. Скажи Claude: «помоги найти идею» — он применит приём."
     )
     assert line("С первой попытки:") == (
-        "С первой попытки: 1 из 4 — квесты, где проверка сошлась сразу"
+        "С первой попытки: 1 из 4 — проверка сошлась сразу; в счёте только "
+        "квесты с проверкой"
     )
     assert machine_words(out) == []
 
@@ -195,6 +200,33 @@ def test_enter_screen_word_for_word(game):
         "Приём этого акта помогает найти идею. Скажи Claude: «помоги найти идею».\n"
     )
     assert machine_words(out) == []
+
+
+def test_enter_act2_screen_ends_with_the_book_in_words(game, project):
+    """Вне приложения вход в акт после первого ранга говорит о Книге.
+
+    Весь экран — человеку: вопрос задан словами, ответ он говорит Claude.
+    Чем ответ записать, модель знает из скилла акта.
+    """
+    walk_act1(game, project())
+    code, out = game("enter", "2")
+    assert code == 0
+    assert out.splitlines()[-5:] == [
+        "",
+        "Книга — те же акты страницами в браузере: https://jedicoder.store/kniga",
+        "Пройденные квесты появятся в Книге, когда игра узнает ключ. Ключ "
+        "выдаёт бот https://t.me/Jedicoderstore_bot командой /link — назови "
+        "его Claude.",
+        "",
+        "Открывать Книгу в браузере на входе в каждый акт? Ответь Claude: "
+        "да или нет.",
+    ]
+    assert machine_words(out) == []
+    # Спрошено один раз: повторный вход вопроса не повторяет.
+    code, again = game("enter", "2")
+    assert code == 0
+    assert cli.BOOK_QUESTION not in again and "Книга —" in again
+    assert machine_words(again) == []
 
 
 def test_cutscene_comes_before_the_quest_list(game):
@@ -287,7 +319,10 @@ def test_map_speaks_in_words_not_marks(game, project):
     assert "  Акт 1. Знакомство — не начат, квестов закрыто: 0/5" in screens[0]
     assert "  Акт 1. Знакомство — идёт, квестов закрыто: 3/5" in screens[-6]
     assert "  Акт 1. Знакомство — пройден" in screens[-1]
-    assert "  Акты 2–5 ещё не написаны" in screens[-1]
+    assert "  Акт 2. Память и силы — не начат, квестов закрыто: 0/5" in screens[-1]
+    assert "  Акт 3. Умения — не начат, квестов закрыто: 0/5" in screens[-1]
+    assert "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5" in screens[-1]
+    assert "  Акт 5 ещё не написан" in screens[-1]
 
 
 def test_best_streak_is_shown_only_when_it_differs(game):
@@ -411,16 +446,26 @@ def test_quest_screens_name_quests_by_title(game, project):
     assert "У квеста «Сохранение» есть проверка." in joined
 
 
-def test_closing_the_act_asks_claude_for_the_memo(game, project):
+def test_closing_act_one_does_not_say_the_game_ends(game, project):
+    """За первым актом идёт второй: ни «игра кончается», ни зова за памяткой.
+
+    Куда дальше, говорит строка «Что дальше» первого экрана и Полоса.
+    """
     proj = project()
-    out = walk_act1(game, proj)[-2]
-    assert out.splitlines()[-5:] == [
+    screens = walk_act1(game, proj)
+    assert screens[-2].splitlines()[-2:] == [
         "Акт 1. Знакомство — закрыт.",
         "Новый ранг: Искатель.",
-        "",
-        "На этом игра пока кончается: следующие акты ещё не написаны.",
-        "Памятку в папку проекта положит Claude — попроси его.",
     ]
+    assert "кончается" not in screens[-2] and "Памятку" not in screens[-2]
+    assert screens[-1].rstrip().splitlines()[-2:] == [
+        "Что дальше: начать Акт 2 «Память и силы» — квестов в нём 5.",
+        "  Скажи Claude: «начинаем».",
+    ]
+
+
+# Закрытие последнего играемого акта — Акта 2 — слово в слово стережёт
+# tests/test_act2_walkthrough.py: дойти до него можно только с хуками.
 
 
 def test_wrong_call_still_names_the_handle(game):
@@ -565,6 +610,51 @@ def test_words_are_not_taken_before_there_is_anything_to_open(game, project):
     )
     quest = st.load(game.state_path)["acts"]["1"]["quests"].get("03-first-request", {})
     assert not quest.get("seen") and quest.get("attempts", 0) == 0
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="права на папку не действуют на суперпользователя",
+)
+def test_words_are_not_taken_when_the_check_cannot_judge(game, project):
+    """«Не смог проверить» — не «нечего смотреть»: печатается причина (#103)."""
+    proj = _up_to_first_request(game, project)
+    do_first_request(proj)
+    proj.chmod(0o300)
+    try:
+        code, out = game("seen", "1", "03-first-request")
+    finally:
+        proj.chmod(0o700)
+    assert code == 1
+    assert out == (
+        "Не смог проверить: не могу прочитать папку проекта — проверь права "
+        "на неё\n"
+        "Рассказ пока не записан — это не твоя ошибка.\n"
+    )
+    assert machine_words(out) == []
+    quest = st.load(game.state_path)["acts"]["1"]["quests"].get("03-first-request", {})
+    assert not quest.get("seen") and quest.get("attempts", 0) == 0
+
+
+def test_words_are_not_taken_when_the_check_itself_is_broken(
+        game, project, tmp_path, content_root):
+    """Проверка не запустилась — это не «нечего смотреть» (#103)."""
+    proj = _up_to_first_request(game, project)
+    do_first_request(proj)
+    broken = tmp_path / "quests" / "act1-znakomstvo" / "03-first-request"
+    broken.mkdir(parents=True)
+    (broken / "check.sh").write_text("echo не-json\n", encoding="utf-8")
+    code = cli.main(
+        ["seen", "1", "03-first-request"], state_path=game.state_path,
+        content_root=content_root, quests_root=tmp_path / "quests",
+    )
+    out = game("status")[1]  # забирает и вывод команды выше
+    assert code == 1
+    assert "Проверка сломана, это баг игры" in out
+    assert "Рассказ пока не записан — это не твоя ошибка." in out
+    assert "Смотреть пока не на что" not in out
+    quest = st.load(game.state_path)["acts"]["1"]["quests"].get("03-first-request", {})
+    assert not quest.get("seen")
 
 
 def test_words_do_not_outlive_a_failed_check(game, project):

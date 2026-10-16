@@ -268,6 +268,127 @@ def dark_side_entries(state):
     return entries
 
 
+# Следы — действия человека, которых проверка не видит в папке проекта
+# (ADR-0020 в репозитории сайта): пишет хук игровой сессии, судит проверка.
+# Перечень имён один на всю игру, как у штрафов выше: хуки лежат в другой
+# папке, и опечатка в строке доехала бы до сохранения молча. Имя следа —
+# оно же хвост переменной, которой команда игры отдаёт его проверке
+# (`JEDICODER_TRACE_<ИМЯ>`), поэтому менять его можно только вместе с ней.
+TRACE_PLAN_APPROVED = "plan_approved"   # Claude показал план, человек одобрил
+TRACE_FILE_SHOWN = "file_shown"         # файл проекта показан через @
+TRACE_IMAGE_SHOWN = "image_shown"       # картинка показана
+TRACE_CLEARED = "cleared"               # разговор начат заново: /clear
+TRACE_HOOK_WORD = "hook_word"           # слово «чистка» при записанном хуке
+
+TRACE_KINDS = (
+    TRACE_PLAN_APPROVED,
+    TRACE_FILE_SHOWN,
+    TRACE_IMAGE_SHOWN,
+    TRACE_CLEARED,
+    TRACE_HOOK_WORD,
+)
+
+#: Ключ сохранения: «имя следа → запись». Запись — день первого раза и
+#: пометки. Ключ необязательный: нет его или в нём мусор — следов нет.
+TRACES_KEY = "traces"
+
+#: Пометка следа `cleared`: к моменту `/clear` память проекта уже была
+#: записана (квест закрыт). Ставит тот, кто пишет след; проверке квеста
+#: «Чистый лист» отдаётся только помеченный.
+TRACE_AFTER_MEMORY = "after_memory"
+
+#: Пометка следов плана, файла, картинки и слова хука: действие сделано,
+#: когда акт, чьи квесты его ждут, начат и не закрыт. План, одобренный в игровой
+#: сессии до входа в акт, — тоже след, но квест акта он не закрывает.
+TRACE_IN_ACT = "in_act"
+
+#: След → пометка, без которой проверка его не получает. Ставит пометку
+#: тот, кто пишет след, в момент записи; позже она только появляется —
+#: когда действие повторили уже в нужное время.
+TRACE_MARK = {
+    TRACE_PLAN_APPROVED: TRACE_IN_ACT,
+    TRACE_FILE_SHOWN: TRACE_IN_ACT,
+    TRACE_IMAGE_SHOWN: TRACE_IN_ACT,
+    TRACE_CLEARED: TRACE_AFTER_MEMORY,
+    TRACE_HOOK_WORD: TRACE_IN_ACT,
+}
+
+#: Момент следа, секундами эпохи. Нужен следу, после которого проверка ждёт
+#: чего-то на диске: квест «Хук» сверяет с ним время записи передачи. В
+#: отличие от дня и пометок момент может сдвинуться вперёд — когда действие
+#: повторили; решает это тот, кто пишет след.
+TRACE_AT = "at"
+
+
+def record_trace(state, kind, marks=None, today=None, at=None):
+    """Записать след. True — сохранение изменилось.
+
+    След — о прошлом: было или не было. Повтор действия записи не меняет,
+    и файл из-за него не переписывается; стирать след некому — ни
+    несошедшаяся проверка, ни закрытый квест его не трогают.
+
+    `marks` — пометки записи (`{TRACE_AFTER_MEMORY: True}`). Пометка только
+    появляется: `/clear` после записи памяти не перестаёт быть таким оттого,
+    что следом был ещё один.
+
+    `at` — момент следа секундами эпохи (`TRACE_AT`); None — момент не
+    трогается. Не целое число — ошибка вызывающего.
+
+    Имя не из перечня — ошибка вызывающего, а не данные: падает сразу.
+    Команда человека и текст запроса сюда не попадают никогда, как и в
+    журнал штрафов (ADR-0011 в репозитории сайта).
+    """
+    if kind not in TRACE_KINDS:
+        raise ValueError("нет такого следа: {!r}".format(kind))
+    if at is not None and (isinstance(at, bool) or not isinstance(at, int)):
+        # До первой правки: ошибка вызывающего не оставляет след наполовину.
+        raise ValueError("момент следа — целые секунды: {!r}".format(at))
+    known = state.get(TRACES_KEY)
+    if not isinstance(known, dict):
+        # Мусор в поле (правка руками) — начинаем заново, как у журнала.
+        known = state[TRACES_KEY] = {}
+    entry = known.get(kind)
+    changed = False
+    if not isinstance(entry, dict):
+        entry = known[kind] = {"date": today or today_utc()}
+        changed = True
+    for name, value in (marks or {}).items():
+        if value is True and entry.get(name) is not True:
+            entry[name] = True
+            changed = True
+    if at is not None and entry.get(TRACE_AT) != at:
+        entry[TRACE_AT] = at
+        changed = True
+    return changed
+
+
+def trace_moment(state, kind):
+    """Момент следа секундами эпохи либо None: следа или момента нет.
+
+    Мусор в поле (правка руками) читается как «момента нет».
+    """
+    entry = trace(state, kind)
+    moment = entry.get(TRACE_AT) if entry else None
+    if isinstance(moment, bool) or not isinstance(moment, int) or moment < 0:
+        return None
+    return moment
+
+
+def trace(state, kind):
+    """Запись следа из сохранения либо None, когда следа нет.
+
+    Единственное чтение следов: литерал имени на месте вызова запрещён,
+    как у `DARK_SIDE_KINDS`. Читатель прощающий — сохранение правят руками,
+    а зовут его и первый экран, и снимок Лица: мусор читается как «следа
+    нет». Отдаётся копия.
+    """
+    known = state.get(TRACES_KEY) if isinstance(state, dict) else None
+    if not isinstance(known, dict):
+        return None
+    entry = known.get(kind) if isinstance(kind, str) else None
+    return dict(entry) if isinstance(entry, dict) else None
+
+
 #: Режимы разрешений Claude Code, как он сам называет их хукам в поле
 #: `permission_mode` (документация, раздел hooks). Список закрытый: незнакомое
 #: слово читается как «не знаю», а не как «какой-то режим».
@@ -348,6 +469,11 @@ def default_state(padawan_id=None):
         # кода миграции задача не требует, а поднятая версия превратила бы в
         # кирпич состояние того, кто откатит плагин.
         "dark_side_log": [],
+        # Следы (ADR-0020 в репозитории сайта): «имя → запись», пишут хуки
+        # игровой сессии (`record_trace`), читает `trace`. Ключ плоский —
+        # старое сохранение получит пустую форму на первом же load, без
+        # бампа SCHEMA_VERSION, тем же способом, что журнал выше.
+        TRACES_KEY: {},
         # Отпечатки выданного Свитка: «имя файла в docs/jedicoder →
         # {sha256, date}». Отвечают на один вопрос — лежит ли сейчас в папке
         # ровно то, что игра туда положила; не совпало, значит файл правил

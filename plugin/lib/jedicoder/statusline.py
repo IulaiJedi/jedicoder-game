@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 try:
     from jedicoder import state as st
@@ -153,10 +154,87 @@ def snapshot(data, now=None):
     }
 
 
-def snapshot_path():
+def snapshot_path(state_path=None):
     """Рядом с сохранением: тот же каталог, что и у state.json, — значит
-    JEDICODER_STATE_PATH уводит и снимок, и тесты не трогают боевой."""
-    return st.state_path().parent / SNAPSHOT_NAME
+    JEDICODER_STATE_PATH уводит и снимок, и тесты не трогают боевой.
+
+    `state_path` — сохранение, с которым работает команда игры: она получает
+    путь аргументом, и снимок обязан искаться рядом с ним же.
+    """
+    base = st.state_path() if state_path is None else Path(state_path)
+    return base.parent / SNAPSHOT_NAME
+
+
+#: Сколько секунд снимок считается сегодняшним. Строка состояния пишет его
+#: после каждого ответа, поэтому в живой сессии ему секунды. Час — запас на
+#: долгий рассказ; старше — строку убрали или она молчит, и файл о прошлом.
+FRESH_SECONDS = 3600
+
+
+def read_snapshot(path=None):
+    """Снимок, как он лежит в файле, или None: файла нет или в нём мусор.
+
+    Только чтение, без замка: файл пишется атомарно (`write_snapshot`).
+    """
+    path = snapshot_path() if path is None else path
+    try:
+        with open(str(path), "r", encoding="utf-8") as stream:
+            snap = json.load(stream)
+    except (OSError, ValueError, RecursionError):
+        return None
+    return snap if isinstance(snap, dict) else None
+
+
+#: Длиннее имя модели и уровня усилий не бывает; остальное режется.
+NAME_LIMIT = 80
+
+
+def _one_line(value):
+    """Чужая строка одной строкой — или None, если это не строка и не слово."""
+    if not isinstance(value, str):
+        return None
+    value = "".join(ch for ch in value if ch.isprintable() or ch.isspace())
+    return " ".join(value.split())[:NAME_LIMIT] or None
+
+
+def seen_powers(snap, now=None, fresh=FRESH_SECONDS):
+    """Что игра знает о модели, уровне усилий и лимитах, — или None.
+
+    None — знать нечего: снимка нет, он испорчен или старше `fresh` секунд.
+    Иначе словарь `model`, `effort`, `five_hour`, `seven_day`; значение None
+    значит «Claude Code этого не передал» — лимиты приходят не всем и не с
+    первого ответа. Лимит — занятая доля в процентах.
+
+    Форму файла знает только этот модуль: читатель (`cli.py`, квест «Силы»)
+    получает готовое и печатает слова.
+    """
+    if not isinstance(snap, dict):
+        return None
+    written = snap.get("written_at")
+    if _percent(written) is None:
+        return None
+    now = time.time() if now is None else now
+    # Сравнения, а не вычитание: файл чужой, и число в нём может быть любым —
+    # вычитание огромного целого из дробного бросает OverflowError. Снимок из
+    # будущего (дальше минуты — на расхождение часов) свежим не считается.
+    if written < now - fresh or written > now + 60:
+        return None
+    model = snap.get("model") if isinstance(snap.get("model"), dict) else {}
+    limits = snap.get("limits") if isinstance(snap.get("limits"), dict) else {}
+
+    def used(key):
+        entry = limits.get(key)
+        value = _percent(entry.get("used")) if isinstance(entry, dict) else None
+        # Доля — от нуля до ста; остальное (минус, бесконечность, число в
+        # сотни знаков) не лимит, а мусор: «не передал».
+        return value if value is not None and 0 <= value <= 100 else None
+
+    return {
+        "model": _one_line(model.get("name")) or _one_line(model.get("id")),
+        "effort": _one_line(snap.get("effort")),
+        "five_hour": used("five_hour"),
+        "seven_day": used("seven_day"),
+    }
 
 
 def write_snapshot(snap, path=None):

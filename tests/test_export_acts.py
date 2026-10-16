@@ -59,7 +59,7 @@ def test_every_quest_id_is_in_output():
     ]
     # Число прибито намеренно: молча пропавший квест — ровно тот дефект,
     # который тест обязан ловить, а «все, что есть в реестре» его пропустит.
-    assert len(expected) == 35
+    assert len(expected) == 27
     for quest_id in expected:
         assert json.dumps(quest_id) in out, "нет квеста {}".format(quest_id)
 
@@ -97,11 +97,12 @@ def test_image_path_points_at_act_slug(content_root):
         assert '"/images/golokron/{}.webp"'.format(item.slug) in out
 
 
-def test_act4_is_the_only_deploy_axis():
+def test_no_act_branches_by_deploy_today():
+    """Путём деплоя ветвился прежний Акт 4 «Щит»; он на полке (спека #117)."""
     out = run().stdout.decode("utf-8")
     # С запятой на конце — иначе счёт зацепит объявление типа в интерфейсе.
-    assert out.count('axis: "deploy",') == 1
-    assert out.count('axis: "track",') == 4
+    assert out.count('axis: "deploy",') == 0
+    assert out.count('axis: "track",') == 5
 
 
 def _copy_content(tmp_path):
@@ -112,7 +113,7 @@ def _copy_content(tmp_path):
 
 def test_diverged_rank_fails_and_prints_nothing(tmp_path):
     root = _copy_content(tmp_path)
-    path = root / "acts" / "act4-shchit.md"
+    path = root / "acts" / "act4-svoy-produkt.md"
     path.write_text(
         path.read_text(encoding="utf-8").replace("rank: sentinel", "rank: knight"),
         encoding="utf-8",
@@ -125,9 +126,9 @@ def test_diverged_rank_fails_and_prints_nothing(tmp_path):
 
 def test_diverged_quest_list_fails_and_prints_nothing(tmp_path):
     root = _copy_content(tmp_path)
-    path = root / "acts" / "act3-pervaya-krov.md"
+    path = root / "acts" / "act3-umeniya.md"
     path.write_text(
-        path.read_text(encoding="utf-8").replace("01-launch", "01-lunch"),
+        path.read_text(encoding="utf-8").replace("01-skill", "01-skil"),
         encoding="utf-8",
     )
     result = run(root)

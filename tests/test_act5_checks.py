@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from test_act4_checks import fake_ssh  # noqa: F401 — фикстура pytest
+from fake_ssh import fake_ssh  # noqa: F401 — фикстура pytest
 from jedicoder import quests
 
 ACT = "act5-vyhod-v-svet"

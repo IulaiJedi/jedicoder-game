@@ -254,6 +254,20 @@ class Roadmap:
 
 
 @dataclass(frozen=True)
+class Phrases:
+    """Готовые фразы одного акта для страницы памятки — «когда → что сказать».
+
+    Живут в `phrases/`, файл на акт. Тело — строки таблицы, по строке на
+    фразу: `| когда | что сказать |`. Заголовок страницы и шапку таблицы
+    дописывает Свиток; слов игры в строках нет — памятка читается без
+    плагина.
+    """
+    act: int
+    rows: tuple
+    path: Path
+
+
+@dataclass(frozen=True)
 class Instruction:
     """Инструкция артефакта — текст, который человек уносит из игры.
 
@@ -319,6 +333,15 @@ def remarks_by_event(content_root):
     до поставки.
     """
     return {item.event: item for item in load_remarks(content_root)}
+
+
+def load_phrases(content_root):
+    """Готовые фразы по актам, в порядке номеров. Папки нет — пустой список:
+    страница фраз часть памятки, а не её условие."""
+    items = _load_dir(
+        Path(content_root) / "phrases", _build_phrases, optional=True
+    )
+    return sorted(items, key=lambda item: item.act)
 
 
 def load_roadmaps(content_root):
@@ -624,6 +647,23 @@ def _build_remark(meta, body, path):
         variants=_split_variants(body, path),
         path=path,
     )
+
+
+def _build_phrases(meta, body, path):
+    _require(meta, ("act",), path)
+    _require_body(body, path)
+    act = meta["act"]
+    if not isinstance(act, int) or isinstance(act, bool):
+        raise ContentError("{}: act должен быть числом".format(path))
+    rows = tuple(line.strip() for line in body.splitlines() if line.strip())
+    for row in rows:
+        # Строка таблицы из двух ячеек: «| когда | что сказать |».
+        if not (row.startswith("|") and row.endswith("|")
+                and row.count("|") == 3):
+            raise ContentError(
+                "{}: строка не из двух ячеек таблицы: {}".format(path, row)
+            )
+    return Phrases(act=act, rows=rows, path=path)
 
 
 def _build_roadmap(meta, body, path):

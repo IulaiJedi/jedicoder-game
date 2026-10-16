@@ -498,7 +498,7 @@ def test_act_muted_diverging_from_registry_detected(tmp_path, monkeypatch):
     _minimal(tmp_path, act_files=broken)
     problems = lint_synth(tmp_path)
     assert any(
-        "act2-chertezh.md" in p and "muted" in p and "MUTED_ACTS" in p
+        "act2-pamyat-i-sily.md" in p and "muted" in p and "MUTED_ACTS" in p
         for p in problems
     ), problems
 
@@ -558,13 +558,16 @@ def test_act_axis_diverging_from_registry_detected(tmp_path):
 
 
 def test_act_branches_of_other_axis_detected(tmp_path):
-    """Акт 4 с осью трека — ветки managed и vps чужие для этой оси, и это
-    ловит схема загрузчика раньше любой сверки с реестром."""
+    """Акт 5 с осью деплоя — ветки craftsman и founder чужие для этой оси, и
+    это ловит схема загрузчика раньше любой сверки с реестром.
+
+    До 2026-10-14 пример был обратный: Акт 4 «Щит» с осью трека. «Щит» на
+    полке (спека #117), и по пути деплоя сегодня не ветвится ни один акт."""
     broken = list(default_acts())
-    broken[3] = (broken[3][0], act_text(4, axis="track"))
+    broken[4] = (broken[4][0], act_text(5, axis="deploy"))
     _minimal(tmp_path, act_files=broken)
     problems = lint_synth(tmp_path)
-    assert any("оси 'track'" in p and "managed" in p for p in problems)
+    assert any("оси 'deploy'" in p and "craftsman" in p for p in problems)
 
 
 def test_act_rank_title_diverging_from_ranks_detected(tmp_path):
@@ -914,7 +917,7 @@ def test_shipped_recipes_are_under_limit(content_root):
 
 # --- Правило 2: бюджет новизны на квест. ------------------------------
 
-def terms_on_quest(count, quest="04-git-init"):
+def terms_on_quest(count, quest="03-memory"):
     """count терминов Акта 2, объявивших одну и ту же точку введения."""
     return [
         (
@@ -949,7 +952,7 @@ def test_four_terms_on_one_quest_detected(tmp_path):
         recipes=[("p.md", RECIPE.format(recipe="ppp"))],
     )
     problems = lint_synth(tmp_path)
-    named = [p for p in problems if "04-git-init" in p and "потолке 3" in p]
+    named = [p for p in problems if "03-memory" in p and "потолке 3" in p]
     assert len(named) == 1
     for i in range(4):
         assert "term{}".format(i) in named[0]
@@ -967,7 +970,7 @@ def test_unknown_quest_detected(tmp_path):
     hit = [p for p in problems if "99-nope" in p]
     assert len(hit) == 1
     # Перечислены допустимые id — иначе автору нечем себя починить.
-    assert "04-git-init" in hit[0] and "01-recipe" in hit[0]
+    assert "03-memory" in hit[0] and "01-plan" in hit[0]
 
 
 def test_term_without_quest_is_not_counted(tmp_path):
@@ -996,14 +999,14 @@ def test_quest_without_terms_is_not_a_problem(tmp_path):
         recipes=[("p.md", RECIPE.format(recipe="ppp"))],
     )
     problems = lint_synth(tmp_path)
-    assert not any("05-env-guard" in p for p in problems)
+    assert not any("04-clear" in p for p in problems)
     assert problems == []
 
 
 def test_novelty_problem_order_is_deterministic(tmp_path):
     """Два квеста над бюджетом — порядок сообщений повторяется."""
     terms = []
-    for quest in ("05-env-guard", "01-recipe"):
+    for quest in ("04-clear", "01-plan"):
         for i in range(4):
             terms.append((
                 "{}-{}.md".format(quest, i),
@@ -1023,8 +1026,8 @@ def test_novelty_problem_order_is_deterministic(tmp_path):
     assert first == lint_synth(tmp_path)
     quests = [p for p in first if "потолке 3" in p]
     assert len(quests) == 2
-    # sorted по (акт, квест): 01-recipe раньше 05-env-guard.
-    assert "01-recipe" in quests[0] and "05-env-guard" in quests[1]
+    # sorted по (акт, квест): 01-plan раньше 04-clear.
+    assert "01-plan" in quests[0] and "04-clear" in quests[1]
 
 
 def test_shipped_content_has_no_novelty_violation(content_root):
@@ -1296,11 +1299,11 @@ def test_duplicate_instruction_artifact_detected(tmp_path):
     """Два файла на один артефакт: `instructions_by_artifact` отдал бы один
     из них, и какой именно — зависело бы от порядка имён файлов."""
     doubled = list(default_instructions()) + [
-        ("plan-kopiya.md", instruction_text("plan"))
+        ("handoff-kopiya.md", instruction_text("handoff"))
     ]
     _minimal(tmp_path, instruction_files=doubled)
     problems = lint_synth(tmp_path)
-    assert any("plan" in p and "повторяется" in p for p in problems)
+    assert any("handoff" in p and "повторяется" in p for p in problems)
 
 
 def test_instruction_text_is_not_measured(tmp_path):

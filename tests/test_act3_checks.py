@@ -1,407 +1,527 @@
-"""Проверки квестов Акта 3. curl в тестах живой: сервер поднимается
-по-настоящему, не мокается — той же дверью, что у падавана.
+"""Проверки Акта 3 «Умения» на фикстурах.
+
+Гоняются через quests.run_check — тем же путём, каким их запускает CLI.
+На каждый квест три исхода: прошёл, не прошёл, не смог проверить.
+
+Проверок у акта две — «Свой скилл» и «Хук»; «Скилл», «Где брать» и «Мод»
+закрывает рассказ (решение оператора 2026-10-14, #116: в игре из интернета
+ничего не ставится). Обе судят не только папку проекта, но и машину игрока:
+личные скиллы и настройки Claude Code лежат в домашней папке. Домашнюю папку
+проверка берёт из `HOME`, и здесь `HOME` — всегда песочная папка теста:
+настоящий `~/.claude` суит не читает (сторож — фикстура `home` ниже и тест
+`test_checks_never_look_into_the_real_home`).
+
+Файлы кладутся так, как их кладёт Claude в живой сессии — замеры в
+`docs/research/2026-10-13-act3-skills-hooks-mods.md`, раздел «Замеры #110».
+Проверки прежнего Акта 3 «Первая кровь» — в tests/test_shelf_act3_checks.py.
 """
+import json
 import os
 import shutil
-import socket
-import subprocess
-import sys
 import time
-import urllib.request
+from pathlib import Path
 
 import pytest
 
-from conftest import _git
 from jedicoder import quests
 
-ACT = "act3-pervaya-krov"
+SLUG = "act3-umeniya"
+SCRIPTED = ("03-own-skill", "04-hook")
+
+SKILL_MD = "---\nname: {0}\ndescription: Скилл {0}.\n---\n\nДелай так.\n"
 
 
-def check(quests_root, quest, project_dir, env=None):
-    return quests.run_check(quests_root, ACT, quest, project_dir, env_extra=env)
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch):
+    """Песочная домашняя папка: пустая, как у человека до установок.
+
+    Достаётся каждому тесту файла, просил он её или нет: тест, забывший о
+    ней, иначе читал бы настоящую домашнюю папку хозяина машины.
+    """
+    path = tmp_path / "home"
+    path.mkdir()
+    monkeypatch.setenv("HOME", str(path))
+    return path
 
 
-@pytest.fixture
-def live_server(tmp_path):
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-        cwd=str(tmp_path),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+def personal_skill(home, name, text=None):
+    """Личный скилл: `~/.claude/skills/<имя>/SKILL.md`."""
+    folder = home / ".claude" / "skills" / name
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        SKILL_MD.format(name) if text is None else text, encoding="utf-8"
     )
-    deadline = time.time() + 10
-    while True:
-        try:
-            urllib.request.urlopen(
-                "http://127.0.0.1:{}/".format(port), timeout=1
-            ).close()
-            break
-        except OSError:
-            if time.time() > deadline:
-                proc.terminate()
-                raise RuntimeError("тестовый сервер не поднялся")
-            time.sleep(0.05)
-    yield port
-    proc.terminate()
-    proc.wait(timeout=10)
+    return folder
 
 
-HEALTH_ONLY_SERVER = """
-import http.server, sys
-class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        code = 200 if self.path == "/health" else 404
-        self.send_response(code); self.end_headers(); self.wfile.write(b"ok")
-    def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-"""
-
-
-@pytest.fixture
-def health_only_server(tmp_path):
-    """Сервер, у которого корень отвечает 404, а /health — 200: так живёт
-    бот со страницей «жив» по рецепту."""
-    script = tmp_path / "health_only.py"
-    script.write_text(HEALTH_ONLY_SERVER, encoding="utf-8")
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    proc = subprocess.Popen(
-        [sys.executable, str(script), str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+def project_skill(proj, name, text=None):
+    """Проектный скилл: `<папка проекта>/.claude/skills/<имя>/SKILL.md`."""
+    folder = Path(proj) / ".claude" / "skills" / name
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text(
+        SKILL_MD.format(name) if text is None else text, encoding="utf-8"
     )
-    deadline = time.time() + 10
-    while True:
-        try:
-            urllib.request.urlopen(
-                "http://127.0.0.1:{}/health".format(port), timeout=1
-            ).close()
-            break
-        except OSError:
-            if time.time() > deadline:
-                proc.terminate()
-                raise RuntimeError("тестовый сервер не поднялся")
-            time.sleep(0.05)
-    yield port
-    proc.terminate()
-    proc.wait(timeout=10)
+    return folder
 
 
-def free_dead_port():
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+def started(delta=-3600):
+    """Момент входа в акт, как его передаёт команда игры: секунды эпохи."""
+    return {"JEDICODER_ACT_STARTED": str(int(time.time()) + delta)}
 
 
-def test_launch_bails_without_port(quests_root, project):
-    result = check(quests_root, "01-launch", project())
-    assert result.exit_code == quests.EXIT_CANNOT_CHECK
-    assert result.countable is False
+def check(quests_root, quest, project_dir, env=None, recorded=True):
+    extra = {}
+    if recorded:
+        extra = {"JEDICODER_PROJECT_PATH": str(project_dir)}
+    extra.update(env or {})
+    return quests.run_check(quests_root, SLUG, quest, project_dir, env_extra=extra)
 
 
-def test_launch_fails_when_nothing_listens(quests_root, project):
-    env = {"JEDICODER_PORT": str(free_dead_port())}
-    assert check(quests_root, "01-launch", project(), env=env).ok is False
+def failed(result):
+    return [item["id"] for item in quests.failed_checks(result)]
 
 
-def test_launch_passes_on_live_server(quests_root, project, live_server):
-    env = {"JEDICODER_PORT": str(live_server)}
-    assert check(quests_root, "01-launch", project(), env=env).ok is True
+# --- 03-own-skill: свой скилл с описанием и правилом ---
 
-
-def test_launch_accepts_health_page_when_root_is_404(
-        quests_root, project, health_only_server):
-    """Рецепт велит странице «жив» жить на /health; проверка не вправе
-    требовать корень (живой прогон 2026-09-11: попытка ушла на 404)."""
-    env = {"JEDICODER_PORT": str(health_only_server)}
-    assert check(quests_root, "01-launch", project(), env=env).ok is True
-
-
-def test_feature_needs_five_commits(quests_root, project):
-    assert check(quests_root, "02-feature", project(git=True, commits=3)).ok is False
-    assert check(quests_root, "02-feature", project(git=True, commits=5)).ok is True
-
-
-def commit_all(proj, message):
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "--allow-empty", "-m", message)
-
-
-def test_break_requires_marker_commit(quests_root, project):
-    proj = project(git=True, commits=1)
-    assert check(quests_root, "03-break", proj).ok is False
-    commit_all(proj, "слом: уронил парсер нарочно")
-    assert check(quests_root, "03-break", proj).ok is True
-
-
-def test_break_accepts_capital_marker(quests_root, project):
-    proj = project(git=True, commits=1)
-    commit_all(proj, "Слом: спрятал кавычку")
-    assert check(quests_root, "03-break", proj).ok is True
-
-
-def test_fix_bails_without_marker(quests_root, project, live_server):
-    proj = project(git=True, commits=2)
-    env = {"JEDICODER_PORT": str(live_server)}
-    result = check(quests_root, "04-fix", proj, env=env)
-    assert result.exit_code == quests.EXIT_CANNOT_CHECK
-
-
-def test_fix_needs_commit_after_marker(quests_root, project, live_server):
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом: сломал руками")
-    env = {"JEDICODER_PORT": str(live_server)}
-    result = check(quests_root, "04-fix", proj, env=env)
-    assert result.ok is False
-    assert "fix_committed" in [c["id"] for c in quests.failed_checks(result)]
-    commit_all(proj, "починил: вернул кавычку")
-    assert check(quests_root, "04-fix", proj, env=env).ok is True
-
-
-def test_fix_needs_live_server(quests_root, project):
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом: сломал")
-    commit_all(proj, "починил")
-    env = {"JEDICODER_PORT": str(free_dead_port())}
-    result = check(quests_root, "04-fix", proj, env=env)
-    assert result.ok is False
-    assert "server_alive" in [c["id"] for c in quests.failed_checks(result)]
-
-
-def test_fix_bails_without_port(quests_root, project):
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом: сломал")
-    result = check(quests_root, "04-fix", proj)
-    assert result.exit_code == quests.EXIT_CANNOT_CHECK
-    assert result.countable is False
-
-
-def test_break_rejects_body_line_spoof(quests_root, project):
-    # Метка должна быть в заголовке коммита, а не где-то в теле сообщения —
-    # иначе обычный коммит с «слом:» в теле ложно закрывал бы квест.
-    proj = project(git=True, commits=1)
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "--allow-empty", "-m", "обычный коммит",
-         "-m", "слом: в теле, не маркер")
-    assert check(quests_root, "03-break", proj).ok is False
-
-
-def test_fix_ignores_body_line_marker_spoof(quests_root, project, live_server):
-    # Более поздний коммит со «слом:» в теле не должен перехватывать роль
-    # маркера у настоящего слома — иначе rev-list marker..HEAD обнулился бы
-    # и правильно починивший падаван получил бы ложный провал.
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом: настоящий слом")
-    commit_all(proj, "починил: вернул кавычку")
-    _git(proj, "add", "-A")
-    _git(proj, "commit", "-q", "--allow-empty", "-m", "обычный коммит",
-         "-m", "слом: в теле, не маркер")
-    env = {"JEDICODER_PORT": str(live_server)}
-    assert check(quests_root, "04-fix", proj, env=env).ok is True
-
-
-def test_fix_marker_matches_glued_colon(quests_root, project, live_server):
-    # grep в 04-fix ищет «слом:» сразу после хэша и пробела ('^[0-9a-f]+
-    # [Сс]лом:'); awk лишь берёт $1 (хэш) из найденной строки. Проверяем,
-    # что маркер срабатывает и без пробела после «:» — «слом:текст» —
-    # не только с ним.
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом:пропала_кавычка")
-    commit_all(proj, "починил: вернул")
-    env = {"JEDICODER_PORT": str(live_server)}
-    assert check(quests_root, "04-fix", proj, env=env).ok is True
-
-
-def test_marker_match_survives_mawk(quests_root, project):
-    """mawk (дефолт WSL) матчит байтово: кириллический класс в awk-регэкспе
-    молча не находит ничего, и суит зелёный на gawk этого не видит.
-    Проверяем сами скрипты под подменённым awk."""
-    if shutil.which("mawk") is None:
-        pytest.skip("mawk недоступен")
-    proj = project(git=True, commits=1)
-    commit_all(proj, "слом: уронил")
-    commit_all(proj, "починил")
-    bin_dir = proj.parent / "mawkbin"
-    bin_dir.mkdir(exist_ok=True)
-    awk_stub = bin_dir / "awk"
-    awk_stub.write_text('#!/bin/sh\nexec mawk "$@"\n', encoding="utf-8")
-    awk_stub.chmod(0o755)
-    env = {
-        "PATH": "{}:{}".format(bin_dir, os.environ["PATH"]),
-        "JEDICODER_PORT": str(free_dead_port()),
-    }
-    result = check(quests_root, "04-fix", proj, env=env)
-    # маркер обязан найтись даже под mawk: bail (exit 2) значит «не нашёл слом»
-    assert result.exit_code != quests.EXIT_CANNOT_CHECK
-
-
-DECISIONS_ONE_DAY = (
-    "# Решения\n\n"
-    "## 2026-07-27 — SQLite вместо Postgres\n\nОдин файл, ноль настройки.\n\n"
-    "## 2026-07-27 — бот без вебхуков\n\nПоллинг проще на старте.\n"
-)
-DECISIONS_TWO_DAYS = DECISIONS_ONE_DAY + (
-    "\n## 2026-07-28 — вебхуки всё же нужны\n\nПоллинг ест лимиты.\n"
+#: Свой скилл, как его написал Claude в замере (ж).
+OWN_SKILL = (
+    "---\n"
+    "name: otchet-o-pravke\n"
+    "description: Отчёт после правки страницы. Используй после каждой правки.\n"
+    "---\n"
+    "\n"
+    "# Отчёт после правки страницы\n"
+    "\n"
+    "После каждой правки скажи одной фразой, что изменилось на вид.\n"
 )
 
 
-def test_decisions_missing_and_empty(quests_root, project):
-    assert check(quests_root, "05-decisions", project()).ok is False
-    proj = project(files={"DECISIONS.md": ""})
-    assert check(quests_root, "05-decisions", proj).ok is False
+def test_own_skill_passes_as_claude_writes_it(quests_root, home, project):
+    proj = project()
+    project_skill(proj, "otchet-o-pravke", OWN_SKILL)
+    result = check(quests_root, "03-own-skill", proj, env=started())
+    assert result.ok is True, quests.failed_checks(result)
 
 
-def test_decisions_one_day_is_not_a_journal(quests_root, project):
-    """Две записи одним днём и одним коммитом — не журнал: квест не закрыт,
-    и это календарь (бейл), а не провал."""
-    proj = project(files={"DECISIONS.md": DECISIONS_ONE_DAY}, git=True, commits=1)
-    result = check(quests_root, "05-decisions", proj)
-    assert result.ok is False
+def test_own_skill_fails_on_a_clean_project_with_all_rows(quests_root, home, project):
+    result = check(quests_root, "03-own-skill", project(), env=started())
+    assert result.exit_code == quests.EXIT_FAIL and result.countable is True
+    # Скилла нет — строка одна: дописывать описание пока не у чего.
+    assert failed(result) == ["own_skill_exists"]
+    assert [row["id"] for row in result.checks] == ["own_skill_exists"]
+    assert "Сделай из этого правила скилл" in quests.failed_checks(result)[0]["hint"]
+
+
+def test_ready_made_skills_are_not_ones_own(quests_root, home, project):
+    """Готовые скиллы, которые игра называет примерами в квесте «Где брать»,
+    квест «Свой скилл» не закрывают, даже если человек поставил их сам."""
+    proj = project()
+    project_skill(proj, "impeccable")
+    project_skill(proj, "sdd")
+    personal_skill(home, "sdd")
+    personal_skill(home, "impeccable")
+    result = check(quests_root, "03-own-skill", proj, env=started())
+    assert failed(result)[0] == "own_skill_exists"
+
+
+@pytest.mark.parametrize("text,rows", [
+    # Блока `---` нет вовсе: просто текст.
+    ("Делай так.\n", ["own_skill_described", "own_skill_written"]),
+    # Блок есть, описания нет.
+    ("---\nname: moi\n---\n\nДелай так.\n",
+     ["own_skill_described", "own_skill_written"]),
+    ("---\nname: moi\ndescription:\n---\n\nДелай так.\n",
+     ["own_skill_described", "own_skill_written"]),
+    # Блок не закрыт.
+    ("---\nname: moi\ndescription: Моё правило.\n\nДелай так.\n",
+     ["own_skill_described", "own_skill_written"]),
+    # Описание есть, под ним пусто или один заголовок.
+    ("---\nname: moi\ndescription: Моё правило.\n---\n", ["own_skill_written"]),
+    ("---\nname: moi\ndescription: Моё правило.\n---\n\n# Правило\n\n",
+     ["own_skill_written"]),
+])
+def test_own_skill_names_what_is_missing(quests_root, home, project, text, rows):
+    proj = project()
+    project_skill(proj, "moi", text)
+    result = check(quests_root, "03-own-skill", proj, env=started())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result) == rows
+
+
+@pytest.mark.parametrize("text", [
+    "---\nname: moi\ndescription: >\n  Моё правило работы.\n---\n\nДелай так.\n",
+    "---\ndescription: |-\n  Моё правило работы.\nname: moi\n---\nДелай так.\n",
+    '---\nname: moi\ndescription: "Моё: правило"\n---\nДелай так.\n',
+    "﻿---\r\nname: moi\r\ndescription: Моё правило.\r\n---\r\nДелай так.\r\n",
+])
+def test_own_skill_reads_descriptions_as_claude_may_write_them(
+        quests_root, home, project, text):
+    proj = project()
+    project_skill(proj, "moi", text)
+    result = check(quests_root, "03-own-skill", proj, env=started())
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_the_best_of_several_own_skills_is_judged(quests_root, home, project):
+    proj = project()
+    project_skill(proj, "a-chernovik", "черновик\n")
+    project_skill(proj, "moi", OWN_SKILL)
+    assert check(quests_root, "03-own-skill", proj, env=started()).ok is True
+
+
+def test_personal_skill_made_in_this_act_counts(quests_root, home, project):
+    """Claude положил скилл «для всех проектов» — тоже свой, если он новый."""
+    personal_skill(home, "moi", OWN_SKILL)
+    result = check(quests_root, "03-own-skill", project(), env=started())
+    assert result.ok is True, quests.failed_checks(result)
+
+
+def test_personal_skill_older_than_the_act_does_not_count(quests_root, home, project):
+    """Скилл, стоявший до игры, квест не закрывает."""
+    folder = personal_skill(home, "davno-stoit", OWN_SKILL)
+    long_ago = time.time() - 86400
+    os.utime(str(folder / "SKILL.md"), (long_ago, long_ago))
+    result = check(quests_root, "03-own-skill", project(), env=started())
+    assert failed(result)[0] == "own_skill_exists"
+
+
+@pytest.mark.parametrize("value", [None, "", "вчера"])
+def test_without_the_entry_moment_only_the_project_folder_is_judged(
+        quests_root, home, project, value):
+    personal_skill(home, "moi", OWN_SKILL)
+    proj = project()
+    env = {} if value is None else {"JEDICODER_ACT_STARTED": value}
+    assert failed(check(quests_root, "03-own-skill", proj, env=env))[0] == \
+        "own_skill_exists"
+    project_skill(proj, "moi", OWN_SKILL)
+    assert check(quests_root, "03-own-skill", proj, env=env).ok is True
+
+
+def test_skills_synced_with_the_account_are_not_ones_own(quests_root, home, project):
+    """Скиллы учётной записи лежат глубже: `~/.claude/skills/synced/<id>/…`."""
+    deep = home / ".claude" / "skills" / "synced" / "e6635ee3" / "docx"
+    deep.mkdir(parents=True)
+    (deep / "SKILL.md").write_text(OWN_SKILL, encoding="utf-8")
+    result = check(quests_root, "03-own-skill", project(), env=started())
+    assert failed(result)[0] == "own_skill_exists"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root читает всё")
+def test_own_skill_bails_when_the_skills_folder_is_closed(quests_root, home, project):
+    proj = project()
+    folder = project_skill(proj, "moi", OWN_SKILL)
+    folder.parent.chmod(0o000)
+    try:
+        result = check(quests_root, "03-own-skill", proj, env=started())
+    finally:
+        folder.parent.chmod(0o755)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert result.countable is False
+    assert "папку со скиллами" in result.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root читает всё")
+@pytest.mark.parametrize("quest_id", ["03-own-skill", "04-hook"])
+def test_new_checks_bail_when_the_settings_folder_is_closed(
+        quests_root, home, project, quest_id):
+    """Закрытая `.claude` — не «ничего нет»: попытка человеку не в счёт."""
+    proj = project()
+    project_skill(proj, "moi", OWN_SKILL)
+    hook_settings(proj)
+    (proj / ".claude").chmod(0o000)
+    try:
+        result = check(quests_root, quest_id, proj, env=started())
+    finally:
+        (proj / ".claude").chmod(0o755)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
     assert result.countable is False
 
 
-def commit_dated(proj, message, date):
-    """Коммит с заданной датой автора и коммитера — «вчерашняя» запись."""
-    env = dict(os.environ, GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
-    subprocess.run(
-        ["git", "add", "-A"], cwd=str(proj), check=True, capture_output=True,
-    )
-    subprocess.run(
-        ["git", "commit", "-q", "-m", message], cwd=str(proj), check=True,
-        capture_output=True, env=env,
-    )
+def test_own_skill_names_one_reason_when_python_is_missing(
+        quests_root, home, project, tmp_path):
+    """Причина «не смог проверить» одна — та, что назвала первой."""
+    proj = project()
+    bin_dir = tmp_path / "bez-python"
+    bin_dir.mkdir()
+    for tool in ("bash", "dirname", "locale", "grep", "head"):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    result = check(quests_root, "03-own-skill", proj,
+                   env=dict(started(), PATH=str(bin_dir)))
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert "не найден python3" in result.stderr
+    assert "папку со скиллами" not in result.stderr
 
 
-def test_decisions_two_headings_in_one_commit_day_is_calendar_not_failure(
-        quests_root, project):
-    """Долг №17: дни считаются по коммитам, трогавшим DECISIONS.md, а не по
-    датам в заголовках — вчерашнюю дату можно вписать руками, а вчерашний
-    коммит нет. Найдено живым прогоном 2026-09-10: квест «вернись завтра»
-    закрылся в тот же день. Журнал в порядке, коммитили один день — это
-    календарь, а не провал: попытка не тратится, протокол «третья попытка —
-    стоп» не печатается (прогон 2026-09-11)."""
-    proj = project(files={"DECISIONS.md": DECISIONS_TWO_DAYS}, git=True, commits=1)
-    result = check(quests_root, "05-decisions", proj)
-    assert result.ok is False
+# --- 04-hook: хук на запрос, слово и передача после него ---
+
+def hook_settings(root, event="UserPromptSubmit", name="settings.json", raw=None):
+    """Настройки с хуком — как их пишет Claude (замер (з))."""
+    path = Path(root) / ".claude" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if raw is None:
+        raw = json.dumps({"hooks": {event: [{"hooks": [{
+            "type": "command",
+            "command": 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/chistka.sh"',
+        }]}]}})
+    path.write_text(raw, encoding="utf-8")
+    return path
+
+
+def word(at=None):
+    """След слова, как его отдаёт команда игры; момент — секунды эпохи."""
+    moment = int(time.time()) - 60 if at is None else at
+    return {"JEDICODER_TRACE_HOOK_WORD": "yes",
+            "JEDICODER_TRACE_HOOK_WORD_AT": str(moment)}
+
+
+def handoff(proj, age=0):
+    path = Path(proj) / "HANDOFF.md"
+    path.write_text("# Передача\n", encoding="utf-8")
+    moment = time.time() - age
+    os.utime(str(path), (moment, moment))
+    return path
+
+
+def test_hook_passes_with_project_settings_word_and_fresh_handoff(
+        quests_root, home, project):
+    proj = project()
+    hook_settings(proj)
+    handoff(proj)
+    result = check(quests_root, "04-hook", proj, env=word())
+    assert result.ok is True, quests.failed_checks(result)
+
+
+@pytest.mark.parametrize("name", ["settings.json", "settings.local.json"])
+def test_hook_may_live_in_either_project_file(quests_root, home, project, name):
+    proj = project()
+    hook_settings(proj, name=name)
+    handoff(proj)
+    assert check(quests_root, "04-hook", proj, env=word()).ok is True
+
+
+def test_hook_may_live_in_the_user_settings(quests_root, home, project):
+    proj = project()
+    hook_settings(home)
+    handoff(proj)
+    assert check(quests_root, "04-hook", proj, env=word()).ok is True
+
+
+def test_hook_fails_on_a_clean_machine_with_all_rows(quests_root, home, project):
+    result = check(quests_root, "04-hook", project())
+    assert result.exit_code == quests.EXIT_FAIL and result.countable is True
+    # Строка одна: пока хука нет, говорить о слове рано.
+    assert [row["id"] for row in result.checks] == ["hook_recorded"]
+    hint = quests.failed_checks(result)[0]["hint"]
+    assert "Сделай хук" in hint and "/clear" in hint
+
+
+def test_hook_recorded_but_word_not_said_names_the_word(quests_root, home, project):
+    proj = project()
+    hook_settings(proj)
+    handoff(proj)
+    result = check(quests_root, "04-hook", proj)
+    assert [row["id"] for row in result.checks] == ["hook_recorded", "word_said"]
+    assert failed(result) == ["word_said"]
+    assert "«чистка»" in quests.failed_checks(result)[0]["hint"]
+
+
+@pytest.mark.parametrize("event", ["Stop", "PreToolUse", "PreCompact", "SessionStart"])
+def test_hooks_on_other_events_are_not_the_hook_of_the_quest(
+        quests_root, home, project, event):
+    """У автора игры и у набора SDD свои хуки — на других событиях."""
+    proj = project()
+    hook_settings(home, event=event)
+    hook_settings(proj, event=event)
+    result = check(quests_root, "04-hook", proj, env=word())
+    assert failed(result)[0] == "hook_recorded"
+
+
+@pytest.mark.parametrize("raw", [
+    "{}", '{"hooks": {}}', '{"hooks": {"UserPromptSubmit": []}}',
+    '{"hooks": {"UserPromptSubmit": [{"hooks": []}]}}',
+    '{"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": " "}]}]}}',
+    '{"hooks": {"UserPromptSubmit": "строка"}}', '{"hooks": []}',
+    '{"permissions": {"allow": []}}',
+])
+def test_settings_without_a_prompt_hook_are_a_plain_failure(
+        quests_root, home, project, raw):
+    proj = project()
+    hook_settings(proj, raw=raw)
+    result = check(quests_root, "04-hook", proj, env=word())
+    assert result.exit_code == quests.EXIT_FAIL
+    assert failed(result)[0] == "hook_recorded"
+
+
+@pytest.mark.parametrize("raw", ["{ не json", "[]", '"строка"', ""])
+def test_hook_bails_on_broken_settings(quests_root, home, project, raw):
+    proj = project()
+    hook_settings(proj, raw=raw)
+    result = check(quests_root, "04-hook", proj, env=word())
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
     assert result.countable is False
-    assert "завтра" in result.stderr
+    assert "настройки Claude Code" in result.stderr
 
 
-def test_decisions_uncommitted_journal_fails(quests_root, project):
-    """Ни одного коммита с журналом — вина падавана, а не календаря: честный
-    провал с подсказкой закоммитить."""
-    proj = project(files={"DECISIONS.md": DECISIONS_TWO_DAYS}, git=True)
-    result = check(quests_root, "05-decisions", proj)
-    assert result.ok is False
-    assert result.countable is True
-    failed = {c["id"]: c for c in quests.failed_checks(result)}
-    assert "коммит" in failed["decisions_dates"]["hint"]
+def test_hook_needs_the_trace_exactly_yes(quests_root, home, project):
+    proj = project()
+    hook_settings(proj)
+    handoff(proj)
+    for value in ("", "да", "YES", "1"):
+        env = dict(word(), JEDICODER_TRACE_HOOK_WORD=value)
+        assert failed(check(quests_root, "04-hook", proj, env=env)) == [
+            "word_said",
+        ], value
 
 
-def test_decisions_two_commit_days_pass(quests_root, project):
-    proj = project(files={"DECISIONS.md": DECISIONS_ONE_DAY}, git=True)
-    commit_dated(proj, "журнал: первое решение", "2026-07-27T12:00:00+0000")
-    (proj / "DECISIONS.md").write_text(DECISIONS_TWO_DAYS, encoding="utf-8")
-    commit_dated(proj, "журнал: второе решение", "2026-07-28T12:00:00+0000")
-    assert check(quests_root, "05-decisions", proj).ok is True
-
-
-def test_decisions_without_git_bails(quests_root, project):
-    """Без репозитория дни посчитать нечем: «не смог проверить», а не провал."""
-    proj = project(files={"DECISIONS.md": DECISIONS_TWO_DAYS})
-    assert check(quests_root, "05-decisions", proj).countable is False
-
-
-def fake_claude_path(tmp_path, exit_code):
-    """PATH со stub-«claude»: тест не должен зависеть от машины."""
-    bin_dir = tmp_path / "fakebin"
-    bin_dir.mkdir(exist_ok=True)
-    stub = bin_dir / "claude"
-    stub.write_text("#!/bin/sh\nexit {}\n".format(exit_code), encoding="utf-8")
-    stub.chmod(0o755)
-    return "{}:{}".format(bin_dir, os.environ["PATH"])
-
-
-def test_context7_fails_when_absent(quests_root, project, tmp_path):
-    env = {"PATH": fake_claude_path(tmp_path, 1)}
-    assert check(quests_root, "06-context7", project(), env=env).ok is False
-
-
-def _label(result, check_id):
-    return next(c["label"] for c in result.checks if c["id"] == check_id)
-
-
-def test_context7_passes_via_mcp_json(quests_root, project, tmp_path):
-    proj = project(files={".mcp.json": '{"mcpServers": {"context7": {}}}'})
-    env = {"PATH": fake_claude_path(tmp_path, 1)}
-    result = check(quests_root, "06-context7", proj, env=env)
-    assert result.ok is True
-    # Долг №18: где нашли — в строке проверки, а не в голом «подключён».
-    assert ".mcp.json" in _label(result, "context7_connected")
-
-
-def test_context7_passes_via_claude_cli(quests_root, project, tmp_path):
-    env = {"PATH": fake_claude_path(tmp_path, 0)}
-    result = check(quests_root, "06-context7", project(), env=env)
-    assert result.ok is True
-    assert "на этой машине" in _label(result, "context7_connected")
-
-
-def test_git_safety_requires_revert_commit(quests_root, project):
-    proj = project(git=True, commits=2)
-    assert check(quests_root, "07-git-safety", proj).ok is False
-    _git(proj, "revert", "--no-edit", "HEAD")
-    assert check(quests_root, "07-git-safety", proj).ok is True
-
-
-def test_git_safety_ignores_body_line_revert(quests_root, project):
-    proj = project(git=True, commits=2)
-    _git(proj, "commit", "-q", "--allow-empty",
-         "-m", "обычный коммит",
-         "-m", "Revert this decision if the metric regresses.")
-    assert check(quests_root, "07-git-safety", proj).ok is False
-
-
-def test_skill_requires_real_skill_md(quests_root, project):
-    assert check(quests_root, "08-skill", project()).ok is False
-    stub = project(files={".claude/skills/verify/SKILL.md": "проверь\n"})
-    assert check(quests_root, "08-skill", stub).ok is False
-    body = "# Проверка бота\n\n" + ("Открой чат, отправь /start, жди ответ. " * 10)
-    good = project(files={".claude/skills/verify/SKILL.md": body})
-    assert check(quests_root, "08-skill", good).ok is True
-
-
-def git_sha_of(proj, name):
-    done = subprocess.run(
-        ["git", "hash-object", name], cwd=str(proj),
-        capture_output=True, text=True, check=True,
+def test_handoff_older_than_the_word_means_the_hook_did_not_work(
+        quests_root, home, project):
+    proj = project()
+    hook_settings(proj)
+    handoff(proj, age=3600)
+    result = check(quests_root, "04-hook", proj, env=word())
+    assert failed(result) == ["handoff_after_word"]
+    assert quests.failed_checks(result)[0]["hint"].startswith(
+        "Слово сказано, а передачи после него нет."
     )
-    return done.stdout.strip()
 
 
-def test_boss_requires_claude_md(quests_root, project):
-    assert check(quests_root, "10-boss", project()).ok is False
+def test_no_handoff_at_all_is_a_plain_failure(quests_root, home, project):
+    proj = project()
+    hook_settings(proj)
+    assert failed(check(quests_root, "04-hook", proj, env=word())) == [
+        "handoff_after_word",
+    ]
 
 
-def test_boss_passes_when_no_baseline(quests_root, project):
-    proj = project(files={"CLAUDE.md": "# Память\n"})
-    assert check(quests_root, "10-boss", proj).ok is True
+@pytest.mark.parametrize("at", [None, "", "вчера", "-5", "1.5"])
+def test_word_without_a_readable_moment_does_not_pass(
+        quests_root, home, project, at):
+    proj = project()
+    hook_settings(proj)
+    handoff(proj)
+    env = {"JEDICODER_TRACE_HOOK_WORD": "yes"}
+    if at is not None:
+        env["JEDICODER_TRACE_HOOK_WORD_AT"] = at
+    assert failed(check(quests_root, "04-hook", proj, env=env)) == [
+        "handoff_after_word",
+    ]
 
 
-def test_boss_fails_on_untouched_claude_md(quests_root, project):
-    proj = project(files={"CLAUDE.md": "# Память\n"})
-    env = {"JEDICODER_PREV_CLAUDE_MD_SHA": git_sha_of(proj, "CLAUDE.md")}
-    result = check(quests_root, "10-boss", proj, env=env)
-    assert result.ok is False
-    assert "claude_md_grew" in [c["id"] for c in quests.failed_checks(result)]
+@pytest.mark.parametrize("quest_id", ["03-own-skill", "04-hook"])
+def test_new_checks_bail_when_folder_not_recorded(quests_root, home, project, quest_id):
+    result = check(quests_root, quest_id, project(), env=started(), recorded=False)
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert "папка проекта не названа" in result.stderr
 
 
-def test_boss_passes_on_changed_claude_md(quests_root, project):
-    proj = project(files={"CLAUDE.md": "# Память\n"})
-    env = {"JEDICODER_PREV_CLAUDE_MD_SHA": git_sha_of(proj, "CLAUDE.md")}
-    (proj / "CLAUDE.md").write_text(
-        "# Память\n\nЗапуск: python main.py, порт 8000.\n", encoding="utf-8"
+@pytest.mark.parametrize("quest_id", ["03-own-skill", "04-hook"])
+def test_new_checks_bail_without_a_home_folder(quests_root, home, project, quest_id):
+    result = check(quests_root, quest_id, project(),
+                   env=dict(started(), HOME=str(home / "нет такой")))
+    assert result.exit_code == quests.EXIT_CANNOT_CHECK
+    assert "домашнюю папку" in result.stderr
+
+
+def test_new_checks_survive_c_locale_and_mawk(quests_root, home, project):
+    proj = project()
+    project_skill(proj, "moi", OWN_SKILL)
+    hook_settings(proj)
+    handoff(proj)
+    env = dict(started(), LC_ALL="C", **word())
+    if shutil.which("mawk") is not None:
+        bin_dir = proj.parent / "mawkbin2"
+        bin_dir.mkdir()
+        stub = bin_dir / "awk"
+        stub.write_text('#!/bin/sh\nexec mawk "$@"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env["PATH"] = "{}:{}".format(bin_dir, os.environ["PATH"])
+    for quest_id in ("03-own-skill", "04-hook"):
+        result = check(quests_root, quest_id, proj, env=env)
+        assert result.ok is True, (quest_id, quests.failed_checks(result))
+
+
+def test_the_names_of_ready_skills_live_in_one_place():
+    """Перечень готовых скиллов один — в `_lib/machine.sh`."""
+    root = Path(__file__).resolve().parents[1] / "plugin"
+    text = (root / "quests" / "_lib" / "machine.sh").read_text(encoding="utf-8")
+    assert 'JC_KNOWN_SKILLS="impeccable sdd"' in text
+    own = (root / "quests" / SLUG / "03-own-skill" / "check.sh").read_text(
+        encoding="utf-8")
+    code = "\n".join(
+        line for line in own.splitlines() if not line.lstrip().startswith("#")
     )
-    assert check(quests_root, "10-boss", proj, env=env).ok is True
+    assert "impeccable" not in code and "sdd" not in code
+    machine = (root / "lib" / "jedicoder" / "machine.py").read_text(encoding="utf-8")
+    assert '"impeccable"' not in machine and '"sdd"' not in machine
+
+
+# --- то, что обязано держаться у всех ---
+
+def _everything(home, proj):
+    project_skill(proj, "moi", OWN_SKILL)
+    hook_settings(proj)
+    handoff(proj)
+
+
+def test_no_check_of_act3_waits_for_skills_from_the_internet():
+    """Решение 2026-10-14 (#116): в игре из сети ничего не ставится.
+
+    Проверок квестов «Скилл» и «Где брать» нет вовсе, и ни одна проверка
+    акта не читает список плагинов Claude Code и не ищет готовых скиллов.
+    """
+    root = Path(__file__).resolve().parents[1] / "plugin" / "quests"
+    on_disk = sorted(path.name for path in (root / SLUG).iterdir() if path.is_dir())
+    assert on_disk == list(SCRIPTED)
+    texts = [(root / "_lib" / "machine.sh").read_text(encoding="utf-8")]
+    texts += [
+        (root / SLUG / quest_id / "check.sh").read_text(encoding="utf-8")
+        for quest_id in SCRIPTED
+    ]
+    for text in texts:
+        assert ".claude/plugins" not in text and "installed_plugins" not in text
+        assert "jc_skill_installed" not in text
+
+
+def _snapshot(root):
+    out = {}
+    for path in sorted(Path(root).rglob("*")):
+        if ".git" in path.parts:
+            continue
+        out[str(path.relative_to(root))] = (
+            path.read_bytes() if path.is_file() else None
+        )
+    return out
+
+
+@pytest.mark.parametrize("quest_id", SCRIPTED)
+def test_checks_write_nothing(quests_root, home, project, quest_id):
+    """Ни в папку проекта, ни в домашнюю папку проверка не пишет."""
+    proj = project(files={"index.html": "<h1>Дела</h1>\n"}, git=True, commits=1)
+    _everything(home, proj)
+    personal_skill(home, "moi-lichny", OWN_SKILL)
+    before = (_snapshot(proj), _snapshot(home))
+    check(quests_root, quest_id, proj, env=dict(started(), **word()))
+    assert (_snapshot(proj), _snapshot(home)) == before
+
+
+def test_checks_never_look_into_the_real_home(quests_root, home, project):
+    """Проверка смотрит в `HOME`, а не в домашнюю папку хозяина машины.
+
+    У автора игры стоят личные скиллы и хуки в настройках пользователя:
+    прочитай проверка настоящую домашнюю папку, провал на пустой песочной
+    был бы невозможен.
+    """
+    proj = project()
+    for quest_id, row in (("03-own-skill", "own_skill_exists"),
+                          ("04-hook", "hook_recorded")):
+        result = check(quests_root, quest_id, proj, env=dict(started(0), **word()))
+        assert failed(result)[0] == row, quest_id
+
+
+@pytest.mark.parametrize("quest_id", SCRIPTED)
+def test_check_prints_only_json(quests_root, home, project, quest_id):
+    result = check(quests_root, quest_id, project(), env=started())
+    assert result.kind == quests.KIND_SCRIPT
+    assert all(set(row) >= {"id", "ok", "label", "hint"} for row in result.checks)
