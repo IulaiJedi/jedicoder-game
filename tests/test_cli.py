@@ -277,11 +277,12 @@ def test_project_ssh_rejects_option_looking_alias(paths, capsys):
     assert "ssh_alias" not in (data.get("project") or {})
 
 
-def test_project_status_shows_deploy_and_ssh(paths, capsys, all_acts_open):
-    # Пустая строка о пути деплоя звучит, когда начат его акт (Акт 5).
+def test_project_status_shows_deploy_and_ssh(paths, capsys):
+    # Путь деплоя спрашивал прежний «Выход в свет» (полка с 2026-10-16): в
+    # Акте 5 «Три места кода» пустой строки о нём нет, названное — печатается.
     _start_act(paths, 5)
     code, out = run(["project"], paths, capsys)
-    assert "Путь деплоя: не назван" in out
+    assert "Путь деплоя" not in out
     run(["project", "deploy", "vps"], paths, capsys)
     run(["project", "ssh", "myvps"], paths, capsys)
     code, out = run(["project"], paths, capsys)
@@ -1520,10 +1521,10 @@ def test_project_post_is_stored(paths, capsys):
     assert run(["project", "post", "не-ссылка"], paths, capsys)[0] == 1
 
 
-def test_project_status_shows_url(paths, capsys, all_acts_open):
+def test_project_status_shows_url(paths, capsys):
     _start_act(paths, 5)
     code, out = run(["project"], paths, capsys)
-    assert "URL продукта: не назван" in out
+    assert "URL продукта" not in out and "База данных" not in out
     run(["project", "url", "https://myapp.example"], paths, capsys)
     run(["project", "service", "myapp"], paths, capsys)
     run(["project", "post", "https://vc.ru/p/123"], paths, capsys)
@@ -1931,17 +1932,16 @@ def test_youngling_map_does_not_ask_for_track(paths, capsys):
 
 
 def test_map_asks_for_track_in_plain_words_where_the_act_branches(
-        paths, capsys, monkeypatch):
-    """Вопрос остался у акта с развилкой по треку — сегодня это Акт 5, и он
-    выключен; дверь открывается здесь, чтобы строка не сгнила."""
-    monkeypatch.setattr(ranks, "MUTED_ACTS", ())
+        paths, capsys, vyhod_on_act5):
+    """Вопрос остался у акта с развилкой по треку — прежнего Акта 5 «Выход в
+    свет», он на полке; фикстура ставит его на место, чтобы строка не сгнила."""
     code, out = run(["status"], paths, capsys)
     assert code == 0
     line = next(l for l in out.splitlines() if "Акт 5" in l)
     assert "для себя" in line and "для людей" in line
 
 
-def test_muted_act_on_map_does_not_name_the_club(paths, capsys):
+def test_muted_act_on_map_does_not_name_the_club(paths, capsys, last_act_muted):
     code, out = run(["status"], paths, capsys)
     assert code == 0
     line = next(l for l in out.splitlines() if "не написан" in l)
@@ -2021,10 +2021,9 @@ def test_enter_names_the_move_not_the_artifact(paths, capsys):
     assert "Приём этого акта помогает найти идею. Скажи Claude: «помоги найти идею»." in out
 
 
-def test_enter_without_track_asks_in_plain_words(paths, capsys, monkeypatch):
-    """Отказ входа без трека — у акта с развилкой по треку. Сегодня это
-    выключенный Акт 5: Акт 1 «Знакомство» трек не спрашивает вовсе."""
-    monkeypatch.setattr(ranks, "MUTED_ACTS", ())
+def test_enter_without_track_asks_in_plain_words(paths, capsys, vyhod_on_act5):
+    """Отказ входа без трека — у акта с развилкой по треку: прежнего Акта 5
+    «Выход в свет» с полки. Играемые акты трек не спрашивают вовсе."""
     _close_acts(paths, 4)
     code, out = run(["enter", "5"], paths, capsys)
     assert code == 1
@@ -2033,7 +2032,7 @@ def test_enter_without_track_asks_in_plain_words(paths, capsys, monkeypatch):
     assert "5" not in st.load(paths["state_path"])["acts"]
 
 
-def test_enter_muted_act_does_not_name_the_club(paths, capsys):
+def test_enter_muted_act_does_not_name_the_club(paths, capsys, last_act_muted):
     code, out = run(["enter", "5"], paths, capsys)
     assert code == 1
     assert "клуб" not in out and "finale" not in out
@@ -2117,10 +2116,14 @@ def test_next_step_after_act_one_points_at_act_two(paths, capsys, project):
 
 
 def test_next_step_after_the_last_act_points_at_the_card_and_the_memo(
-        paths, capsys, project, tmp_path, monkeypatch):
+        paths, capsys, project, tmp_path, monkeypatch, last_act_muted):
     """Последний играемый акт закрыт, дальше выключенные — зовут за памяткой.
 
-    Конец игры настоящий: Акт 1 командами, Акты 2–4 командами и хуками
+    Механика выключенного акта (`last_act_muted`): Акт 5 выключен, игра
+    «пока кончается» Актом 4. Настоящий конец игры — закрытый Акт 5 — в
+    tests/test_act5_walkthrough.py.
+
+    Путь настоящий: Акт 1 командами, Акты 2–4 командами и хуками
     (`walk_act2`, `walk_act3`, `walk_act4` ботом), сохранение не засевается.
     Проверки Акта 3 смотрят в домашнюю папку — здесь она песочная.
     """
@@ -2208,8 +2211,8 @@ def test_closing_the_very_last_act_is_the_end_and_points_at_finale(
     data, last = _closed_everything(paths)
     assert cli._maybe_close_act(data, last, paths["state_path"]) is True
     out = capsys.readouterr().out
-    assert "Это конец игры." in out
-    assert "карточку ранга" in out and "памятку" in out
+    assert cli.GAME_OVER in out and cli.FINALE_INVITE in out
+    assert "показать финал" in out and "памятку" in out
     assert "finale" not in out and "scroll" not in out
     assert "не написан" not in out
 
@@ -2253,24 +2256,25 @@ def test_map_names_a_single_act_in_preparation(paths, capsys, old_acts_open):
 
 
 
-def test_map_has_no_preparation_line_when_nothing_is_muted(
-        paths, capsys, all_acts_open):
+def test_map_has_no_preparation_line_when_nothing_is_muted(paths, capsys):
+    """С 2026-10-16 так выглядит сама игра: выключенных актов нет."""
     _, out = run(["status"], paths, capsys)
-    assert "готов" not in out
-    assert "Акт 5. Выход в свет" in out
+    assert "готов" not in out and "не написан" not in out
+    assert "Акт 5. Три места кода" in out
 
 
 
 def test_third_failed_attempt_outside_the_novice_acts_keeps_the_loop_protocol(
         paths, capsys, project, old_acts_open, shield_on_act4):
-    """Общий протокол остаётся у актов после четвёртого: там его слова знакомы.
+    """Общий протокол остаётся актам, которых в игре сегодня нет.
 
     С 2026-10-14 Акт 4 — «Свой продукт» для новичка (спека #117), и ему
     третья неудача говорит словами новичка — даже проверкой «Щита» с полки
-    на его номере. Протокол звучит с Акта 5; войти туда дверью нельзя (акт
-    выключен), поэтому его слова сверяются в реестре."""
-    assert cli.LOOP_HINTS[4] == cli.LOOP_HINTS[1]
-    assert 5 not in cli.LOOP_HINTS
+    на его номере. С 2026-10-16 так же и Акт 5 «Три места кода»: его квесты
+    судят GitHub и ключи, и «откатись на рабочий коммит» там ни при чём
+    (ревью #124; проход до третьей неудачи — tests/test_act5_entry.py)."""
+    for act in ranks.playable_acts():
+        assert cli.LOOP_HINTS[act] == cli.LOOP_HINTS[1], act
     proj = project(git=True, commits=1)
     paths = dict(paths, quests_root=shield_on_act4)
     assert run(["project", "path", str(proj)], paths, capsys)[0] == 0

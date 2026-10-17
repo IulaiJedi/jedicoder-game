@@ -60,6 +60,8 @@ PARTS = (PART_DEBRIEF, PART_ROADMAP, PART_RANK_CARD, PART_PHRASES, PART_PATH)
 ROADMAP_NOTE = "три шага, чтобы довести продукт до людей"
 PATH_TITLE = "Что пройдено и что впереди"
 PATH_NOTE = PATH_TITLE[0].lower() + PATH_TITLE[1:]
+#: Раздел «Впереди» в конце игры: ни акта впереди, ни ненаписанного.
+PATH_ALL_DONE = "Все акты пройдены: это конец игры."
 
 #: Страница готовых фраз (#104). Лежит рядом с инструкциями и написана так
 #: же, без слов игры: её открывают, когда игры на машине уже нет.
@@ -250,6 +252,10 @@ def path_page(facts, not_written=""):
         lines.append("")
     if not_written:
         lines += ["{}. Сроков игра не называет.".format(not_written), ""]
+    if not open_acts and not not_written:
+        # Конец игры: впереди ни акта, ни ненаписанного. Пустой раздел
+        # читался бы как недописанная страница.
+        lines += [PATH_ALL_DONE, ""]
     lines += [
         "Проект от игры не зависит: продолжай его с Claude тем, что уже умеешь.",
     ]
@@ -493,10 +499,10 @@ def _index_page(facts, instructions, personal, today):
     lines = ["# {}".format(scroll_title(facts)), ""]
     if today:
         lines.append(
-            "Собран {} по твоему прохождению игры Jedicoder.".format(today)
+            "Собрана {} по твоему прохождению игры Jedicoder.".format(today)
         )
     else:
-        lines.append("Собран по твоему прохождению игры Jedicoder.")
+        lines.append("Собрана по твоему прохождению игры Jedicoder.")
     lines += [
         "",
         "Папка твоя. Игру можно удалить, а файлы останутся: внутри обычный",

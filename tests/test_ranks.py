@@ -23,7 +23,7 @@ def test_ranks_order():
 def test_acts_table_complete():
     assert sorted(ranks.ACTS) == [1, 2, 3, 4, 5]
     assert [ranks.ACTS[n]["artifact"] for n in sorted(ranks.ACTS)] == [
-        "brainstorm", "handoff", "investigate", "goal", "deploy",
+        "brainstorm", "handoff", "investigate", "goal", "cso",
     ]
     assert [ranks.ACTS[n]["rank"] for n in sorted(ranks.ACTS)] == [
         "seeker", "padawan", "knight", "sentinel", "master",
@@ -40,14 +40,15 @@ def test_all_artifacts_are_one_list_and_goal_has_a_lock():
     списка имён разойдутся молча.
     """
     assert ranks.ALL_ARTIFACTS == (
-        "brainstorm", "handoff", "investigate", "goal", "deploy",
+        "brainstorm", "handoff", "investigate", "goal", "cso",
     )
     assert ranks.UNLOCKED_ARTIFACTS == ()
     # Производный, а не переписанный: акт добавят — список вырастет сам.
     from_acts = tuple(ranks.ACTS[n]["artifact"] for n in sorted(ranks.ACTS))
     assert ranks.ALL_ARTIFACTS == from_acts + ranks.UNLOCKED_ARTIFACTS
-    # Приём «Щита» ушёл с ним на полку: имени нет ни в одном перечне.
-    assert "cso" not in ranks.ALL_ARTIFACTS
+    # Приём «Щита» вернулся приёмом Акта 5 (спека #123), а приём прежнего
+    # «Выхода в свет» ушёл с ним на полку: имени нет ни в одном перечне.
+    assert "deploy" not in ranks.ALL_ARTIFACTS
 
 
 def test_rank_starts_at_youngling():

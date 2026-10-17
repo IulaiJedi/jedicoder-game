@@ -95,9 +95,9 @@ def test_registry_names_the_act_its_artifact_and_rank():
         "slug": "act3-umeniya", "title": "Умения",
         "artifact": "investigate", "rank": "knight",
     }
-    assert ranks.MUTED_ACTS == (5,)
+    assert ranks.MUTED_ACTS == ()
     assert not ranks.is_muted(ACT)
-    assert ranks.FINAL_ACT == 4 and ranks.FINAL_RANK == "sentinel"
+    assert ranks.FINAL_ACT == 5 and ranks.FINAL_RANK == "master"
 
 
 def test_no_quest_of_act3_waits_for_words_before_a_check():
@@ -175,7 +175,7 @@ def test_after_act2_the_next_step_is_act3(padawan):
     assert "  Акт 2. Память и силы — пройден" in lines
     assert "  Акт 3. Умения — не начат, квестов закрыто: 0/5" in lines
     assert "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5" in lines
-    assert "  Акт 5 ещё не написан" in lines
+    assert "  Акт 5. Три места кода — не начат, квестов закрыто: 0/5" in lines
     assert out.rstrip().splitlines()[-2:] == [
         "Что дальше: начать Акт 3 «Умения» — квестов в нём 5.",
         "  Скажи Claude: «начинаем».",

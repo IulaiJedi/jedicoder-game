@@ -4,7 +4,9 @@
 
 «Щит» с 2026-10-14 на полке (спека #117), и по этой оси не ветвится ни один
 играемый акт. Механика цела: тесты ставят «Щит» на его прежний номер
-фикстурой `shield_on_act4` — состав и ветки берутся с полки.
+фикстурой `shield_on_act4` — состав и ветки берутся с полки. Тесты оси трека
+рядом с ним ставят на пятый номер прежний «Выход в свет» (`vyhod_on_act5`,
+полка с 2026-10-16).
 """
 import pytest
 
@@ -101,6 +103,7 @@ def test_act4_kinds():
             assert acts.quest_kind(4, quest_id) == expected, quest_id
 
 
+@pytest.mark.usefixtures("vyhod_on_act5")
 def test_act5_quest_order_craftsman():
     assert acts.quest_ids(5, acts.TRACK_CRAFTSMAN) == (
         "01-deploy", "02-domain", "03-ssl", "04-health", "05-goal",
@@ -108,6 +111,7 @@ def test_act5_quest_order_craftsman():
     )
 
 
+@pytest.mark.usefixtures("vyhod_on_act5")
 def test_act5_quest_order_founder():
     assert acts.quest_ids(5, acts.TRACK_FOUNDER) == (
         "01-deploy", "02-domain", "03-ssl", "04-health", "05-goal",
@@ -115,11 +119,13 @@ def test_act5_quest_order_founder():
     )
 
 
+@pytest.mark.usefixtures("vyhod_on_act5")
 def test_act5_without_track_raises():
     with pytest.raises(acts.TrackRequiredError):
         acts.quest_ids(5)
 
 
+@pytest.mark.usefixtures("vyhod_on_act5")
 def test_act5_kinds():
     acks = {"05-goal", "06c-use"}
     for track in acts.TRACKS:

@@ -59,7 +59,8 @@ def test_every_quest_id_is_in_output():
     ]
     # Число прибито намеренно: молча пропавший квест — ровно тот дефект,
     # который тест обязан ловить, а «все, что есть в реестре» его пропустит.
-    assert len(expected) == 27
+    # 2026-10-16: прежний Акт 5 (семь квестов) — на полке, новый — пять.
+    assert len(expected) == 25
     for quest_id in expected:
         assert json.dumps(quest_id) in out, "нет квеста {}".format(quest_id)
 

@@ -75,18 +75,30 @@ def test_memo_carries_no_word_of_the_previous_game(who, request):
             assert word not in text, (name, word)
 
 
-def test_padawan_roadmap_says_what_is_done_and_what_is_not_written(padawan):
+def test_padawan_roadmap_says_what_is_done_and_what_is_ahead(padawan):
     game, proj = padawan  # noqa: F811
     page = memo(game, proj)[scroll.ROADMAP_NAME]
     assert page.splitlines()[0] == "# Что пройдено и что впереди"
     assert "- Акт 1 «Знакомство» — ранг Искатель." in page
     assert "- Акт 2 «Память и силы» — ранг Падаван." in page
+    # С 2026-10-16 ненаписанных актов нет (спека #123): впереди — все три
+    # оставшихся по именам, без строки о ненаписанном и без сроков.
+    assert "- Акт 5 «Три места кода» — ещё не пройден." in page
+    assert not_written() == ""
+    assert "не написан" not in page and "Сроков игра не называет" not in page
+    assert "скоро" not in page.lower()
+
+
+def test_padawan_roadmap_names_what_is_not_written_while_an_act_is_muted(
+        padawan, last_act_muted):
+    """Механика выключенного акта цела: строка о ненаписанном — словами игры."""
+    game, proj = padawan  # noqa: F811
+    page = memo(game, proj)[scroll.ROADMAP_NAME]
     # Те же слова, что печатает игра на первом экране и в ответ на `finale`.
     assert not_written() + ". Сроков игра не называет." in page
-    # Имён выключенных актов и сроков нет.
+    # Имён выключенных актов нет.
     for number in ranks.MUTED_ACTS:
         assert ranks.ACTS[number]["title"] not in page
-    assert "скоро" not in page.lower()
 
 
 def test_seeker_roadmap_names_the_open_act_ahead(seeker):
@@ -96,7 +108,7 @@ def test_seeker_roadmap_names_the_open_act_ahead(seeker):
     assert "- Акт 1 «Знакомство» — ранг Искатель." in done
     assert "Память и силы" not in done
     assert "- Акт 2 «Память и силы» — ещё не пройден." in ahead
-    assert not_written() in ahead
+    assert "- Акт 5 «Три места кода» — ещё не пройден." in ahead
 
 
 def test_memo_taken_before_any_act_does_not_invent_a_passed_act(game, project):  # noqa: F811
@@ -131,13 +143,17 @@ def test_memo_does_not_carry_a_technique_nobody_gave(padawan):
     assert "handoff.md" in pages and "brainstorm.md" in pages
 
 
-def test_old_roadmap_comes_back_with_the_last_act(
-        game, project, all_acts_open):  # noqa: F811
-    """Тексты прежней игры не удалены: они ждут акта, которому принадлежат.
+def test_old_roadmap_comes_back_with_the_act_that_asks_for_the_address(
+        game, project, monkeypatch):  # noqa: F811
+    """Тексты прежней игры не удалены: они ждут акта, которому принадлежат, —
+    того, что спрашивает адрес продукта (`cli.ROADMAP_ACT`). С 2026-10-16
+    такого акта нет: адрес спрашивал прежний «Выход в свет», он на полке.
 
     Приём «Цель» (`goal`) с 2026-10-14 выдаётся на входе в Акт 4 (спека #117)
-    и в памятку человека, не входившего туда, не идёт — даже когда открыты
-    все акты (tests/test_act4_entry.py)."""
+    и в памятку человека, не входившего туда, не идёт
+    (tests/test_act4_entry.py)."""
+    assert cli.ROADMAP_ACT is None
+    monkeypatch.setattr(cli, "ROADMAP_ACT", 5)
     proj = project()
     assert game("project", "path", str(proj))[0] == 0
     pages = memo(game, proj)

@@ -213,16 +213,18 @@ def test_stop_and_undo_has_no_script(game):
     assert "У квеста «Стоп и отмена» нет проверки." in out
 
 
-def test_game_ends_with_act4_and_rank_sentinel():
-    """С 2026-10-14 играются четыре акта (спеки #99, #108 и #117)."""
-    assert ranks.playable_acts() == [1, 2, 3, 4]
-    assert ranks.FINAL_ACT == 4
-    assert ranks.FINAL_RANK == "sentinel"
+def test_game_ends_with_act5_and_rank_master():
+    """С 2026-10-16 играются все пять актов (спеки #99, #108, #117 и #123)."""
+    assert ranks.playable_acts() == [1, 2, 3, 4, 5]
+    assert ranks.MUTED_ACTS == ()
+    assert ranks.FINAL_ACT == 5
+    assert ranks.FINAL_RANK == "master"
 
 
-# Конец игры проходится командами и хуками в tests/test_act4_walkthrough.py
-# (`walk_act4`, обеими ветками): там и слова «игра пока кончается», и
-# `finale`, и карточка ранга, и строка «Что дальше» после конца.
+# Конец игры проходится дверью падавана в tests/test_act5_walkthrough.py
+# (`walk_act5`, #125): там закрытие Акта 5, `finale` с тремя местами, куда идти
+# дальше, карточка Мастера и строка «Что дальше» после конца. Механику
+# выключенного акта («игра пока кончается») держит фикстура `last_act_muted`.
 
 
 def test_act4_asks_for_act3_first(game, project):
@@ -251,9 +253,9 @@ def test_act3_asks_for_act2_first(game, project):
     assert "3" not in st.load(game.state_path)["acts"]
 
 
-@pytest.mark.parametrize("act", [5])
-def test_later_acts_refuse_entry_in_plain_words(game, project, act):
-    """Закрывший Акт 1 слышит «ещё не написан», а не трейсбек и не «выбери трек»."""
+def test_act5_asks_for_act4_first(game, project):
+    """Акт 5 открыт (спека #123), но не раньше четвёртого: отказ называет,
+    что закрыть, — не трейсбек и не «выбери трек»."""
     proj = project()
     assert game("project", "path", str(proj))[0] == 0
     assert game("enter", "1")[0] == 0
@@ -261,18 +263,13 @@ def test_later_acts_refuse_entry_in_plain_words(game, project, act):
     assert game("ack", "1", ACK)[0] == 0
     before = st.load(game.state_path)
 
-    code, out = game("enter", str(act))
+    code, out = game("enter", "5")
 
     assert code == 1
-    assert out.strip() == (
-        "Акт {} ещё не написан. Игра пока заканчивается Актом 4.".format(act)
-    )
-    # Прежнее имя акта не звучит: состав и имена изменятся. И к финалу отказ
-    # не отсылает — финала, пока акты готовятся, нет.
-    assert ranks.ACTS[act]["title"] not in out
-    assert "finale" not in out
+    assert "Сначала закрой Акт 4" in out
+    assert "ещё не написан" not in out and "finale" not in out
     after = st.load(game.state_path)
-    assert str(act) not in after["acts"]
+    assert "5" not in after["acts"]
     assert after["current_act"] == before["current_act"]
     assert after["artifacts"] == ["brainstorm"]
 
@@ -290,22 +287,20 @@ def test_seeker_card_carries_no_trophy_of_another_act(game, project):
     assert game("ack", "1", ACK)[0] == 0
     card = cli.render_rank_card(debrief.facts(st.load(game.state_path)))
     assert "Карточка Искателя" in card
-    assert "Закрыто актов: 1 из 4." in card
+    assert "Закрыто актов: 1 из 5." in card
     for trophy in cli.TROPHY_LINES.values():
         assert trophy not in card
     assert "сервер" not in card and "Щит" not in card
     assert "finale" not in card and "http" not in card
 
 
-def test_map_names_acts_in_preparation_by_one_line(game):
-    """Прежние имена выключенных актов человеку не показываются."""
+def test_map_names_all_five_acts_and_nothing_in_preparation(game):
+    """С 2026-10-16 выключенных актов нет: карта называет все пять по именам."""
     code, out = game("status")
     assert code == 0
     lines = out.splitlines()
-    assert "  Акт 5 ещё не написан" in lines
-    assert len([line for line in lines if "не написан" in line]) == 1
-    for act in (5,):
-        assert ranks.ACTS[act]["title"] not in out
+    assert "  Акт 5. Три места кода — не начат, квестов закрыто: 0/5" in lines
+    assert "не написан" not in out
 
 
 

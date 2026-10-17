@@ -99,8 +99,9 @@ def test_registry_names_the_act_its_artifact_and_rank():
         "slug": "act4-svoy-produkt", "title": "Свой продукт",
         "artifact": "goal", "rank": "sentinel",
     }
-    assert ranks.MUTED_ACTS == (5,)
-    assert ranks.FINAL_ACT == 4 and ranks.FINAL_RANK == "sentinel"
+    # С 2026-10-16 за Актом 4 играется Акт 5 (спека #123).
+    assert ranks.MUTED_ACTS == ()
+    assert ranks.FINAL_ACT == 5 and ranks.FINAL_RANK == "master"
     assert ranks.UNLOCKED_ARTIFACTS == ()
     assert cli.ARTIFACT_NAMES["goal"] == "Цель"
 
@@ -156,17 +157,17 @@ def test_old_act4_left_the_plugin_and_no_skill_name_repeats():
 
     root = Path(__file__).resolve().parents[1]
     plugin = root / "plugin"
+    # Приём `cso` вернулся с полки приёмом Акта 5 (спека #123): его здесь нет.
     for gone in (
-        plugin / "skills" / "act4-shchit", plugin / "skills" / "cso",
+        plugin / "skills" / "act4-shchit",
         plugin / "quests" / "act4-shchit",
         plugin / "content" / "ru" / "acts" / "act4-shchit.md",
-        plugin / "content" / "ru" / "scroll" / "cso.md",
     ):
         assert not gone.exists(), gone
     assert (plugin / "skills" / "act4-svoy-produkt" / "SKILL.md").is_file()
     assert (plugin / "skills" / "goal" / "SKILL.md").is_file()
     assert (plugin / "content" / "ru" / "scroll" / "goal.md").is_file()
-    for kept in ("README.md", "skill/SKILL.md", "artifact/SKILL.md"):
+    for kept in ("README.md", "skill/SKILL.md"):
         assert (root / "shelf" / "act4-shchit" / kept).is_file(), kept
 
     skills = sorted(path.name for path in (plugin / "skills").iterdir() if path.is_dir())
@@ -206,7 +207,7 @@ def test_after_act3_the_next_step_is_act4(knight):
     assert "Ранг: Рыцарь" in lines
     assert "  Акт 3. Умения — пройден" in lines
     assert "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5" in lines
-    assert "  Акт 5 ещё не написан" in lines
+    assert "  Акт 5. Три места кода — не начат, квестов закрыто: 0/5" in lines
     assert out.rstrip().splitlines()[-2:] == [
         "Что дальше: начать Акт 4 «Свой продукт» — квестов в нём 5.",
         "  Скажи Claude: «начинаем».",

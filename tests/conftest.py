@@ -55,6 +55,27 @@ def quests_root():
     return QUESTS_ROOT
 
 
+@pytest.fixture
+def last_act_muted(monkeypatch):
+    """Акт 5 выключен: игра «пока кончается» Актом 4, как до спеки #123.
+
+    С 2026-10-16 выключенных актов нет, и конец игры в тестах настоящий —
+    закрытый Акт 5 (`walk_act5`, tests/test_act5_walkthrough.py). Но механика
+    выключенного акта жива в движке: строка карты «Акт 5 ещё не написан»,
+    отказ входа, «игра пока кончается», `finale` без карточки и без события
+    боту, страница «что впереди» в памятке. Вернётся выключенный акт —
+    вернётся и она; эти тесты не дают ей сгнить молча.
+
+    Вместе со списком подменяются обе производные: `FINAL_ACT` и
+    `FINAL_RANK` посчитаны при импорте и сами за списком не пойдут.
+    """
+    from jedicoder import ranks
+
+    monkeypatch.setattr(ranks, "MUTED_ACTS", (5,))
+    monkeypatch.setattr(ranks, "FINAL_ACT", 4)
+    monkeypatch.setattr(ranks, "FINAL_RANK", ranks.ACTS[4]["rank"])
+
+
 SHELF_ACT4 = ROOT / "shelf" / "act4-shchit"
 
 #: Полка в выгрузку не едет (`build_release.SHIP_TOP`): тесту, которому она
@@ -100,6 +121,44 @@ def shield_on_act4(monkeypatch):
     return root
 
 
+SHELF_ACT5 = ROOT / "shelf" / "act5-vyhod-v-svet"
+
+
+@pytest.fixture
+def vyhod_on_act5(monkeypatch):
+    """Прежний Акт 5 «Выход в свет» — с полки на место Акта 5, как до 2026-10-16.
+
+    Развилка по треку живёт в движке (`acts.filter_by_track`,
+    `TrackRequiredError`, ручка `track`), но ни один играемый акт сегодня по
+    ней не ветвится (спека #123). Юнит-тесты этой механики ставят «Выход в
+    свет» на его прежний номер сами — тем же порядком, что `shield_on_act4`:
+    состав и ветки из катсцены на полке, вид квеста — по тому, лежит ли там
+    его проверка. Отдаёт корень квестов полки.
+    """
+    from jedicoder import acts, content, quests, ranks
+
+    if not SHELF_ACT5.is_dir():
+        pytest.skip("полки нет: выгрузка без shelf/")
+    scene = next(iter(content.load_acts(SHELF_ACT5 / "content")))
+    root = SHELF_ACT5 / "quests"
+    registry = tuple(
+        (
+            quest_id,
+            quests.KIND_SCRIPT
+            if (root / scene.slug / quest_id / "check.sh").is_file()
+            else quests.KIND_ACK,
+            branch,
+        )
+        for quest_id, branch in zip(scene.quests, scene.quest_branches)
+    )
+    monkeypatch.setitem(ranks.ACTS, 5, {
+        "slug": scene.slug, "title": scene.title,
+        "artifact": scene.artifact, "rank": scene.rank,
+    })
+    monkeypatch.setitem(acts.QUESTS_BY_ACT, 5, registry)
+    return root
+
+
 @pytest.fixture
 def shield_content(tmp_path_factory):
     """Копия живого контента, где на месте катсцены Акта 4 — катсцена «Щита».
@@ -127,10 +186,10 @@ def old_acts_open(monkeypatch, shield_on_act4):
     """Акты 3–4 открыты, как до 2026-10-08: выключен один Акт 5, а на месте
     Акта 4 стоит прежний «Щит» с развилкой по пути деплоя (`shield_on_act4`).
 
-    Игра сегодня кончается Актом 4 «Свой продукт» (`ranks.MUTED_ACTS`, спеки
-    #75, #99, #108 и #117), но механика поздних актов — порядок входа,
-    развилка по пути деплоя, Книга на входе, хэш `CLAUDE.md` для босса —
-    живёт в движке и вернётся с актами.
+    Сегодня играются все пять актов (спека #123), но на месте Акта 4 стоит
+    «Свой продукт» без развилки. Механика прежних поздних актов — порядок
+    входа, развилка по пути деплоя, Книга на входе, хэш `CLAUDE.md` для
+    босса, выключенный акт впереди — живёт в движке и вернётся с актами.
     Юнит-тесты этой механики открывают дверь сами, чтобы она не сгнила молча
     к тому дню, когда номер уйдёт из списка.
 
@@ -151,11 +210,10 @@ def old_acts_open(monkeypatch, shield_on_act4):
 def all_acts_open(monkeypatch):
     """Ни один акт не выключен: игра идёт до последнего акта реестра.
 
-    Так выглядит день, когда `ranks.MUTED_ACTS` опустеет. Финал — карточка,
-    адрес страницы финала, событие боту — существует только в этом мире:
-    пока после последнего играемого акта есть выключенные, игра не кончилась
-    (решение оператора 2026-10-08). Тесты самого финала открывают дверь
-    этой фикстурой, чтобы он не сгнил к тому дню.
+    С 2026-10-16 (спека #123) так выглядит и сама игра: `ranks.MUTED_ACTS`
+    пуст. Фикстура осталась ради тестов, которые подменяют реестр другими
+    фикстурами и обязаны получить и производные: финал — карточка, адрес
+    страницы финала, событие боту — существует только в этом мире.
     """
     from jedicoder import ranks
 

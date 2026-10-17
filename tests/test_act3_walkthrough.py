@@ -12,8 +12,8 @@
 теста; настоящий `~/.claude` эти тесты не читают.
 
 `walk_act3` — общий проход для тестов следующих актов: к закрытому Акту 3
-можно прийти только так. Конец игры сегодня — закрытый Акт 4, его проходит
-`walk_act4` в `tests/test_act4_walkthrough.py`: слова «игра пока кончается»,
+можно прийти только так. Конец игры — закрытый Акт 5, его проходит
+`walk_act5` в `tests/test_act5_walkthrough.py`: закрытие последнего акта,
 `finale`, трофей на карточке и полоса после конца стережутся там.
 """
 import json
@@ -321,12 +321,12 @@ def test_no_screen_of_act3_speaks_to_the_model(finished):
 
 
 def test_knight_card_counts_the_closed_acts_and_has_no_trophy_yet(finished):
-    """Трофей — у конца игры (Акт 4); Рыцарю — только закрытое."""
+    """Трофей — у конца игры (Акт 5); Рыцарю — только закрытое."""
     game, _, _ = finished  # noqa: F811
     card = cli.render_rank_card(debrief.facts(st.load(game.state_path)))
     lines = card.splitlines()
     assert lines[0] == "=== Карточка Рыцаря ==="
-    assert "Закрыто актов: 3 из 4." in lines
+    assert "Закрыто актов: 3 из 5." in lines
     for title in ("Знакомство", "Память и силы", "Умения"):
         assert any(line.endswith(title) for line in lines), title
     for trophy in cli.TROPHY_LINES.values():
@@ -348,8 +348,8 @@ def test_memo_of_the_third_evening_carries_the_technique_and_the_phrases(finishe
     for name in ("investigate.md", "handoff.md", "brainstorm.md", "frazy.md"):
         assert name in names
     razbor = (folder / "razbor.md").read_text(encoding="utf-8")
-    assert "- Закрыто актов: 3 из 4" in razbor
-    assert "из 5" not in razbor
+    assert "- Закрыто актов: 3 из 5" in razbor
+    assert "из 4" not in razbor
     everything = "\n".join(
         path.read_text(encoding="utf-8") for path in folder.iterdir()
     )

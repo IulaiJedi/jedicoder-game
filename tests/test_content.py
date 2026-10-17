@@ -184,17 +184,20 @@ def test_rule_and_recipe_validation(tmp_path):
 # первый вечер с Claude Code. Перечислены поимённо, как и слова Акта 0 ниже:
 # десятое слово попадёт сюда руками, то есть осознанно.
 #
-# `commit` и `repository` приехали из Акта 2 вместе с квестом «Сохранение»,
+# `commit` приехал из Акта 2 вместе с квестом «Сохранение»,
 # `permission-mode` — из Акта 0: режим называет первый квест. `env` вернулся
 # в Акт 2 (#87): паролей в первый вечер нет, и карточка о них не звучит —
 # проверка сохранения стережёт `.env` молча.
 # `tool` и `api` остались от прежнего Акта 1 — «одна работа» и «чужая
 # программа, у которой просят» нужны идее на вечер и первому запросу.
+# `repository` уехал в Акт 5 (#126): в первый вечер скилл запрещает это
+# слово, а по шпаргалке оператора репозиторий — та же папка, только на
+# GitHub. Квест «Приватный репозиторий» вводит его там.
 ACT1_TERMS = (
     "project-folder", "permission-mode",
     "tool",
     "prompt", "api",
-    "commit", "repository",
+    "commit",
     "rollback",
 )
 
@@ -244,6 +247,10 @@ KEPT_FROM_OLD_ACT3 = {
 RETURNED_IN_ACT4 = {
     "localhost": (4, "04-run"), "port": (4, "04-run"), "mvp": (4, "02-plan"),
 }
+#: Слово полки, вернувшееся карточкой Акта 5 «Три места кода» (#126):
+#: первый вопрос о чужом сервисе — есть ли у него API или MCP (шпаргалка
+#: оператора, раздел 15). Карточка написана заново; на полке — прежняя.
+RETURNED_IN_ACT5 = {"mcp": (5, "04-service")}
 
 
 def test_shelved_act3_terms_left_the_game_and_lie_on_the_shelf(content_root):
@@ -254,10 +261,11 @@ def test_shelved_act3_terms_left_the_game_and_lie_on_the_shelf(content_root):
     from jedicoder import content
 
     by_term = {item.term: item for item in content.load_terms(content_root)}
-    left = set(SHELVED_ACT3_TERMS) - set(RETURNED_IN_ACT4)
+    left = set(SHELVED_ACT3_TERMS) - set(RETURNED_IN_ACT4) - set(RETURNED_IN_ACT5)
     assert sorted(set(by_term) & left) == []
-    for name, (act, quest) in list(KEPT_FROM_OLD_ACT3.items()) + list(
-            RETURNED_IN_ACT4.items()):
+    for name, (act, quest) in (list(KEPT_FROM_OLD_ACT3.items())
+                               + list(RETURNED_IN_ACT4.items())
+                               + list(RETURNED_IN_ACT5.items())):
         assert name in by_term, "слово «{}» пропало из игры".format(name)
         assert (by_term[name].act, by_term[name].quest) == (act, quest), name
 
@@ -443,6 +451,8 @@ def test_acts_1_to_3_terms_declare_quest(content_root):
 # квестом, как в Актах 1–3 (#120): охват бюджета новизны дорос до Акта 4.
 # Без квеста остаётся «Цель» — приём акта, карточка выпадает на входе.
 ACT4_TERMS_WITH_QUEST = ("mvp", "bot-token", "localhost", "port")
+#: Слова Акта 5 «Три места кода» (#126) размечены квестом, как в Акте 4.
+ACT5_TERMS_WITH_QUEST = ("github", "repository", "api-key", "mcp")
 
 
 def test_acts_4_and_5_terms_have_no_quest(content_root):
@@ -458,9 +468,10 @@ def test_acts_4_and_5_terms_have_no_quest(content_root):
     """
     from jedicoder import content
 
+    named = ACT4_TERMS_WITH_QUEST + ACT5_TERMS_WITH_QUEST
     marked = sorted(
         t.term for t in content.load_terms(content_root)
-        if t.act in (4, 5) and t.quest and t.term not in ACT4_TERMS_WITH_QUEST
+        if t.act in (4, 5) and t.quest and t.term not in named
     )
     assert marked == [], "Акты 4–5 размечены, а охват аудита их не включает: {}".format(
         marked
@@ -505,8 +516,8 @@ def test_shelved_act4_terms_left_the_game_and_lie_on_the_shelf(content_root):
     assert on_shelf == sorted(SHELVED_ACT4_TERMS)
     scenes = list(content.load_acts(shelf))
     assert [(scene.act, scene.slug) for scene in scenes] == [(4, "act4-shchit")]
-    instructions = content.instructions_by_artifact(shelf)
-    assert sorted(instructions) == ["cso"]
+    # Инструкция приёма `cso` вернулась в игру с Актом 5 (спека #123).
+    assert not (shelf / "scroll").exists()
 
 
 # Именной список-страж Акта 0 — взамен исключения, снятого выше.
@@ -602,13 +613,50 @@ def test_claude_code_terms_exist(content_root):
         )
 
 
+#: Слова прежнего Акта 5 «Выход в свет» — на полке с ним (спека #123,
+#: тикет #124). Слова нового Акта 5 «Три места кода» — ниже (#126).
+SHELVED_ACT5_TERMS = (
+    "deploy", "nginx", "reverse-proxy", "dns", "a-record",
+    "ssl", "healthcheck", "ci-cd", "virality",
+)
+
+
+#: Слова пятого вечера (#126) — по словарику шпаргалки оператора, без
+#: перегруза: GitHub, репозиторий (с «приватным» внутри карточки), API-ключ и
+#: MCP. «API» — карточка Акта 1: выпадает здесь, если не выпала раньше.
+ACT5_TERMS = {
+    "github": "01-github", "repository": "02-private",
+    "api-key": "04-service", "mcp": "04-service",
+}
+
+
 def test_act5_terms_present(content_root):
+    """Слова Акта 5 — ровно названные, каждое при своём квесте."""
+    from jedicoder import acts, content
+    terms = {t.term: t for t in content.load_terms(content_root) if t.act == 5}
+    assert sorted(terms) == sorted(ACT5_TERMS)
+    known = [q for q, _, _ in acts.QUESTS_BY_ACT[5]]
+    for name, quest in ACT5_TERMS.items():
+        assert terms[name].quest == quest, name
+        assert quest in known, quest
+        assert terms[name].rank == "master", name
+
+
+@needs_shelf
+def test_shelved_act5_terms_left_the_game_and_lie_on_the_shelf(content_root):
+    from pathlib import Path
+
     from jedicoder import content
-    terms = {t.term for t in content.load_terms(content_root) if t.act == 5}
-    assert terms == {
-        "deploy", "nginx", "reverse-proxy", "dns", "a-record",
-        "ssl", "healthcheck", "ci-cd", "virality",
-    }
+
+    live = {item.term for item in content.load_terms(content_root)}
+    assert sorted(live & set(SHELVED_ACT5_TERMS)) == []
+    shelf = Path(__file__).resolve().parents[1] / "shelf" / "act5-vyhod-v-svet" / "content"
+    on_shelf = sorted(item.term for item in content.load_terms(shelf))
+    assert on_shelf == sorted(SHELVED_ACT5_TERMS)
+    scenes = list(content.load_acts(shelf))
+    assert [(scene.act, scene.slug) for scene in scenes] == [(5, "act5-vyhod-v-svet")]
+    instructions = content.instructions_by_artifact(shelf)
+    assert sorted(instructions) == ["deploy"]
 
 
 def test_content_lints_clean():

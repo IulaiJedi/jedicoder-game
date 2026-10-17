@@ -7,8 +7,8 @@
 закрытые квесты — команды игры.
 
 `walk_act2` — общий проход для тестов следующих актов: к закрытому Акту 2
-можно прийти только так. Конец игры сегодня — закрытый Акт 4, его проходит
-`walk_act4` в `tests/test_act4_walkthrough.py`: слова «игра пока кончается»,
+можно прийти только так. Конец игры — закрытый Акт 5, его проходит
+`walk_act5` в `tests/test_act5_walkthrough.py`: закрытие последнего акта,
 `finale`, трофей на карточке и полоса после конца стережутся там.
 """
 import json
@@ -240,7 +240,7 @@ def test_first_screen_after_act2_points_at_act3(finished):
         "  Акт 2. Память и силы — пройден",
         "  Акт 3. Умения — не начат, квестов закрыто: 0/5",
         "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5",
-        "  Акт 5 ещё не написан",
+        "  Акт 5. Три места кода — не начат, квестов закрыто: 0/5",
     ]
     head = lines.index("Приёмы: скажи Claude слова в кавычках — он применит приём.")
     assert lines[head + 1:head + 3] == [
@@ -269,9 +269,9 @@ def test_memo_after_act2_carries_the_handoff_and_counts_playable_acts(
     assert "plan.md" not in names and "investigate.md" not in names
     assert "HANDOFF.md" in (folder / "handoff.md").read_text(encoding="utf-8")
     razbor = (folder / "razbor.md").read_text(encoding="utf-8")
-    # Счёт актов — по играемым: «2 из 4», а не «2 из 5».
-    assert "- Закрыто актов: 2 из 4" in razbor
-    assert "из 5" not in razbor
+    # Счёт актов — по играемым: с 2026-10-16 играются все пять.
+    assert "- Закрыто актов: 2 из 5" in razbor
+    assert "из 4" not in razbor
     for quest_id in QUESTS:
         assert quest_id not in razbor
     for title in ("План", "Покажи", "Память проекта", "Чистый лист", "Силы"):

@@ -415,16 +415,16 @@ def test_quests_of_an_act_the_registry_does_not_know_keep_their_attempts():
     }
 
 
-def test_closed_quests_count_both_branches_unlike_the_map(tmp_path, content_root, quests_root, capsys, monkeypatch):
+def test_closed_quests_count_both_branches_unlike_the_map(tmp_path, content_root, quests_root, capsys, monkeypatch, vyhod_on_act5):
     """Сменивший трек: карта считает по нынешнему треку, факты — по всему.
 
     Расхождение намеренное и разное по смыслу. Карта отвечает «сколько
     осталось» и обязана мерить нынешний трек. Факты отвечают «что было», а
     квест покинутого трека падаван закрыл по-настоящему.
 
-    Развилка по треку осталась у одного акта — пятого, и он выключен
-    (`ranks.MUTED_ACTS`): дверь открывается здесь, иначе карта напечатала бы
-    «готовится» вместо счёта. У Акта 1 «Знакомство» развилки нет.
+    Развилка по треку была у прежнего Акта 5 «Выход в свет»; он на полке, и
+    фикстура `vyhod_on_act5` ставит его на прежний номер. У играемых актов
+    развилки нет.
     """
     monkeypatch.setattr(ranks, "MUTED_ACTS", ())
     data = _save(passport={"track": "craftsman"}, acts={"5": _act(

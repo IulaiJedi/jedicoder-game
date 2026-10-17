@@ -326,9 +326,11 @@ def test_render_card_lines_fit_fifteen_words(content_root):
 ACT1_AND_FIRST_SCREEN = (
     "model-effort", "usage", "terminal",
     "project-folder", "permission-mode", "tool", "prompt", "api",
-    "commit", "repository", "env", "rollback",
+    "commit", "env", "rollback",
     # Слова второго вечера (#104).
     "plan-mode", "claude-md", "context-window", "clear",
+    # Слова пятого вечера (#126); `repository` переехал сюда из Акта 1.
+    "github", "repository", "api-key", "mcp",
 )
 
 

@@ -531,10 +531,11 @@ def test_act_quest_branches_count_mismatch_detected(tmp_path):
     assert any("веток 2, а квестов" in p and "разъехались" in p for p in problems)
 
 
-def test_act_branch_diverging_from_registry_detected(tmp_path):
+def test_act_branch_diverging_from_registry_detected(tmp_path, vyhod_on_act5):
     """Метка одного квеста не та, что в реестре: доска показала бы квест
     Ремесленника Основателю, а движок его бы не засчитал."""
-    # Развилка по треку осталась у Акта 5: у Акта 1 «Знакомство» её нет.
+    # Развилка по треку была у прежнего Акта 5 «Выход в свет» (полка с
+    # 2026-10-16): фикстура ставит его на место. Играемые акты не ветвятся.
     branches = [entry[2] for entry in acts_registry.QUESTS_BY_ACT[5]]
     index = branches.index(acts_registry.TRACK_CRAFTSMAN)
     branches[index] = acts_registry.TRACK_FOUNDER
@@ -557,12 +558,14 @@ def test_act_axis_diverging_from_registry_detected(tmp_path):
     assert any("axis" in p and "ACT_AXIS" in p for p in problems)
 
 
-def test_act_branches_of_other_axis_detected(tmp_path):
+def test_act_branches_of_other_axis_detected(tmp_path, vyhod_on_act5):
     """Акт 5 с осью деплоя — ветки craftsman и founder чужие для этой оси, и
     это ловит схема загрузчика раньше любой сверки с реестром.
 
     До 2026-10-14 пример был обратный: Акт 4 «Щит» с осью трека. «Щит» на
-    полке (спека #117), и по пути деплоя сегодня не ветвится ни один акт."""
+    полке (спека #117), и по пути деплоя сегодня не ветвится ни один акт.
+    С 2026-10-16 на полке и прежний Акт 5 с развилкой по треку — фикстура
+    `vyhod_on_act5` ставит его на место."""
     broken = list(default_acts())
     broken[4] = (broken[4][0], act_text(5, axis="deploy"))
     _minimal(tmp_path, act_files=broken)

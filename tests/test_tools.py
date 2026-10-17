@@ -588,7 +588,7 @@ def test_whole_act4_is_walked_by_the_tools_alone(game, project, home):
 
     assert "Новый ранг: Страж." in closing
     data = st.load(game.state_path)
-    assert data["rank"] == ranks.FINAL_RANK == "sentinel"
+    assert data["rank"] == "sentinel"
     assert data["acts"]["4"]["status"] == ranks.STATUS_DONE
     for screen in screens:
         for quest_id in acts.quest_ids(4):
@@ -601,8 +601,27 @@ def test_whole_act4_is_walked_by_the_tools_alone(game, project, home):
     )
 
 
-def test_closed_act_is_answered_in_plain_words(game, project, home):
-    """Последний играемый акт закрыт: открытого квеста нет."""
+def test_after_act4_the_enter_tool_opens_act5(game, project, home):
+    """С 2026-10-16 за Актом 4 — Акт 5 «Три места кода» (спека #123): тот же
+    инструмент `enter` без номера входит в него."""
+    proj = project()
+    walk_to_the_end(game, proj)
+    walk_act2_by_tools(game, proj)
+    walk_act3_by_tools(game, proj, home)
+    walk_act4_by_tools(game, proj)
+    code, out = game.tool("check", ACCEPT)
+    assert code == 1 and out.splitlines()[0] == "Акт 5 ещё не начат. Сначала войди в него."
+    code, out = game.tool("enter")
+    assert code == 0, out
+    assert out.splitlines()[0] == "Акт 5. Три места кода — начат."
+    code, out = game.tool("ack", "GitHub")
+    assert code == 0 and out.startswith("Квест «GitHub» закрыт")
+
+
+def test_closed_act_is_answered_in_plain_words(game, project, home, last_act_muted):
+    """Последний играемый акт закрыт, дальше выключенный: открытого квеста
+    нет. Механика выключенного акта (`last_act_muted`); настоящий конец игры
+    инструментами — tests/test_act5_walkthrough.py."""
     proj = project()
     walk_to_the_end(game, proj)
     walk_act2_by_tools(game, proj)

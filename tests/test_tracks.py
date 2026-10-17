@@ -107,13 +107,14 @@ def test_track_is_in_subcommands():
     assert "track" in cli.SUBCOMMANDS
 
 
-def test_all_quest_ids_gives_both_sides_in_declaration_order():
+def test_all_quest_ids_gives_both_sides_in_declaration_order(vyhod_on_act5):
     """Порядок перечисления записанного: выбор падавана на него не влияет.
 
     Разбору нужен именно он — у сменившего трек в сохранении лежат квесты
     обоих треков, и попытки на них он всё-таки потратил.
     """
-    # Развилка по треку осталась у Акта 5; у Акта 1 «Знакомство» её нет.
+    # Развилка по треку была у прежнего Акта 5 «Выход в свет» (полка, фикстура
+    # `vyhod_on_act5`); у играемых актов её нет.
     assert acts.all_quest_ids(5) == (
         "01-deploy", "02-domain", "03-ssl", "04-health", "05-goal",
         "06c-use", "06f-publish",

@@ -18,8 +18,11 @@
 (`docs/research/2026-10-14-act4-facts.md`): раздел «Продукт» в конец
 `IDEA.md` и сразу в сохранение, шаги плана — по одному, с сохранением.
 
-Сегодня это конец игры: Акт 5 ещё не написан. `walk_act4` — общий проход
-для тестов «конца игры» в других файлах.
+С 2026-10-16 Акт 4 — не конец игры: за ним Акт 5 «Три места кода» (спека
+#123). Конец игры — полоса, карта, `finale`, трофей, памятка после конца —
+стережёт сквозной проход Акта 5 (tests/test_act5_walkthrough.py, `walk_act5`).
+Здесь — что человек читает, закрыв четвёртый вечер. `walk_act4` — общий
+проход для тестов других файлов.
 """
 import json
 import os
@@ -184,7 +187,7 @@ def walk_to_the_end(game, proj, home, kind=SITE, servers=None, screens=None):  #
 
 @pytest.fixture(params=KINDS)
 def finished(request, game, project, home, servers):  # noqa: F811
-    """Игра пройдена до сегодняшнего конца — сайтом и ботом.
+    """Четыре вечера пройдены — сайтом и ботом. Дальше Акт 5.
 
     Отдаёт (игра, папка, экраны, тип продукта)."""
     proj = project()
@@ -220,7 +223,7 @@ def test_novice_walks_act4_from_a_clean_save_to_sentinel(
     walk_act4(game, proj, home, kind, servers)
 
     data = st.load(game.state_path)
-    assert data["rank"] == "sentinel" == ranks.FINAL_RANK
+    assert data["rank"] == "sentinel"
     assert ranks.rank_for(data) == "sentinel"
     assert data["acts"]["4"]["status"] == ranks.STATUS_DONE
     assert acts.all_closed(data, 4) is True
@@ -358,19 +361,17 @@ def test_build_closes_on_three_saves_after_the_plan(knight):
 
 # --- что человек читает на пути закрытия ---------------------------------------
 
-def test_closing_the_act_names_the_rank_and_says_the_game_pauses(finished):
+def test_closing_the_act_names_the_rank_and_nothing_more(finished):
+    """Акт 4 — не конец игры: ни «пока кончается», ни финала."""
     _, _, screens, _ = finished
     assert screens[-1].splitlines() == [
         "Квест «Приёмка» закрыт: ты проверил продукт сам и сказал «да».",
         "",
         "Акт 4. Свой продукт — закрыт.",
         "Новый ранг: Страж.",
-        "",
-        "На этом игра пока кончается: Акт 5 ещё не написан.",
-        "Памятку в папку проекта положит Claude — попроси его.",
     ]
     assert "finale" not in screens[-1] and "бесплатна" not in screens[-1]
-    assert "Это конец игры" not in screens[-1]
+    assert "конец игры" not in screens[-1]
 
 
 def test_the_type_is_said_in_words(finished):
@@ -394,34 +395,13 @@ def test_no_screen_of_act4_speaks_to_the_model(finished):
         assert TOKEN not in screen
 
 
-def test_first_screen_after_the_end_word_for_word(finished):
-    game, _, _, _ = finished  # noqa: F811
-    code, out = game("status")
-    assert code == 0
-    lines = out.splitlines()
-    assert lines[0] == "Ранг: Страж"
-    start = lines.index("Карта:")
-    assert lines[start:start + 6] == [
-        "Карта:",
-        "  Акт 1. Знакомство — пройден",
-        "  Акт 2. Память и силы — пройден",
-        "  Акт 3. Умения — пройден",
-        "  Акт 4. Свой продукт — пройден",
-        "  Акт 5 ещё не написан",
-    ]
-    head = lines.index(cli.ARTIFACTS_HEAD)
-    assert lines[head + 4] == (
-        "  «Цель»: довести дело до работы и вовремя остановиться — «поставь "
-        "цель: доведи до работы, не больше пяти попыток»"
-    )
-    assert lines[-2:] == [
-        "Что дальше: Акт 5 ещё не написан.",
-        "  Памятку в папку проекта положит Claude — попроси его.",
-    ]
-
-
-def test_finale_says_the_game_is_not_over_and_names_act5(finished):
-    game, _, _, _ = finished  # noqa: F811
+def test_finale_is_locked_while_the_last_act_is_muted(game, project, home,  # noqa: F811
+                                                    last_act_muted):
+    """Механика выключенного акта: Акт 5 выключен — игра «пока кончается»
+    Стражем, финала нет ни у кого. Ни карточки, ни адреса, ни события боту.
+    Без полки — тест идёт и в выгрузке."""
+    proj = project()
+    walk_to_the_end(game, proj, home, BOT)
     code, out = game("finale")
     assert code == 1
     assert out.splitlines()[0] == (
@@ -438,21 +418,22 @@ def test_finale_says_the_game_is_not_over_and_names_act5(finished):
     assert [e for e in data["pending_sync"] if e["type"] == "finale"] == []
 
 
-def test_sentinel_card_carries_the_trophy_of_its_own_act(finished):
+def test_sentinel_card_promises_nothing_and_has_no_trophy(finished):
+    """Страж — середина пути: трофей и три места, куда идти дальше, — у
+    Мастера (tests/test_act5_walkthrough.py)."""
     game, _, _, _ = finished  # noqa: F811
     card = cli.render_rank_card(debrief.facts(st.load(game.state_path)))
     lines = card.splitlines()
     assert lines[0] == "=== Карточка Стража ==="
-    assert lines[2] == cli.TROPHY_LINES[4]
-    assert "Закрыто актов: 4 из 4." in lines
+    assert "Закрыто актов: 4 из 5." in lines
     for title in ("Знакомство", "Память и силы", "Умения", "Свой продукт"):
         assert any(line.endswith(title) for line in lines), title
-    for other in (1, 2, 3, 5):
-        assert cli.TROPHY_LINES[other] not in card
+    for trophy in cli.TROPHY_LINES.values():
+        assert trophy not in card
     assert "finale" not in card and "http" not in card
 
 
-def test_memo_after_the_end_carries_the_goal_and_the_phrases(finished):
+def test_memo_after_act4_carries_the_goal_and_the_phrases(finished):
     game, proj, _, _ = finished  # noqa: F811
     code, out = game("scroll")
     assert code == 0, out
@@ -466,12 +447,12 @@ def test_memo_after_the_end_carries_the_goal_and_the_phrases(finished):
                  "frazy.md"):
         assert name in names
     razbor = (folder / "razbor.md").read_text(encoding="utf-8")
-    assert "- Закрыто актов: 4 из 4" in razbor
-    assert "из 5" not in razbor
+    assert "- Закрыто актов: 4 из 5" in razbor
     everything = "\n".join(
         path.read_text(encoding="utf-8") for path in folder.iterdir()
     )
-    assert cli.TROPHY_LINES[4] in everything
+    for trophy in cli.TROPHY_LINES.values():
+        assert trophy not in everything
     assert TOKEN not in everything
     for quest_id in QUESTS:
         assert quest_id not in razbor
@@ -495,7 +476,7 @@ def test_memo_after_the_end_carries_the_goal_and_the_phrases(finished):
         assert word not in frazy, word
 
 
-def test_the_strip_after_the_end_does_not_change_when_the_memo_is_taken(finished):
+def test_the_strip_after_act4_does_not_change_when_the_memo_is_taken(finished):
     game, _, _, _ = finished  # noqa: F811
     before = strip_and_map(game)
     assert game("scroll")[0] == 0
@@ -579,13 +560,13 @@ def test_strip_toasts_and_map_are_true_in_every_state_of_the_act(
                      going.format(4), 19, "Рыцарь", "")
     assert game("ack", "4", "05-accept")[0] == 0
 
-    # Акт закрыт: ранг вырос — Лицо покажет подпись о ранге. Дальше актов нет:
-    # в поле ввода ничего не предлагается.
+    # Акт закрыт: ранг вырос — Лицо покажет подпись о ранге. Дальше — Акт 5:
+    # в поле ввода снова слово, которым начинают акт.
     assert see() == (
-        "Что дальше: Акт 5 ещё не написан.",
-        "Памятку в папку проекта положит Claude — попроси его.",
+        "Что дальше: начать Акт 5 «Три места кода» — квестов в нём 5.",
+        "Скажи Claude: «начинаем».",
         "Акт 4. Свой продукт — пройден",
-        20, "Страж", "",
+        20, "Страж", cli.SAY_START,
     )
 
 

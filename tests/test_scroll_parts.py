@@ -235,9 +235,20 @@ def test_roadmap_page_survives_braces_in_the_body():
     assert '{"ok": true}' in scroll.roadmap_page(with_braces, "https://a.ru")
 
 
+@pytest.fixture
+def roadmap_act_open(monkeypatch):
+    """Играется акт, который спрашивает адрес продукта, — карта идёт в памятку.
+
+    С 2026-10-16 такого акта нет (`cli.ROADMAP_ACT` — None): адрес спрашивал
+    прежний «Выход в свет», он на полке. Механика карты цела и вернётся с
+    адресом; тесты ставят акт сами, чтобы она не сгнила.
+    """
+    monkeypatch.setattr(cli, "ROADMAP_ACT", 5)
+
+
 @pytest.mark.parametrize("track", ("craftsman", "founder"))
 def test_scroll_carries_the_card_of_the_chosen_track(
-    paths, capsys, project, track, all_acts_open
+    paths, capsys, project, track, roadmap_act_open
 ):
     folder = project()
     run(["project", "path", str(folder)], paths, capsys)
@@ -252,7 +263,7 @@ def test_scroll_carries_the_card_of_the_chosen_track(
 
 
 def test_scroll_without_a_track_carries_the_common_card(
-    paths, capsys, project, all_acts_open
+    paths, capsys, project, roadmap_act_open
 ):
     """Свиток выдаётся на любом ранге, в том числе до выбора трека: дыра
     вместо карты не заметна никому, а общая карта работает у всех."""
@@ -267,7 +278,7 @@ def test_scroll_without_a_track_carries_the_common_card(
 
 
 def test_scroll_names_the_product_address_in_the_card(
-        paths, capsys, project, all_acts_open):
+        paths, capsys, project, roadmap_act_open):
     folder = project()
     run(["project", "path", str(folder)], paths, capsys)
     run(["track", "founder"], paths, capsys)
@@ -284,7 +295,7 @@ def test_scroll_names_the_product_address_in_the_card(
 
 
 def test_missing_roadmap_section_does_not_sink_the_scroll(
-    paths, capsys, project, tmp_path, all_acts_open
+    paths, capsys, project, tmp_path, roadmap_act_open
 ):
     """Карта — часть Свитка, а не его условие: раздела нет вовсе (плагин
     установлен не целиком), а факты и инструкции падаван всё равно уносит."""

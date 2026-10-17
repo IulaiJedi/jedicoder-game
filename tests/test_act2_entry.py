@@ -96,7 +96,7 @@ def test_registry_names_the_act_its_artifact_and_rank():
         "slug": "act2-pamyat-i-sily", "title": "Память и силы",
         "artifact": "handoff", "rank": "padawan",
     }
-    assert ranks.MUTED_ACTS == (5,)
+    assert ranks.MUTED_ACTS == ()
     assert not ranks.is_muted(ACT)
 
 
@@ -152,7 +152,7 @@ def test_after_act1_the_next_step_is_act2(game, project):
     assert "  Акт 2. Память и силы — не начат, квестов закрыто: 0/5" in lines
     assert "  Акт 3. Умения — не начат, квестов закрыто: 0/5" in lines
     assert "  Акт 4. Свой продукт — не начат, квестов закрыто: 0/5" in lines
-    assert "  Акт 5 ещё не написан" in lines
+    assert "  Акт 5. Три места кода — не начат, квестов закрыто: 0/5" in lines
     assert out.rstrip().splitlines()[-2:] == [
         "Что дальше: начать Акт 2 «Память и силы» — квестов в нём 5.",
         "  Скажи Claude: «начинаем».",
@@ -464,7 +464,9 @@ def test_finale_names_the_acts_still_ahead(entered):
     game, _ = entered
     code, out = game("finale")
     assert code == 1
-    assert "Игра ещё не кончилась: Акт 5 ещё не написан." in out
+    assert out.splitlines()[0] == (
+        "Финал ждёт Мастера. Твой ранг сейчас — Искатель, закрыто актов: 1 из 5."
+    )
     assert "Ближайший незакрытый — Акт 2 «Память и силы»." in out
 
 
