@@ -172,14 +172,20 @@ def test_the_act_stays_open_until_the_last_quest(game, project):  # noqa: F811
 
 def test_closing_the_act_names_the_rank_and_the_game_goes_on(finished):
     _, _, screens = finished
-    assert screens[-1].splitlines()[:4] == [
+    # Под строкой закрытия — три правила про лимит (#122), за ними акт и ранг.
+    rules = len(cli.LIMIT_RULES)
+    assert screens[-1].splitlines()[:5 + rules] == [
         "Квест «Силы» закрыт: ты рассказал, что увидел.",
+        "",
+    ] + list(cli.LIMIT_RULES) + [
         "",
         "Акт 2. Память и силы — закрыт.",
         "Новый ранг: Падаван.",
     ]
-    # Впереди Акт 3: о конце игры здесь ни слова.
-    assert "кончается" not in screens[-1] and "ещё не написан" not in screens[-1]
+    # Впереди Акт 3: о конце игры здесь ни слова. Смотрится хвост после
+    # закрытия акта: «Лимит кончается» во втором правиле — не о конце игры.
+    tail = screens[-1].split("Акт 2. Память и силы — закрыт.", 1)[1]
+    assert "кончается" not in tail and "ещё не написан" not in tail
     assert "finale" not in screens[-1] and "бесплатна" not in screens[-1]
 
 
@@ -245,7 +251,7 @@ def test_first_screen_after_act2_points_at_act3(finished):
     head = lines.index("Приёмы: скажи Claude слова в кавычках — он применит приём.")
     assert lines[head + 1:head + 3] == [
         "  найти идею — «помоги найти идею»",
-        "  «Передача»: начать следующий разговор с того же места — "
+        "  начать следующий разговор с того же места — "
         "«запиши передачу»",
     ]
     assert lines[-2:] == [

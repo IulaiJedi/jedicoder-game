@@ -194,3 +194,31 @@ def test_credentials_are_linked_not_read():
         assert not re.search(
             r"\b{}\b[^\n|]*\$CREDENTIALS".format(reader), text
         ), reader
+
+
+def test_cleanup_takes_the_copies_of_the_account_settings_too(tmp_path):
+    """Claude Code сам кладёт копии `.claude.json` в `.claude/backups/` —
+    это те же данные учётной записи (#122). Уборка уносит их и папку, а
+    остальную песочницу оставляет для разбора.
+
+    Функция уборки берётся из текста скрипта и исполняется сама: сессии и
+    tmux для неё не нужны."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index("cleanup() {")
+    function = text[start:text.index("\n}\n", start) + 3]
+    home = tmp_path / "home"
+    backups = home / ".claude" / "backups"
+    backups.mkdir(parents=True)
+    (backups / ".claude.json.backup.1792226609967").write_text("{}", encoding="utf-8")
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    (home / "keep.txt").write_text("разбор", encoding="utf-8")
+    script = (
+        'SANDBOX_HOME="{home}"\nBACKUPS="$SANDBOX_HOME/.claude/backups"\n'
+        "in_tmux() {{ :; }}\n{function}cleanup\n"
+    ).format(home=home, function=function)
+    result = subprocess.run([BASH, "-c", script], stderr=subprocess.PIPE)
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert not backups.exists()
+    assert not (home / ".claude.json").exists()
+    assert (home / "keep.txt").is_file()
+    assert 'BACKUPS="$SANDBOX_HOME/.claude/backups"' in text

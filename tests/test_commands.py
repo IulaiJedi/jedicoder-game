@@ -337,3 +337,27 @@ def test_hub_skill_documents_project_two_word_verbs():
     hub = (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8")
     for verb in ("project path", "project db", "project port"):
         assert verb in hub, "хаб не называет `{}`".format(verb)
+
+
+#: Слово игры в кавычках — «начинаем» или „начинаем“ внутри цитаты.
+SAY_WORD = re.compile(r"[«„]{}[»“]".format(re.escape(cli.SAY_START)))
+
+
+def test_the_next_act_is_offered_with_the_word_of_the_game():
+    """Полоса и подсказка в поле ввода говорят «начинаем» (`cli.SAY_START`),
+    а модель звала «Скажи «да»» — живая приёмка 0.11.0 (#122). Слово одно:
+    его называют вход в игру, ядро и финал каждого акта, за которым есть
+    следующий."""
+    texts = {
+        "start.md": (PLUGIN / "commands" / "start.md").read_text(encoding="utf-8"),
+        "core": (PLUGIN / "skills" / "core" / "SKILL.md").read_text(encoding="utf-8"),
+    }
+    for number in ranks.playable_acts():
+        if number == ranks.FINAL_ACT:
+            continue
+        slug = ranks.ACTS[number]["slug"]
+        skill = (PLUGIN / "skills" / slug / "SKILL.md").read_text(encoding="utf-8")
+        texts[slug] = skill.split("## Финал акта", 1)[1]
+    for name, text in texts.items():
+        assert SAY_WORD.search(text), name
+        assert "Продолжим сейчас или в другой день?" not in text, name

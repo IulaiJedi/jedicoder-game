@@ -15,15 +15,18 @@ Code. Снимок ложится рядом с сохранением тест�
 Claude Code.
 """
 import json
+from pathlib import Path
 
 import pytest
 
 from jedicoder import cli, statusline
 from jedicoder import state as st
 from test_act2_entry import close_act1, entered, game  # noqa: F401 — фикстуры
+import test_act2_walkthrough as w
 from test_act2_walkthrough import statusline_answered
 from test_statusline import EXAMPLE
 
+ROOT = Path(__file__).resolve().parents[1]
 HEAD = "Claude Code — что игра видит сама:"
 UNSEEN = [
     "",
@@ -225,3 +228,68 @@ def test_the_real_snapshot_is_never_read(entered, monkeypatch, tmp_path):
     monkeypatch.setenv("JEDICODER_STATE_PATH", str(elsewhere / "state.json"))
     assert st.state_path() == elsewhere / "state.json"
     assert powers(game) == UNSEEN
+
+
+# --- Правила про лимит печатает экран закрытия (#122) ------------------------
+#
+# Живая приёмка 0.11.0: модель закрыла «Силы», не сказав трёх правил, и урок
+# квеста пропал. Правила теперь печатает игра — тем же экраном, что закрывает
+# квест, — а скилл велит прочитать их с экрана.
+
+LIMIT_SCREEN = [
+    "Квест «Силы» закрыт: ты рассказал, что увидел.",
+    "",
+    "Три правила про лимит.",
+    "  1. Упёрся в лимит посреди работы — не страшно. Claude спросит, что "
+    "делать: выбери «продолжить после сброса».",
+    "  2. Лимит кончается, а большая задача не начата — подожди сброса.",
+    "  3. Чем короче разговор, тем медленнее тратится лимит: каждый запрос "
+    "тянет за собой весь разговор.",
+]
+
+
+def test_closing_the_quest_prints_the_three_limit_rules(entered):
+    game, _ = entered  # noqa: F811
+    code, out = game("ack", "2", "05-powers")
+    assert code == 0, out
+    assert out.splitlines() == LIMIT_SCREEN
+
+
+def test_the_tool_closes_the_quest_with_the_same_rules(entered):
+    """Модель закрывает квест инструментом — правила те же, слово в слово.
+
+    Инструмент закрывает только открытый квест, поэтому четыре первых
+    закрываются той же дверью, что у человека; последний экран — закрытие
+    акта под правилами."""
+    game, proj = entered  # noqa: F811
+    w.do_plan(game, proj)
+    assert game("check", "2", "01-plan")[0] == 0
+    w.do_show(game, proj)
+    assert game("check", "2", "02-show")[0] == 0
+    w.do_memory(game, proj)
+    assert game("check", "2", "03-memory")[0] == 0
+    w.do_clear(game, proj)
+    assert game("seen", "2", "04-clear")[0] == 0
+    assert game("check", "2", "04-clear")[0] == 0
+    code, out = game(cli.TOOL_CALL, "ack", "Силы")
+    assert code == 0, out
+    lines = out.splitlines()
+    assert lines[:len(LIMIT_SCREEN)] == LIMIT_SCREEN
+    assert "Новый ранг: Падаван." in lines
+
+
+def test_the_rules_are_printed_once_and_only_for_powers():
+    """Другие квесты, закрытые рассказом, правил о лимите не печатают."""
+    for (act, quest_id), screen in cli.ACK_SCREENS.items():
+        if (act, quest_id) != (2, "05-powers"):
+            assert "лимит" not in screen, quest_id
+    assert cli.ACK_SCREEN_DEFAULT.count("лимит") == 0
+
+
+def test_the_act_skill_reads_the_rules_from_the_screen():
+    """Копия правил одна — на экране игры. Скилл их не дублирует: модель
+    сказала бы их дважды или по памяти, а не с экрана."""
+    skill = (ROOT / "plugin" / "skills" / "act2-pamyat-i-sily" / "SKILL.md"
+             ).read_text(encoding="utf-8")
+    assert "продолжить после сброса" not in skill
+    assert "три правила про лимит" in skill

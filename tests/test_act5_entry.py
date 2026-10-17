@@ -283,10 +283,32 @@ def test_first_screen_inside_act5_names_the_quest(entered):
     ]
     head = lines.index(cli.ARTIFACTS_HEAD)
     assert lines[head + 5] == (
-        "  «Проверка ключей»: проверить, не утекают ли ключи — «проверь, не "
+        "  проверить, не утекают ли ключи — «проверь, не "
         "утекают ли ключи»"
     )
     assert machine_words(out) == []
+
+
+def test_every_artifact_row_on_the_first_screen_has_one_form(entered):
+    """Пять приёмов — пять строк одной формы: что делает и что сказать (#122).
+
+    Живая приёмка 0.11.0: строка первого приёма шла без имени, остальные — с
+    именем в кавычках, а заголовок велит говорить слова в кавычках. Имя
+    приёма называет вход в акт, а не список."""
+    game, _ = entered  # noqa: F811
+    _, out = game("status")
+    lines = out.splitlines()
+    head = lines.index(cli.ARTIFACTS_HEAD)
+    rows = lines[head + 1:head + 6]
+    expected = [
+        cli.ARTIFACTS_ROW.format(*cli.ARTIFACT_WORDS[ranks.ACTS[n]["artifact"]])
+        for n in sorted(ranks.ACTS)
+    ]
+    assert rows == expected
+    for row in rows:
+        assert row.count("«") == 1, row
+        for name in cli.ARTIFACT_NAMES.values():
+            assert name not in row, row
 
 
 def test_project_screen_of_act5_asks_for_nothing_of_the_old_act(entered):

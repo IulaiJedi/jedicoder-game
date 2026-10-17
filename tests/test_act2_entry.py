@@ -226,11 +226,12 @@ def test_first_screen_inside_act2_names_the_quest_and_the_artifact(entered):
     lines = out.splitlines()
     assert "Ранг: Искатель" in lines
     assert "  Акт 2. Память и силы — идёт, квестов закрыто: 0/5" in lines
-    # Приёмов два — строка на приём: у каждого свои слова, у второго и имя.
+    # Приёмов два — строка на приём, обе одной формы: что делает и что
+    # сказать. Имени в строке нет — его называет вход в акт (#122).
     start = lines.index("Приёмы: скажи Claude слова в кавычках — он применит приём.")
     assert lines[start + 1:start + 3] == [
         "  найти идею — «помоги найти идею»",
-        "  «Передача»: начать следующий разговор с того же места — "
+        "  начать следующий разговор с того же места — "
         "«запиши передачу»",
     ]
     assert out.rstrip().splitlines()[-2:] == [
@@ -443,7 +444,7 @@ def test_powers_quest_closes_by_words_and_the_act_stays_open(entered):
 
     code, out = game("ack", "2", "05-powers")
     assert code == 0, out
-    assert out.strip() == "Квест «Силы» закрыт: ты рассказал, что увидел."
+    assert out.splitlines()[0] == "Квест «Силы» закрыт: ты рассказал, что увидел."
     data = st.load(game.state_path)
     assert acts.all_closed(data, ACT) is False
     assert data["acts"]["2"]["status"] == ranks.STATUS_IN_PROGRESS

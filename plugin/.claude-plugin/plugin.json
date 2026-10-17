@@ -1,7 +1,7 @@
 {
   "name": "jedicoder",
   "description": "Игра по вайбкодингу с Claude Code: от первого запроса до своего продукта на своём компьютере и кода в трёх местах",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "author": {
     "name": "Iulai Atangulov"
   },

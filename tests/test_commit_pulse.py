@@ -4,6 +4,7 @@
 функция, и проверять её надо на границах суток, а не на «сегодня».
 """
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest  # noqa: E402
@@ -149,7 +150,9 @@ def test_second_commit_same_day_does_not_repeat_streak_event(project, hook_state
     # без новой информации для бота.
     _git(proj, "commit", "--allow-empty", "-q", "-m", "второй")
     second = commit_pulse.react(payload("git commit -m 'второй'", proj))
-    assert second is not None
+    # Число не выросло — строки нет (#122); коммит при этом увиден.
+    assert second is None
+    assert st.load(path)["commit_head"]["sha"] == commit_pulse.head_sha(proj)
     events = [
         e for e in st.load(path)["pending_sync"] if e["type"] == "streak_updated"
     ]
@@ -315,17 +318,76 @@ def test_rejected_commit_on_a_dirty_tree_does_not_count(project, hook_state):
     assert st.load(path)["streak"]["current"] == 0
 
 
+def _quiet_window(path, left):
+    data = st.load(path)
+    data["commit_nag_left"] = left
+    st.save(data, path)
+
+
 def test_every_real_commit_is_seen_one_after_another(project, hook_state):
+    """Увиденный коммит закрывает окно молчания напоминания — по этому
+    признаку и видно, что хук его засчитал: строка серии звучит только
+    на первом за день (#122)."""
     proj = project(git=True, commits=1)
-    hook_state(project={"path": str(proj)})
+    path = hook_state(project={"path": str(proj)})
     commit_pulse.react(payload("ls", proj))
-    for name in ("a.txt", "b.txt"):
+    for number, name in enumerate(("a.txt", "b.txt")):
         (proj / name).write_text("x", encoding="utf-8")
         _git(proj, "add", name)
         _git(proj, "commit", "-q", "-m", name)
-        assert commit_pulse.react(payload("git commit -m x", proj)) is not None
+        _quiet_window(path, 5)
+        out = commit_pulse.react(payload("git commit -m x", proj))
+        assert (out is not None) is (number == 0), name
+        assert "commit_nag_left" not in st.load(path), name
         # Тот же текст команды без нового коммита — уже не коммит.
+        _quiet_window(path, 5)
         assert commit_pulse.react(payload("git commit -m x", proj)) is None
+        assert st.load(path)["commit_nag_left"] == 5, name
+
+
+def test_streak_line_sounds_only_when_the_number_grew(project, hook_state):
+    """Первое сохранение дня после вчерашнего — строка с новым числом."""
+    proj = project(git=True, commits=1)
+    today = datetime.strptime(commit_pulse.today_utc(), "%Y-%m-%d")
+    yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    path = hook_state(project={"path": str(proj)}, streak={
+        "current": 3, "best": 3, "last_commit_date": yesterday,
+    })
+    commit_pulse.react(payload("ls", proj))
+    (proj / "a.txt").write_text("x", encoding="utf-8")
+    _git(proj, "add", "a.txt")
+    _git(proj, "commit", "-q", "-m", "шаг")
+    out = commit_pulse.react(payload("git commit -m 'шаг'", proj))
+    assert out == {"systemMessage": st.streak_line(4, 4) + "."}
+    assert st.load(path)["streak"]["current"] == 4
+
+
+def test_streak_started_over_after_a_break_is_silent(project, hook_state):
+    """Перерыв: серия начата заново, число стало меньше — игра молчит, а не
+    упрекает. Серия при этом записана честно."""
+    proj = project(git=True, commits=1)
+    path = hook_state(project={"path": str(proj)}, streak={
+        "current": 4, "best": 4, "last_commit_date": "2000-01-01",
+    })
+    commit_pulse.react(payload("ls", proj))
+    (proj / "a.txt").write_text("x", encoding="utf-8")
+    _git(proj, "add", "a.txt")
+    _git(proj, "commit", "-q", "-m", "шаг")
+    assert commit_pulse.react(payload("git commit -m 'шаг'", proj)) is None
+    streak = st.load(path)["streak"]
+    assert (streak["current"], streak["best"]) == (1, 4)
+    assert "commit_nag_left" not in st.load(path)
+
+
+@pytest.mark.parametrize("before, after, expected", [
+    ({}, {"current": 1}, True),
+    ({"current": 1}, {"current": 1}, False),
+    ({"current": 4}, {"current": 1}, False),
+    ({"current": "мусор"}, {"current": 2}, True),
+    (None, {"current": 1}, True),
+])
+def test_grew_compares_only_the_number(before, after, expected):
+    assert commit_pulse.grew(before, after) is expected
 
 
 def test_commit_in_another_repo_does_not_count(project, hook_state):

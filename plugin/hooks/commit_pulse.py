@@ -104,6 +104,16 @@ def bump_streak(streak, today):
     return result
 
 
+def grew(before, after):
+    """Выросло ли число серии. Чистая функция: мусор в сохранении — нуль."""
+    def current(streak):
+        try:
+            return int((streak or {}).get("current", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            return 0
+    return current(after) > current(before)
+
+
 def today_utc():
     """Календарная дата UTC. Часы одни на игру — те же, что у журнала
     Тёмной стороны: две реализации разошлись бы молча, а даты серии и
@@ -279,6 +289,13 @@ def react(payload):
             # имеет право на напоминание.
             fresh.pop("commit_nag_left", None)
             _remember_head(fresh, project_dir, head)
+        if not grew(old_streak, streak):
+            # «Серия сохранений: 1» после каждого сохранения за день — шум
+            # (живая приёмка 0.11.0, #122). Строка звучит, только когда число
+            # выросло: первое сохранение дня после вчерашнего — или первое
+            # вообще. Серия, начатая заново после перерыва, молчит: число
+            # стало меньше, и хвалить не за что, а упрекать игра не будет.
+            return None
         return {"systemMessage": st.streak_line(
             streak.get("current", 0), streak.get("best", 0)
         ) + "."}
